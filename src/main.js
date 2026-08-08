@@ -6,8 +6,10 @@ import GUI from 'lil-gui';
 // ============================================================
 const P = {
   player: { speed: 6.0, radius: 0.35 },
-  enemy: { speed: 5.0, radius: 0.9, dps: 30, attackRange: 0.6, repath: 0.35 },
-  wall: { hp: 100, cooldown: 0.15, height: 1.1 },
+  enemy: { speed: 5.0, radius: 0.9, dps: 30, attackRange: 0.6, repath: 0.35, spawnDelay: 12 },
+  wall: { hp: 100, cooldown: 0.15, height: 1.1, buildTime: 1.5, range: 3.0 },
+  res: { start: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40 },
+  threat: { interval: 25, speedGain: 0.5, dpsGain: 8 },
 };
 
 // ============================================================
@@ -15,7 +17,7 @@ const P = {
 //  - 벽 격자: CELLS x CELLS, 한 칸 CS(1.0m)
 //  - 내비 격자: 벽 격자의 2배 해상도 (navRes = 0.5m)
 // ============================================================
-const CELLS = 26;
+const CELLS = 44;
 const CS = 1.0;
 const HALF = (CELLS * CS) / 2;
 const navRes = CS / 2;
@@ -97,21 +99,30 @@ scene.add(grid);
 const obstacles = new Map();
 const wallGeo = new THREE.BoxGeometry(1, 1, 1);
 
-function addObstacle(i, j, bedrock) {
+function addObstacle(i, j, bedrock, building = false) {
   const key = cellKey(i, j);
   if (obstacles.has(key)) return null;
   const mat = new THREE.MeshStandardMaterial({
-    color: bedrock ? 0x4a4f5c : 0x8fa1b8,
+    color: bedrock ? 0x4a4f5c : building ? 0x3f8cff : 0x8fa1b8,
     roughness: 0.9,
+    transparent: building,
+    opacity: building ? 0.5 : 1,
+    emissive: new THREE.Color(building ? 0x1a4a8f : 0x000000),
+    emissiveIntensity: building ? 0.6 : 0,
   });
   const mesh = new THREE.Mesh(wallGeo, mat);
-  const h = bedrock ? 1.4 : P.wall.height;
+  const h = bedrock ? 1.4 : P.wall.height * (building ? 0.15 : 1);
   const w = cellToWorld(i, j);
   mesh.scale.set(CS * 0.98, h, CS * 0.98);
   mesh.position.set(w.x, h / 2, w.z);
   mesh.castShadow = mesh.receiveShadow = true;
   scene.add(mesh);
-  const ob = { i, j, hp: P.wall.hp, maxHp: P.wall.hp, bedrock, mesh };
+  const ob = {
+    i, j,
+    hp: building ? P.wall.hp * 0.1 : P.wall.hp,
+    maxHp: P.wall.hp,
+    bedrock, building, mesh,
+  };
   obstacles.set(key, ob);
   return ob;
 }
@@ -129,17 +140,60 @@ function updateWallColor(ob) {
   ob.mesh.material.color.copy(WALL_BASE).lerp(WALL_DMG, t);
 }
 
-// 미리 배치된 지형: 1칸 틈("쥐구멍")과 2칸 틈을 비교할 수 있게
+// ============================================================
+// 지형 레이아웃 (44x44)
+//  - 방: 입구 2~3칸 → 적이 들어올 수 있음. 플레이어가 벽 2~3개로 봉쇄 = 광맥 확보
+//  - 쥐구멍(1칸 틈): 플레이어만 통과 — "저 틈이 저 놈보다 좁은가" 판단 훈련용
+//  - 빗살 구조: 1/2/3칸 슬롯을 나란히 놓아 폭 비교를 눈으로 하게 함
+// ============================================================
 const BEDROCK_LAYOUT = [];
 {
-  // 세로 벽 (왼쪽): j=5..13, 틈 1칸 at j=9
-  for (let j = 5; j <= 13; j++) if (j !== 9) BEDROCK_LAYOUT.push([8, j]);
-  // 가로 벽 (오른쪽 아래): i=13..22, 틈 2칸 at i=17,18
-  for (let i = 13; i <= 22; i++) if (i !== 17 && i !== 18) BEDROCK_LAYOUT.push([i, 17]);
-  // 기둥 2x2 (왼쪽 아래)
-  BEDROCK_LAYOUT.push([5, 20], [6, 20], [5, 21], [6, 21]);
-  // 기둥 2x2 (오른쪽 위)
-  BEDROCK_LAYOUT.push([18, 5], [19, 5], [18, 6], [19, 6]);
+  const put = (i, j) => {
+    if (i >= 0 && j >= 0 && i < CELLS && j < CELLS) BEDROCK_LAYOUT.push([i, j]);
+  };
+  const hLine = (i0, i1, j, gaps = []) => {
+    for (let i = i0; i <= i1; i++) if (!gaps.includes(i)) put(i, j);
+  };
+  const vLine = (i, j0, j1, gaps = []) => {
+    for (let j = j0; j <= j1; j++) if (!gaps.includes(j)) put(i, j);
+  };
+  // 방 (사각 외벽 + 지정된 변에 입구)
+  const room = (i0, j0, i1, j1, door) => {
+    hLine(i0, i1, j0, door.side === 'top' ? door.cells : []);
+    hLine(i0, i1, j1, door.side === 'bottom' ? door.cells : []);
+    vLine(i0, j0, j1, door.side === 'left' ? door.cells : []);
+    vLine(i1, j0, j1, door.side === 'right' ? door.cells : []);
+  };
+  const pillar = (i, j, w = 2, h = 2) => {
+    for (let dj = 0; dj < h; dj++) for (let di = 0; di < w; di++) put(i + di, j + dj);
+  };
+
+  // 4개의 방 — 입구 폭이 각기 다름 (2칸 / 3칸 / 2칸 / 2칸)
+  room(4, 4, 12, 11, { side: 'bottom', cells: [7, 8] });
+  room(31, 4, 39, 11, { side: 'left', cells: [7, 8, 9] });
+  room(4, 32, 12, 39, { side: 'top', cells: [7, 8] });
+  room(31, 32, 39, 39, { side: 'top', cells: [34, 35] });
+
+  // 중앙 십자 — 1칸 쥐구멍 (적은 절대 못 지나감)
+  vLine(21, 15, 28, [21, 22]);
+  hLine(16, 27, 21, [21, 22]);
+
+  // 빗살 구조 (왼쪽 중단): 슬롯 폭 1 / 2 / 3 비교
+  vLine(6, 18, 24);
+  vLine(8, 18, 24);   // 6~8 사이 슬롯 폭 1
+  vLine(11, 18, 24);  // 8~11 사이 슬롯 폭 2
+  vLine(15, 18, 24);  // 11~15 사이 슬롯 폭 3
+  hLine(6, 15, 18);   // 빗살 등쪽 막음
+
+  // 대각 방벽 (오른쪽 하단) — 계단식, 중간에 1칸 틈
+  for (let k = 0; k < 10; k++) if (k !== 5) put(24 + k, 26 + k);
+
+  // 긴 회랑 (상단 중앙): 2칸 틈 하나
+  hLine(16, 28, 8, [22, 23]);
+
+  // 흩어진 기둥
+  pillar(17, 33); pillar(24, 15); pillar(35, 20);
+  pillar(28, 36); pillar(13, 27, 3, 2); pillar(36, 26, 2, 3);
 }
 
 // ============================================================
@@ -194,6 +248,7 @@ function computeClearance(bedrockOnly) {
 function refreshClearance() {
   clearAll = computeClearance(false);
   clearBed = computeClearance(true);
+  refreshReach(); // 벽이 바뀌면 적 도달 가능 영역(자원 확보 판정)도 갱신
 }
 
 const canPass = (field, idx, r) => field[idx] + navRes * 0.5 >= r;
@@ -322,9 +377,40 @@ function makeCapsule(color, radius) {
 
 const playerVis = makeCapsule(0xf5c542, P.player.radius);
 const enemyVis = makeCapsule(0xd9455f, P.enemy.radius);
+enemyVis.body.material.transparent = true;
 
-const PLAYER_SPAWN = cellToWorld(5, 9);
-const ENEMY_SPAWN = cellToWorld(21, 21);
+const PLAYER_SPAWN = cellToWorld(22, 22);
+const ENEMY_SPAWN = cellToWorld(22, 3);
+
+// 건설 진행 바 (벽 발밑 바닥에 깔림)
+const buildBar = new THREE.Group();
+{
+  const mkPlane = (color, opacity) => {
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.translate(0.5, 0, 0); // 좌측 끝을 피벗으로 → scale.x = 진행도
+    const m = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false })
+    );
+    m.rotation.x = -Math.PI / 2;
+    return m;
+  };
+  const frame = mkPlane(0xe8ecf4, 0.9);
+  frame.scale.set(1.16, 0.3, 1);
+  frame.position.set(-0.08, 0, 0);
+  const bg = mkPlane(0x141822, 1);
+  bg.scale.set(1.1, 0.24, 1);
+  bg.position.set(-0.05, 0.002, 0);
+  const fill = mkPlane(0x6ee07a, 1);
+  fill.scale.set(0.001, 0.24, 1);
+  fill.position.y = 0.004;
+  buildBar.add(frame, bg, fill);
+  buildBar.userData.fill = fill;
+  buildBar.position.y = 0.04;
+  buildBar.renderOrder = 999;
+  buildBar.visible = false;
+  scene.add(buildBar);
+}
 
 const player = { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z, faceX: 0, faceZ: -1 };
 const enemy = {
@@ -343,6 +429,83 @@ const ghost = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0x6ee07a, transparent: true, opacity: 0.35 })
 );
 scene.add(ghost);
+
+// ============================================================
+// 자원 노드 (치즈 광맥)
+//  맵에 흩어져 있고, "적이 도달할 수 없게" 벽으로 감싸면
+//  자동으로 천천히 채굴된다.
+// ============================================================
+// 광맥 위치 — 방 안(입구만 막으면 확보) + 개활지(둘러싸야 확보)
+const NODE_LAYOUT = [
+  [8, 7], [35, 7], [8, 36], [35, 36],   // 각 방 내부
+  [22, 12], [22, 31],                    // 중앙 개활지 (위/아래)
+  [17, 24], [30, 20],                    // 개활지
+  [3, 21], [41, 15],                     // 외곽
+];
+const nodeGeo = new THREE.OctahedronGeometry(0.32);
+const nodes = NODE_LAYOUT.map(([i, j]) => {
+  const w = cellToWorld(i, j);
+  const mesh = new THREE.Mesh(
+    nodeGeo,
+    new THREE.MeshStandardMaterial({ color: 0xf0b429, roughness: 0.4 })
+  );
+  mesh.position.set(w.x, 0.35, w.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  return { i, j, amount: P.res.nodeAmount, mesh };
+});
+const nodeAt = (i, j) => nodes.find((n) => n.i === i && n.j === j);
+let securedCount = 0;
+
+// 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
+//  → 노드가 이 영역 밖이면 "확보됨"
+let enemyReach = null;
+function refreshReach() {
+  const er = P.enemy.radius;
+  const pass = (i) => canPass(clearAll, i, er);
+  const start = nearestPassableNav(enemy.x, enemy.z, pass);
+  const vis = new Uint8Array(NAV * NAV);
+  if (pass(start)) {
+    const stack = [start];
+    vis[start] = 1;
+    while (stack.length) {
+      const cur = stack.pop();
+      const cx = cur % NAV, cz = (cur / NAV) | 0;
+      if (cx > 0 && !vis[cur - 1] && pass(cur - 1)) { vis[cur - 1] = 1; stack.push(cur - 1); }
+      if (cx < NAV - 1 && !vis[cur + 1] && pass(cur + 1)) { vis[cur + 1] = 1; stack.push(cur + 1); }
+      if (cz > 0 && !vis[cur - NAV] && pass(cur - NAV)) { vis[cur - NAV] = 1; stack.push(cur - NAV); }
+      if (cz < NAV - 1 && !vis[cur + NAV] && pass(cur + NAV)) { vis[cur + NAV] = 1; stack.push(cur + NAV); }
+    }
+  }
+  enemyReach = vis;
+}
+
+function updateNodes(dt) {
+  securedCount = 0;
+  for (const n of nodes) {
+    const m = n.mesh;
+    if (n.amount <= 0) {
+      m.material.color.setHex(0x555a66);
+      m.material.emissiveIntensity = 0;
+      m.scale.setScalar(0.4);
+      continue;
+    }
+    const w = cellToWorld(n.i, n.j);
+    const secured = enemyReach && !enemyReach[worldToNav(w.x, w.z)];
+    m.scale.setScalar(0.5 + 0.5 * (n.amount / P.res.nodeAmount));
+    m.rotation.y += dt * 1.5;
+    if (secured) {
+      securedCount++;
+      const got = Math.min(P.res.mineRate * dt, n.amount);
+      resources += got;
+      n.amount -= got;
+      m.material.emissive.setHex(0xf0b429);
+      m.material.emissiveIntensity = 0.5 + 0.3 * Math.sin(performance.now() * 0.008);
+    } else {
+      m.material.emissiveIntensity = 0;
+    }
+  }
+}
 
 // ============================================================
 // 물리: 원 vs 벽 AABB (밀어내기)
@@ -399,6 +562,7 @@ function distToObstacle(ent, ob) {
 //  3) 그래도 없으면(지형만으로 막힘) → 최대한 접근해서 배회
 // ============================================================
 function planEnemyPath() {
+  refreshReach(); // 적이 다른 영역으로 이동했을 수도 있으니 주기적으로 갱신
   const er = P.enemy.radius;
   const passAll = (i) => canPass(clearAll, i, er);
   const passBed = (i) => canPass(clearBed, i, er);
@@ -437,6 +601,20 @@ function segmentClearFor(x0, z0, x1, z1, r) {
   return true;
 }
 
+// 적 등장 전 준비 시간 — 이 동안 광맥을 확보해 둘 수 있다
+const enemyActive = () => survival >= P.enemy.spawnDelay;
+
+// 위협 레벨: 적이 등장한 뒤부터 시간이 지날수록 강해짐
+function threatLevel() {
+  return Math.max(0, Math.floor((survival - P.enemy.spawnDelay) / P.threat.interval));
+}
+function enemySpeed() {
+  return P.enemy.speed + threatLevel() * P.threat.speedGain;
+}
+function enemyDps() {
+  return P.enemy.dps + threatLevel() * P.threat.dpsGain;
+}
+
 function updateEnemy(dt) {
   const er = P.enemy.radius;
   enemy.repathT -= dt;
@@ -469,8 +647,8 @@ function updateEnemy(dt) {
   const dl = Math.hypot(dx, dz);
   if (dl > 0.05) {
     dx /= dl; dz /= dl;
-    enemy.x += dx * P.enemy.speed * dt;
-    enemy.z += dz * P.enemy.speed * dt;
+    enemy.x += dx * enemySpeed() * dt;
+    enemy.z += dz * enemySpeed() * dt;
   }
   collideWithObstacles(enemy, er);
 
@@ -487,14 +665,21 @@ function updateEnemy(dt) {
       }
     }
   }
-  // 정체 감지 → 손 닿는 벽 아무거나 공격
-  // (배회 중에도 유지: 벽 1개를 부숴 1칸 틈이 생겨도 몸이 안 들어가면
-  //  옆의 벽을 마저 부숴 틈을 넓히는 행동이 여기서 나옴)
+  // 정체 감지
   const moved = Math.hypot(enemy.x - enemy.prevX, enemy.z - enemy.prevZ);
-  if (moved < P.enemy.speed * dt * 0.3) enemy.stallT += dt;
+  if (moved < enemySpeed() * dt * 0.3) enemy.stallT += dt;
   else enemy.stallT = 0;
   enemy.prevX = enemy.x; enemy.prevZ = enemy.z;
-  if (!enemy.attackTarget && enemy.stallT > 0.6) {
+
+  // 우회 우선 원칙:
+  //  - 추격 중(우회로 있음) 정체 → 벽을 부수지 말고 경로 재계산부터
+  //  - 그래도 오래(>2.5s) 막혀 있으면 안전장치로 공격 허용
+  //  - 파괴/배회(우회로 없음) 정체 → 손 닿는 벽 공격
+  //    (배회 중 공격 유지: 벽 1개를 부숴 1칸 틈이 생겨도 몸이 안 들어가면
+  //     옆의 벽을 마저 부숴 틈을 넓히는 행동이 여기서 나옴)
+  if (enemy.aiMode === '추격' && enemy.stallT > 0.4) enemy.repathT = 0;
+  const stallLimit = enemy.aiMode === '추격' ? 2.5 : 0.6;
+  if (!enemy.attackTarget && enemy.stallT > stallLimit) {
     let best = null, bestD = reach + 0.4;
     for (const ob of obstacles.values()) {
       if (ob.bedrock) continue;
@@ -506,7 +691,7 @@ function updateEnemy(dt) {
 
   if (enemy.attackTarget) {
     const ob = enemy.attackTarget;
-    ob.hp -= P.enemy.dps * dt;
+    ob.hp -= enemyDps() * dt;
     updateWallColor(ob);
     ob.mesh.position.y = (ob.mesh.scale.y / 2) + Math.sin(performance.now() * 0.05) * 0.03;
     if (ob.hp <= 0) {
@@ -552,6 +737,18 @@ let mouseDown = false;
 window.addEventListener('mousedown', (e) => { if (e.button === 0 && e.target === renderer.domElement) mouseDown = true; });
 window.addEventListener('mouseup', () => (mouseDown = false));
 
+// 마우스 → 바닥 평면 레이캐스트 (타일 선택)
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const mouseHit = new THREE.Vector3();
+let mouseValid = false;
+window.addEventListener('mousemove', (e) => {
+  mouseNDC.x = (e.clientX / innerWidth) * 2 - 1;
+  mouseNDC.y = -(e.clientY / innerHeight) * 2 + 1;
+  mouseValid = true;
+});
+
 // ============================================================
 // 카메라 후보 4종
 // ============================================================
@@ -561,7 +758,7 @@ const ortho = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 200);
 const CAM_MODES = [
   {
     key: 'topdown', name: '탑다운 (정사영)', type: 'ortho',
-    params: { viewHalf: 11, lerp: 8 },
+    params: { viewHalf: 13, lerp: 8 },
   },
   {
     key: 'quarter', name: '쿼터뷰 (스타크래프트풍)', type: 'persp',
@@ -662,49 +859,132 @@ function moveBasis() {
 // ============================================================
 let buildCooldown = 0;
 let ghostCell = { i: 0, j: 0, valid: false };
+let buildJob = null; // { ob, t } — 건설 중인 벽
+let resources = P.res.start;
+
+function cancelBuild(refund) {
+  if (!buildJob) return;
+  const ob = buildJob.ob;
+  if (obstacles.has(cellKey(ob.i, ob.j))) {
+    removeObstacle(ob);
+    refreshClearance();
+    enemy.repathT = 0;
+  }
+  if (refund) resources += P.res.wallCost;
+  buildJob = null;
+}
 
 function updatePlayer(dt) {
-  const b = moveBasis();
-  let mx = 0, mz = 0;
-  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-  mx = b.fx * f + b.rx * r;
-  mz = b.fz * f + b.rz * r;
-  const ml = Math.hypot(mx, mz);
-  if (ml > 1e-4) {
-    mx /= ml; mz /= ml;
-    player.x += mx * P.player.speed * dt;
-    player.z += mz * P.player.speed * dt;
-    player.faceX = mx; player.faceZ = mz;
+  const wantBuild = keys.has('Space') || mouseDown;
+
+  // ---- 건설 진행 (홀드 유지 필요 — 놓으면 취소·환불, 적이 부수면 실패) ----
+  if (buildJob) {
+    if (!obstacles.has(cellKey(buildJob.ob.i, buildJob.ob.j))) {
+      buildJob = null; // 적이 건설 중인 벽을 파괴함
+    } else if (!wantBuild) {
+      cancelBuild(true);
+    } else {
+      buildJob.t += dt;
+      const ob = buildJob.ob;
+      ob.hp = Math.min(ob.hp + (ob.maxHp * 0.9 * dt) / P.wall.buildTime, ob.maxHp);
+      const prog = Math.min(buildJob.t / P.wall.buildTime, 1);
+      ob.mesh.scale.y = P.wall.height * (0.15 + 0.85 * prog);
+      ob.mesh.position.y = ob.mesh.scale.y / 2;
+      // 발밑 진행 바 + 남은 시간
+      const bw = cellToWorld(ob.i, ob.j);
+      buildBar.visible = true;
+      buildBar.position.set(bw.x - 0.5, 0.04, bw.z + CS * 0.62);
+      buildBar.userData.fill.scale.x = Math.max(prog, 0.001);
+      const sp = new THREE.Vector3(bw.x, 0.05, bw.z + CS * 0.62).project(activeCam());
+      buildTimerEl.style.display = 'block';
+      buildTimerEl.style.left = `${((sp.x + 1) / 2) * innerWidth}px`;
+      buildTimerEl.style.top = `${((-sp.y + 1) / 2) * innerHeight + 14}px`;
+      buildTimerEl.textContent = `${Math.max(P.wall.buildTime - buildJob.t, 0).toFixed(1)}s`;
+      if (buildJob.t >= P.wall.buildTime) {
+        ob.building = false;
+        ob.mesh.material.transparent = false;
+        ob.mesh.material.opacity = 1;
+        ob.mesh.material.color.setHex(0x8fa1b8);
+        ob.mesh.material.emissiveIntensity = 0;
+        updateWallColor(ob);
+        buildJob = null;
+        buildCooldown = P.wall.cooldown;
+      }
+    }
+  }
+
+  if (!buildJob) {
+    buildBar.visible = false;
+    buildTimerEl.style.display = 'none';
+  }
+
+  // ---- 이동 (건설 중에는 무방비 — 이동 불가) ----
+  const rooted = !!buildJob;
+  if (!rooted) {
+    const b = moveBasis();
+    let mx = 0, mz = 0;
+    const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+    const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    mx = b.fx * f + b.rx * r;
+    mz = b.fz * f + b.rz * r;
+    const ml = Math.hypot(mx, mz);
+    if (ml > 1e-4) {
+      mx /= ml; mz /= ml;
+      player.x += mx * P.player.speed * dt;
+      player.z += mz * P.player.speed * dt;
+      player.faceX = mx; player.faceZ = mz;
+    }
   }
   collideWithObstacles(player, P.player.radius);
 
   playerVis.group.position.set(player.x, 0, player.z);
   playerVis.group.rotation.y = Math.atan2(player.faceX, player.faceZ) + Math.PI;
 
-  // ---- 벽 설치 고스트: 바라보는 방향의 옆 칸 ----
-  const pc = worldToCell(player.x, player.z);
-  const oi = Math.round(player.faceX), oj = Math.round(player.faceZ);
-  let gi = pc.i + oi, gj = pc.j + oj;
-  gi = clamp(gi, 0, CELLS - 1); gj = clamp(gj, 0, CELLS - 1);
+  // ---- 채널링 시각 표시 (몸 발광) ----
+  const pm = playerVis.body.material;
+  if (buildJob) {
+    pm.emissive.setHex(0x3f8cff);
+    pm.emissiveIntensity = 0.4 + 0.25 * Math.sin(performance.now() * 0.015);
+  } else {
+    pm.emissiveIntensity = 0;
+  }
+
+  // ---- 벽 설치 고스트: 마우스가 가리키는 타일 (설치 사거리 내) ----
+  let gi = ghostCell.i, gj = ghostCell.j, hasTile = false;
+  if (mouseValid) {
+    raycaster.setFromCamera(mouseNDC, activeCam());
+    if (raycaster.ray.intersectPlane(groundPlane, mouseHit)) {
+      const c = worldToCell(mouseHit.x, mouseHit.z);
+      gi = c.i; gj = c.j;
+      hasTile = true;
+    }
+  }
   const key = cellKey(gi, gj);
   const w = cellToWorld(gi, gj);
   const occupied = obstacles.has(key);
+  const inRange = distCellToPoint(gi, gj, player.x, player.z) <= P.wall.range;
+  const onNode = !!nodeAt(gi, gj);
   // 설치 시 플레이어/적이 벽 안에 갇히지 않게
   const hitsPlayer = distCellToPoint(gi, gj, player.x, player.z) < P.player.radius + 0.02;
   const hitsEnemy = distCellToPoint(gi, gj, enemy.x, enemy.z) < P.enemy.radius + 0.02;
-  ghostCell = { i: gi, j: gj, valid: !occupied && !hitsPlayer && !hitsEnemy };
-  ghost.visible = alive;
+  const affordable = resources >= P.res.wallCost;
+  ghostCell = {
+    i: gi, j: gj,
+    valid: hasTile && inRange && !occupied && !onNode && !hitsPlayer && !hitsEnemy && affordable,
+  };
+  ghost.visible = alive && !buildJob && hasTile;
   ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
   ghost.position.set(w.x, P.wall.height / 2, w.z);
   ghost.material.color.setHex(ghostCell.valid ? 0x6ee07a : 0xe05050);
 
+  // ---- 건설 시작 (자원 선지불) ----
   buildCooldown -= dt;
-  if ((keys.has('Space') || mouseDown) && buildCooldown <= 0 && ghostCell.valid) {
-    addObstacle(gi, gj, false);
+  if (!buildJob && wantBuild && buildCooldown <= 0 && ghostCell.valid) {
+    resources -= P.res.wallCost;
+    const ob = addObstacle(gi, gj, false, true);
     refreshClearance();
     enemy.repathT = 0;
-    buildCooldown = P.wall.cooldown;
+    buildJob = { ob, t: 0 };
   }
 }
 
@@ -742,10 +1022,13 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'dps', 5, 150, 1).name('벽 공격력(초당)');
   f.add(P.enemy, 'attackRange', 0.2, 2, 0.05).name('공격 사거리');
   f.add(P.enemy, 'repath', 0.1, 1.5, 0.05).name('경로 재계산 주기');
+  f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('등장 딜레이(초)');
 }
 {
   const f = gui.addFolder('벽');
   f.add(P.wall, 'hp', 20, 500, 5).name('내구도 (새 벽부터)');
+  f.add(P.wall, 'buildTime', 0.2, 5, 0.1).name('건설 시간(초)');
+  f.add(P.wall, 'range', 1, 8, 0.5).name('설치 사거리');
   f.add(P.wall, 'cooldown', 0, 1, 0.05).name('설치 쿨다운');
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('높이').onChange((h) => {
     for (const ob of obstacles.values()) {
@@ -754,6 +1037,19 @@ const gui = new GUI({ title: '튜닝' });
       ob.mesh.position.y = h / 2;
     }
   });
+}
+{
+  const f = gui.addFolder('자원');
+  f.add(P.res, 'mineRate', 0.2, 10, 0.1).name('채굴 속도(광맥당 초당)');
+  f.add(P.res, 'wallCost', 1, 30, 1).name('벽 비용');
+  f.add(P.res, 'start', 0, 50, 1).name('시작 자원 (재시작부터)');
+  f.add(P.res, 'nodeAmount', 5, 200, 5).name('광맥 매장량 (재시작부터)');
+}
+{
+  const f = gui.addFolder('위협 (시간 경과 강화)');
+  f.add(P.threat, 'interval', 5, 90, 1).name('강화 주기(초)');
+  f.add(P.threat, 'speedGain', 0, 2, 0.05).name('속도 증가/레벨');
+  f.add(P.threat, 'dpsGain', 0, 40, 1).name('공격력 증가/레벨');
 }
 let camFolder = null;
 const camSelector = { mode: CAM_MODES[0].name };
@@ -767,8 +1063,8 @@ function buildCamFolder() {
   gui.controllers.forEach((c) => c.updateDisplay());
   camFolder = gui.addFolder('카메라 설정: ' + mode.name);
   const p = mode.params;
-  if ('viewHalf' in p) camFolder.add(p, 'viewHalf', 5, 22, 0.5).name('시야 반경');
-  if ('dist' in p) camFolder.add(p, 'dist', 3, 40, 0.5).name('거리');
+  if ('viewHalf' in p) camFolder.add(p, 'viewHalf', 5, 34, 0.5).name('시야 반경');
+  if ('dist' in p) camFolder.add(p, 'dist', 3, 60, 0.5).name('거리');
   if ('pitch' in p) camFolder.add(p, 'pitch', 10, 89, 1).name('내려보는 각도');
   if ('yaw' in p) camFolder.add(p, 'yaw', -180, 180, 1).name('회전');
   if ('fov' in p) camFolder.add(p, 'fov', 20, 110, 1).name('화각(FOV)');
@@ -781,9 +1077,11 @@ buildCamFolder();
 // ============================================================
 const hudEl = document.getElementById('hud');
 const helpEl = document.getElementById('help');
+const buildTimerEl = document.getElementById('buildtimer');
 const overlayEl = document.getElementById('overlay');
 helpEl.textContent =
-  'WASD 이동 · Space/클릭 벽 설치 · X 벽 제거\n' +
+  'WASD 이동 · 마우스로 타일 선택 → 클릭/Space 홀드: 벽 건설 (놓으면 취소) · X 벽 제거\n' +
+  '노란 광맥을 벽으로 감싸 적이 못 오게 하면 자동 채굴됨\n' +
   'C 또는 1~4 카메라 전환 · P 일시정지 · R 재시작';
 
 let alive = true;
@@ -792,6 +1090,16 @@ let survival = 0;
 let hudT = 0;
 
 function restart() {
+  buildJob = null;
+  buildBar.visible = false;
+  buildTimerEl.style.display = 'none';
+  enemyVis.body.material.transparent = true;
+  enemyVis.body.material.opacity = 0.15;
+  resources = P.res.start;
+  for (const n of nodes) {
+    n.amount = P.res.nodeAmount;
+    n.mesh.material.color.setHex(0xf0b429);
+  }
   for (const ob of [...obstacles.values()]) if (!ob.bedrock) removeObstacle(ob);
   refreshClearance();
   player.x = PLAYER_SPAWN.x; player.z = PLAYER_SPAWN.z;
@@ -816,9 +1124,17 @@ function updateHUD() {
   const mode = CAM_MODES[camIndex];
   let wallCount = 0;
   for (const ob of obstacles.values()) if (!ob.bedrock) wallCount++;
+  const lvl = threatLevel();
+  const nextIn = P.threat.interval - ((survival - P.enemy.spawnDelay) % P.threat.interval);
+  const waiting = !enemyActive();
   hudEl.textContent =
     `카메라: ${mode.name}\n` +
-    `적 상태: ${enemy.aiMode}${enemy.attackTarget ? ' (벽 부수는 중!)' : ''}\n` +
+    (waiting
+      ? `적 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
+      : `적 상태: ${enemy.aiMode}${enemy.attackTarget ? ' (벽 부수는 중!)' : ''}\n`) +
+    `치즈: ${resources.toFixed(1)} · 확보한 광맥 ${securedCount}/${nodes.length}\n` +
+    (buildJob ? `벽 건설 중 ${((buildJob.t / P.wall.buildTime) * 100) | 0}% (무방비!)\n` : '') +
+    (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s) · 적 속도 ${enemySpeed().toFixed(1)}\n`) +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개` +
     (paused ? '\n⏸ 일시정지 (P)' : '');
 }
@@ -839,9 +1155,21 @@ function tick(dt) {
   if (!paused && alive) {
     survival += dt;
     updatePlayer(dt);
-    updateEnemy(dt);
-    const d = Math.hypot(player.x - enemy.x, player.z - enemy.z);
-    if (d < P.player.radius + P.enemy.radius - 0.02) die();
+    if (enemyActive()) {
+      updateEnemy(dt);
+      const d = Math.hypot(player.x - enemy.x, player.z - enemy.z);
+      if (d < P.player.radius + P.enemy.radius - 0.02) die();
+    } else {
+      // 등장 대기: 스폰 지점에서 반투명하게 예고
+      const t = survival / Math.max(P.enemy.spawnDelay, 0.001);
+      enemyVis.body.material.opacity = 0.15 + 0.35 * t;
+      enemyVis.group.position.set(enemy.x, 0, enemy.z);
+    }
+    if (enemyActive() && enemyVis.body.material.transparent) {
+      enemyVis.body.material.transparent = false;
+      enemyVis.body.material.opacity = 1;
+    }
+    updateNodes(dt);
   }
   updateCamera(dt);
   hudT -= dt;
@@ -864,6 +1192,13 @@ window.__game = {
   P, player, enemy, obstacles, keys, tick, restart, setCamera, addObstacle,
   refreshClearance, planEnemyPath,
   get alive() { return alive; },
+  get resources() { return resources; },
+  get buildJob() { return buildJob; },
+  get securedCount() { return securedCount; },
+  get enemyReach() { return enemyReach; },
+  nodes, ghost, mouseNDC, CAM_MODES, buildBar,
+  setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
+  threatLevel, enemySpeed, enemyDps,
   step(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) tick(dt);
     renderer.render(scene, activeCam());
