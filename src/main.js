@@ -5,12 +5,14 @@ import GUI from 'lil-gui';
 // 튜닝 파라미터 (GUI로 플레이 중 조절)
 // ============================================================
 const P = {
-  player: { speed: 6.0, radius: 0.35 },
+  player: { speed: 6.0, radius: 0.35, graceTime: 1.5 },
   enemy: { speed: 5.0, radius: 0.9, dps: 30, attackRange: 0.6, repath: 0.35, spawnDelay: 12 },
   wall: { hp: 100, cooldown: 0.15, height: 1.1, buildTime: 1.5, range: 3.0 },
-  res: { start: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40 },
+  res: { startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40 },
   threat: { interval: 25, speedGain: 0.5, dpsGain: 8 },
 };
+// 시작 자원은 "벽 N개분"으로 정의 — 벽 비용을 바꿔도 시작 여유가 유지됨
+const startResources = () => P.res.startWalls * P.res.wallCost;
 
 // ============================================================
 // 격자 / 좌표계
@@ -141,10 +143,15 @@ function updateWallColor(ob) {
 }
 
 // ============================================================
-// 지형 레이아웃 (44x44)
-//  - 방: 입구 2~3칸 → 적이 들어올 수 있음. 플레이어가 벽 2~3개로 봉쇄 = 광맥 확보
-//  - 쥐구멍(1칸 틈): 플레이어만 통과 — "저 틈이 저 놈보다 좁은가" 판단 훈련용
-//  - 빗살 구조: 1/2/3칸 슬롯을 나란히 놓아 폭 비교를 눈으로 하게 함
+// 지형 레이아웃 (44x44) — 파괴 불가
+//  설계 규칙 (의도적으로 아주 성기게):
+//   1. 방/요새 금지. 지형이 어떤 영역도 감싸지 않는다.
+//      → 지형만으로 광맥이 거의 확보되는 "공짜 요새"가 존재하지 않음.
+//        광맥 확보 비용은 맵 어디서나 플레이어가 직접 쌓는 벽으로만 지불.
+//   2. 뭉치기 금지. 기둥은 전부 1칸. 2x2 이상 덩어리 없음.
+//   3. 미로 금지. 벽은 전부 양 끝이 열린 독립 직선 — 항상 돌아갈 수 있다.
+//      (적의 "우회 먼저, 부수기는 최후" AI가 실제로 작동하는 조건)
+//  남긴 목적: 틈 폭(1칸 vs 2칸) 비교를 눈으로 하게 하는 것.
 // ============================================================
 const BEDROCK_LAYOUT = [];
 {
@@ -157,43 +164,18 @@ const BEDROCK_LAYOUT = [];
   const vLine = (i, j0, j1, gaps = []) => {
     for (let j = j0; j <= j1; j++) if (!gaps.includes(j)) put(i, j);
   };
-  // 방 (사각 외벽 + 지정된 변에 입구)
-  const room = (i0, j0, i1, j1, door) => {
-    hLine(i0, i1, j0, door.side === 'top' ? door.cells : []);
-    hLine(i0, i1, j1, door.side === 'bottom' ? door.cells : []);
-    vLine(i0, j0, j1, door.side === 'left' ? door.cells : []);
-    vLine(i1, j0, j1, door.side === 'right' ? door.cells : []);
-  };
-  const pillar = (i, j, w = 2, h = 2) => {
-    for (let dj = 0; dj < h; dj++) for (let di = 0; di < w; di++) put(i + di, j + dj);
-  };
 
-  // 4개의 방 — 입구 폭이 각기 다름 (2칸 / 3칸 / 2칸 / 2칸)
-  room(4, 4, 12, 11, { side: 'bottom', cells: [7, 8] });
-  room(31, 4, 39, 11, { side: 'left', cells: [7, 8, 9] });
-  room(4, 32, 12, 39, { side: 'top', cells: [7, 8] });
-  room(31, 32, 39, 39, { side: 'top', cells: [34, 35] });
+  // 나란한 두 벽 — 왼쪽은 1칸 틈(플레이어만), 오른쪽은 2칸 틈(적도 통과).
+  // 같은 화면에 놓아 "저 틈이 저 놈보다 좁은가"를 비교하게 함.
+  vLine(14, 10, 20, [15]);
+  vLine(30, 10, 20, [15, 16]);
 
-  // 중앙 십자 — 1칸 쥐구멍 (적은 절대 못 지나감)
-  vLine(21, 15, 28, [21, 22]);
-  hLine(16, 27, 21, [21, 22]);
+  // 아래쪽 가로 벽 — 1칸 틈 하나. 양 끝이 열려 있어 우회 가능.
+  hLine(12, 24, 30, [18]);
 
-  // 빗살 구조 (왼쪽 중단): 슬롯 폭 1 / 2 / 3 비교
-  vLine(6, 18, 24);
-  vLine(8, 18, 24);   // 6~8 사이 슬롯 폭 1
-  vLine(11, 18, 24);  // 8~11 사이 슬롯 폭 2
-  vLine(15, 18, 24);  // 11~15 사이 슬롯 폭 3
-  hLine(6, 15, 18);   // 빗살 등쪽 막음
-
-  // 대각 방벽 (오른쪽 하단) — 계단식, 중간에 1칸 틈
-  for (let k = 0; k < 10; k++) if (k !== 5) put(24 + k, 26 + k);
-
-  // 긴 회랑 (상단 중앙): 2칸 틈 하나
-  hLine(16, 28, 8, [22, 23]);
-
-  // 흩어진 기둥
-  pillar(17, 33); pillar(24, 15); pillar(35, 20);
-  pillar(28, 36); pillar(13, 27, 3, 2); pillar(36, 26, 2, 3);
+  // 흩어진 낱개 기둥 (엄폐/시야 변화용). 전부 1칸, 서로 멀리.
+  put(8, 8); put(36, 8); put(8, 36); put(36, 36);
+  put(22, 22); put(24, 6); put(6, 22); put(38, 24); put(24, 38);
 }
 
 // ============================================================
@@ -436,11 +418,14 @@ scene.add(ghost);
 //  자동으로 천천히 채굴된다.
 // ============================================================
 // 광맥 위치 — 방 안(입구만 막으면 확보) + 개활지(둘러싸야 확보)
+// 광맥 배치 규칙:
+//  - 맵 외벽(파괴 불가)에서 5칸 이상 → 외벽을 공짜 벽으로 못 씀
+//  - 지형에서 3칸 이상 → 지형에 기대어 싸게 감싸는 자리가 없음
+//  결과: 어느 광맥이든 확보 비용이 비슷하게 "플레이어가 쌓는 벽"으로만 결정됨
 const NODE_LAYOUT = [
-  [8, 7], [35, 7], [8, 36], [35, 36],   // 각 방 내부
-  [22, 12], [22, 31],                    // 중앙 개활지 (위/아래)
-  [17, 24], [30, 20],                    // 개활지
-  [3, 21], [41, 15],                     // 외곽
+  [9, 15], [20, 8], [35, 15],
+  [20, 25], [34, 28], [10, 26],
+  [30, 35], [12, 36],
 ];
 const nodeGeo = new THREE.OctahedronGeometry(0.32);
 const nodes = NODE_LAYOUT.map(([i, j]) => {
@@ -860,7 +845,7 @@ function moveBasis() {
 let buildCooldown = 0;
 let ghostCell = { i: 0, j: 0, valid: false };
 let buildJob = null; // { ob, t } — 건설 중인 벽
-let resources = P.res.start;
+let resources = startResources();
 
 function cancelBuild(refund) {
   if (!buildJob) return;
@@ -1013,6 +998,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'speed', 2, 14, 0.1).name('이동 속도');
   f.add(P.player, 'radius', 0.15, 0.8, 0.01).name('반지름')
     .onChange((v) => playerVis.group.scale.setScalar(v));
+  f.add(P.player, 'graceTime', 0, 5, 0.1).name('잡힌 뒤 무적(초)');
 }
 {
   const f = gui.addFolder('적');
@@ -1042,7 +1028,7 @@ const gui = new GUI({ title: '튜닝' });
   const f = gui.addFolder('자원');
   f.add(P.res, 'mineRate', 0.2, 10, 0.1).name('채굴 속도(광맥당 초당)');
   f.add(P.res, 'wallCost', 1, 30, 1).name('벽 비용');
-  f.add(P.res, 'start', 0, 50, 1).name('시작 자원 (재시작부터)');
+  f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
   f.add(P.res, 'nodeAmount', 5, 200, 5).name('광맥 매장량 (재시작부터)');
 }
 {
@@ -1051,6 +1037,105 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('속도 증가/레벨');
   f.add(P.threat, 'dpsGain', 0, 40, 1).name('공격력 증가/레벨');
 }
+
+// ============================================================
+// 세팅 내보내기 / 불러오기
+//  플레이 중 맞춘 값을 그대로 복사 → 소스의 P 기본값으로 붙여넣기 위한 기능.
+//  카메라 파라미터도 함께 담긴다.
+// ============================================================
+function snapshotSettings() {
+  const cams = {};
+  for (const m of CAM_MODES) cams[m.key] = { ...m.params };
+  return {
+    player: { ...P.player },
+    enemy: { ...P.enemy },
+    wall: { ...P.wall },
+    res: { ...P.res },
+    threat: { ...P.threat },
+    camera: cams,
+  };
+}
+
+// 소스에 그대로 붙여넣을 수 있는 형태로 출력
+function settingsAsSource(s) {
+  const line = (obj) =>
+    Object.entries(obj).map(([k, v]) => `${k}: ${+v.toFixed(3)}`).join(', ');
+  let out = 'const P = {\n';
+  for (const k of ['player', 'enemy', 'wall', 'res', 'threat'])
+    out += `  ${k}: { ${line(s[k])} },\n`;
+  out += '};\n\n// 카메라 기본값\n';
+  for (const [key, p] of Object.entries(s.camera))
+    out += `// ${key}: { ${line(p)} }\n`;
+  return out;
+}
+
+function applySettings(s) {
+  for (const k of ['player', 'enemy', 'wall', 'res', 'threat'])
+    if (s[k]) Object.assign(P[k], s[k]);
+  if (s.camera)
+    for (const m of CAM_MODES) if (s.camera[m.key]) Object.assign(m.params, s.camera[m.key]);
+  // 슬라이더 표시 갱신 + 값에 연동된 것들 반영
+  playerVis.group.scale.setScalar(P.player.radius);
+  enemyVis.group.scale.setScalar(P.enemy.radius);
+  for (const ob of obstacles.values()) {
+    if (ob.bedrock || ob.building) continue;
+    ob.mesh.scale.y = P.wall.height;
+    ob.mesh.position.y = P.wall.height / 2;
+  }
+  enemy.repathT = 0;
+  refreshAllControllers();
+}
+
+function refreshAllControllers() {
+  const walk = (f) => {
+    f.controllers.forEach((c) => c.updateDisplay());
+    f.folders.forEach(walk);
+  };
+  walk(gui);
+}
+
+const DEFAULT_SETTINGS = snapshotSettings(); // 모듈 초기화 시점 = 소스의 기본값
+
+const settingsIO = {
+  복사() {
+    const src = settingsAsSource(snapshotSettings());
+    const json = JSON.stringify(snapshotSettings());
+    const text = src + '\n// --- 아래 한 줄은 "불러오기"용 ---\n' + json;
+    navigator.clipboard.writeText(text).then(
+      () => { flashEl.textContent = '설정을 클립보드에 복사했습니다'; flashEl.style.color = '#6ee07a'; flashEl.style.opacity = '1'; flashT = 2.0; },
+      () => { console.log(text); alert('클립보드 접근 실패 — 콘솔에 출력했습니다.'); }
+    );
+    console.log(text);
+  },
+  불러오기() {
+    const raw = prompt('설정 JSON을 붙여넣으세요 (복사한 텍스트의 마지막 줄)');
+    if (!raw) return;
+    try {
+      const start = raw.indexOf('{');
+      applySettings(JSON.parse(raw.slice(start)));
+      flashEl.textContent = '설정을 적용했습니다';
+      flashEl.style.color = '#6ee07a';
+      flashEl.style.opacity = '1';
+      flashT = 2.0;
+    } catch (e) {
+      alert('JSON 파싱 실패: ' + e.message);
+    }
+  },
+  기본값으로() {
+    applySettings(DEFAULT_SETTINGS);
+    flashEl.textContent = '기본값으로 되돌렸습니다';
+    flashEl.style.color = '#6ee07a';
+    flashEl.style.opacity = '1';
+    flashT = 2.0;
+  },
+};
+{
+  const f = gui.addFolder('세팅 저장/불러오기');
+  f.add(settingsIO, '복사').name('현재 설정 복사 (붙여넣기용)');
+  f.add(settingsIO, '불러오기').name('설정 붙여넣어 적용');
+  f.add(settingsIO, '기본값으로').name('기본값으로 되돌리기');
+}
+
 let camFolder = null;
 const camSelector = { mode: CAM_MODES[0].name };
 gui.add(camSelector, 'mode', CAM_MODES.map((m) => m.name)).name('카메라 (C키)')
@@ -1079,15 +1164,20 @@ const hudEl = document.getElementById('hud');
 const helpEl = document.getElementById('help');
 const buildTimerEl = document.getElementById('buildtimer');
 const overlayEl = document.getElementById('overlay');
+const flashEl = document.getElementById('flash');
 helpEl.textContent =
   'WASD 이동 · 마우스로 타일 선택 → 클릭/Space 홀드: 벽 건설 (놓으면 취소) · X 벽 제거\n' +
   '노란 광맥을 벽으로 감싸 적이 못 오게 하면 자동 채굴됨\n' +
+  '잡히면 죽지 않고 적 시작 지점으로 끌려감 — 거기서 다시 도망쳐 나와야 함\n' +
   'C 또는 1~4 카메라 전환 · P 일시정지 · R 재시작';
 
 let alive = true;
 let paused = false;
 let survival = 0;
 let hudT = 0;
+let caughtCount = 0;
+let grace = 0;   // 잡힌 직후 짧은 무적 (초)
+let flashT = 0;  // 화면 중앙 알림 남은 시간
 
 function restart() {
   buildJob = null;
@@ -1095,7 +1185,7 @@ function restart() {
   buildTimerEl.style.display = 'none';
   enemyVis.body.material.transparent = true;
   enemyVis.body.material.opacity = 0.15;
-  resources = P.res.start;
+  resources = startResources();
   for (const n of nodes) {
     n.amount = P.res.nodeAmount;
     n.mesh.material.color.setHex(0xf0b429);
@@ -1108,16 +1198,31 @@ function restart() {
   enemy.path = []; enemy.repathT = 0; enemy.stallT = 0; enemy.attackTarget = null;
   enemy.prevX = enemy.x; enemy.prevZ = enemy.z;
   survival = 0;
+  caughtCount = 0;
+  grace = 0;
+  flashT = 0;
+  flashEl.style.opacity = '0';
   alive = true;
   overlayEl.classList.add('hidden');
 }
 
-function die() {
-  alive = false;
-  ghost.visible = false;
-  document.getElementById('overlay-sub').textContent =
-    `${survival.toFixed(1)}초 생존 — R 키로 다시 시작`;
-  overlayEl.classList.remove('hidden');
+// 잡힘 — 죽지 않고 적의 시작 지점으로 끌려간다.
+//  (원작 유즈맵처럼: 잡히면 적 본진에 떨궈져 다시 도망쳐 나와야 함)
+function caught() {
+  caughtCount++;
+  cancelBuild(true);        // 건설 중이었다면 취소 + 환불
+  player.x = ENEMY_SPAWN.x; // 적 시작 지점으로 강제 이동
+  player.z = ENEMY_SPAWN.z;
+  player.faceX = 0; player.faceZ = 1;
+  collideWithObstacles(player, P.player.radius);
+  camTarget.set(player.x, 0, player.z); // 카메라 순간이동 (끌려간 게 보이게)
+  grace = P.player.graceTime;           // 짧은 무적 — 즉시 재포획 방지
+  // 적은 제자리(자기 시작 지점 근처)에서 잠깐 멈칫
+  enemy.path = []; enemy.repathT = 0; enemy.stallT = 0; enemy.attackTarget = null;
+  flashEl.textContent = `잡혔다! 적 본진으로 끌려감 (${caughtCount}회)`;
+  flashEl.style.color = '#ff6b6b';
+  flashEl.style.opacity = '1';
+  flashT = 1.6;
 }
 
 function updateHUD() {
@@ -1135,7 +1240,8 @@ function updateHUD() {
     `치즈: ${resources.toFixed(1)} · 확보한 광맥 ${securedCount}/${nodes.length}\n` +
     (buildJob ? `벽 건설 중 ${((buildJob.t / P.wall.buildTime) * 100) | 0}% (무방비!)\n` : '') +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s) · 적 속도 ${enemySpeed().toFixed(1)}\n`) +
-    `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개` +
+    `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
+    (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
     (paused ? '\n⏸ 일시정지 (P)' : '');
 }
 
@@ -1155,10 +1261,15 @@ function tick(dt) {
   if (!paused && alive) {
     survival += dt;
     updatePlayer(dt);
+    if (grace > 0) grace -= dt;
+    if (flashT > 0) {
+      flashT -= dt;
+      if (flashT <= 0) flashEl.style.opacity = '0';
+    }
     if (enemyActive()) {
       updateEnemy(dt);
       const d = Math.hypot(player.x - enemy.x, player.z - enemy.z);
-      if (d < P.player.radius + P.enemy.radius - 0.02) die();
+      if (grace <= 0 && d < P.player.radius + P.enemy.radius - 0.02) caught();
     } else {
       // 등장 대기: 스폰 지점에서 반투명하게 예고
       const t = survival / Math.max(P.enemy.spawnDelay, 0.001);
@@ -1193,6 +1304,11 @@ window.__game = {
   refreshClearance, planEnemyPath,
   get alive() { return alive; },
   get resources() { return resources; },
+  get caughtCount() { return caughtCount; },
+  get grace() { return grace; },
+  ENEMY_SPAWN, PLAYER_SPAWN,
+  snapshotSettings, applySettings, settingsAsSource,
+  get DEFAULT_SETTINGS() { return DEFAULT_SETTINGS; },
   get buildJob() { return buildJob; },
   get securedCount() { return securedCount; },
   get enemyReach() { return enemyReach; },
