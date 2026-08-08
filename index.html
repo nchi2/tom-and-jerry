@@ -18,13 +18,6 @@
       color: #9aa3b2; text-shadow: 0 1px 3px rgba(0,0,0,.8);
       pointer-events: none; white-space: pre;
     }
-    #buildtimer {
-      position: fixed; z-index: 11; display: none;
-      transform: translate(-50%, -50%);
-      font-family: "SF Mono", Menlo, monospace; font-size: 14px; font-weight: 700;
-      color: #9ff0a8; text-shadow: 0 1px 4px rgba(0,0,0,.9);
-      pointer-events: none;
-    }
     #overlay {
       position: fixed; inset: 0; z-index: 20;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -46,7 +39,6 @@
 <body>
   <div id="hud"></div>
   <div id="help"></div>
-  <div id="buildtimer"></div>
   <div id="flash"></div>
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
