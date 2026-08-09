@@ -8,9 +8,9 @@ const P = {
   player: { speed: 6.0, radius: 0.35, graceTime: 1.5 },
   enemy: {
     count: 3,              // 시작 마릿수
-    speed: 5.0, radius: 0.9, dps: 30, attackRange: 0.6, repath: 0.35,
+    speed: 5.0, radius: 1.35, dps: 30, attackRange: 0.6, repath: 0.35,
     spawnDelay: 12,
-    spread: 2.2,           // 스폰 지점 주변에 흩어지는 반경
+    spread: 5.0,           // 스폰 지점 주변에 흩어지는 반경
   },
   wall: { hp: 100, cooldown: 0.15, height: 1.1, range: 3.0 },
   res: { startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40 },
@@ -170,10 +170,14 @@ const BEDROCK_LAYOUT = [];
     for (let j = j0; j <= j1; j++) if (!gaps.includes(j)) put(i, j);
   };
 
-  // 나란한 두 벽 — 왼쪽은 1칸 틈(플레이어만), 오른쪽은 2칸 틈(적도 통과).
+  // 나란한 두 벽 — 왼쪽은 1칸 틈(플레이어만), 오른쪽은 3칸 틈(적도 통과).
   // 같은 화면에 놓아 "저 틈이 저 놈보다 좁은가"를 비교하게 함.
+  //
+  // 통과 폭은 적 반지름에서 나온다. 기본 r=1.35 → 지름 2.7m 이므로
+  //   1칸(1.0m) 막힘 / 2칸(2.0m) 막힘 / 3칸(3.0m) 통과.
+  // 적 크기를 슬라이더로 바꾸면 이 교보재의 의미도 같이 바뀐다.
   vLine(14, 10, 20, [15]);
-  vLine(30, 10, 20, [15, 16]);
+  vLine(30, 10, 20, [14, 15, 16]);
 
   // 아래쪽 가로 벽 — 1칸 틈 하나. 양 끝이 열려 있어 우회 가능.
   hLine(12, 24, 30, [18]);
@@ -389,22 +393,35 @@ function makeHamster() {
   const cream = MAT(0xf7e3c0);
   const dark = MAT(0x2a2320, { roughness: 0.5 });
   const pink = MAT(0xe89aa8);
-  return buildCreature([
-    sphere(0.92, fur, 0, 0.82, 0.22, 1, 0.9, 1),        // 몸통 (뒤쪽으로 물림)
-    sphere(0.66, cream, 0, 0.62, -0.16, 1, 0.86, 0.8),  // 배
-    sphere(0.7, fur, 0, 1.24, -0.78),                   // 머리 (몸통 밖으로 빼냄)
-    sphere(0.34, fur, -0.5, 1.1, -0.7, 1, 1, 0.9),      // 볼주머니 L
-    sphere(0.34, fur, 0.5, 1.1, -0.7, 1, 1, 0.9),       // 볼주머니 R
-    sphere(0.3, pink, -0.46, 1.82, -0.66, 1, 1, 0.45),  // 귀 L
-    sphere(0.3, pink, 0.46, 1.82, -0.66, 1, 1, 0.45),   // 귀 R
-    sphere(0.32, cream, 0, 1.08, -1.3, 1, 0.85, 1),     // 주둥이
-    sphere(0.11, dark, 0, 1.14, -1.58),                 // 코
-    sphere(0.14, dark, -0.3, 1.42, -1.28),              // 눈 L
-    sphere(0.14, dark, 0.3, 1.42, -1.28),               // 눈 R
-    sphere(0.19, cream, -0.46, 0.24, -0.62),            // 앞발 L
-    sphere(0.19, cream, 0.46, 0.24, -0.62),             // 앞발 R
-    sphere(0.15, pink, 0, 0.78, 1.16, 1, 1, 0.7),       // 꼬리
+  // 두 발로 선 자세. 위에서 봐도 발밑 폭은 반지름 1을 넘지 않는다.
+  const c = buildCreature([
+    sphere(0.26, cream, -0.4, 0.16, -0.16, 1, 0.62, 1.5),  // 발 L
+    sphere(0.26, cream, 0.4, 0.16, -0.16, 1, 0.62, 1.5),   // 발 R
+    sphere(0.28, fur, -0.36, 0.5, 0.02, 1, 1.15, 1),       // 다리 L
+    sphere(0.28, fur, 0.36, 0.5, 0.02, 1, 1.15, 1),        // 다리 R
+    sphere(0.84, fur, 0, 1.24, 0.04, 1.16, 1.32, 1),       // 몸통 (선 자세 = 세로로 김)
+    sphere(0.62, cream, 0, 1.14, -0.44, 1.08, 1.3, 0.72),  // 배
+    sphere(0.64, fur, 0, 2.34, -0.1),                      // 머리
+    sphere(0.33, fur, -0.5, 2.2, -0.24, 1, 1, 0.95),       // 볼주머니 L
+    sphere(0.33, fur, 0.5, 2.2, -0.24, 1, 1, 0.95),        // 볼주머니 R
+    sphere(0.29, pink, -0.44, 2.9, 0.02, 1, 1, 0.45),      // 귀 L
+    sphere(0.29, pink, 0.44, 2.9, 0.02, 1, 1, 0.45),       // 귀 R
+    sphere(0.31, cream, 0, 2.2, -0.62, 1, 0.86, 1),        // 주둥이
+    sphere(0.1, dark, 0, 2.25, -0.9),                      // 코
+    sphere(0.14, dark, -0.28, 2.52, -0.56),                // 눈 L
+    sphere(0.14, dark, 0.28, 2.52, -0.56),                 // 눈 R
+    sphere(0.21, fur, -0.86, 1.38, -0.12, 1, 1.25, 1),     // 팔 L
+    sphere(0.21, fur, 0.86, 1.38, -0.12, 1, 1.25, 1),      // 팔 R
+    sphere(0.18, cream, -0.9, 0.98, -0.24),                // 손 L
+    sphere(0.18, cream, 0.9, 0.98, -0.24),                 // 손 R
+    sphere(0.17, pink, 0, 1.0, 0.86, 1, 1, 0.7),           // 꼬리
   ]);
+  // 손 = 채굴/환호 모션에서 흔들 부위
+  c.handL = c.group.children[17];
+  c.handR = c.group.children[18];
+  c.armL = c.group.children[15];
+  c.armR = c.group.children[16];
+  return c;
 }
 
 // 적 — 같은 저폴리 문법인데 길고 낮고 넓다. 귀가 뾰족하고 눈이 발광.
@@ -549,6 +566,57 @@ function refreshReach() {
   enemyReach = vis;
 }
 
+// ---- 채굴 연출 ----
+// 확보된 광맥에서 치즈 조각이 튀어나와 플레이어에게 날아온다.
+// "지금 내가 캐고 있다"를 눈으로 알리는 장치 (수치는 이미 HUD에 있으므로
+//  여기서는 흐름 자체가 보이게 하는 게 목적).
+const cheeseBits = [];
+const bitGeo = new THREE.BoxGeometry(1, 1, 1);
+const bitMat = new THREE.MeshStandardMaterial({
+  color: 0xffd24a, roughness: 0.45,
+  emissive: new THREE.Color(0xf0b429), emissiveIntensity: 0.4,
+});
+let harvestPulse = 0;   // 치즈가 도착할 때 플레이어가 튀는 정도
+
+function spawnCheeseBit(x, z) {
+  const m = new THREE.Mesh(bitGeo, bitMat);
+  m.scale.setScalar(0.12 + Math.random() * 0.06);
+  m.position.set(x, 0.5, z);
+  m.castShadow = true;
+  scene.add(m);
+  cheeseBits.push({
+    mesh: m, t: 0,
+    dur: 0.55 + Math.random() * 0.25,
+    x0: x, z0: z,
+    // 살짝 옆으로 튀었다가 빨려들어오게
+    ax: x + (Math.random() - 0.5) * 2.4,
+    az: z + (Math.random() - 0.5) * 2.4,
+    spin: (Math.random() - 0.5) * 12,
+  });
+}
+
+function updateCheeseBits(dt) {
+  for (let k = cheeseBits.length - 1; k >= 0; k--) {
+    const b = cheeseBits[k];
+    b.t += dt;
+    const p = b.t / b.dur;
+    if (p >= 1) {
+      scene.remove(b.mesh);
+      cheeseBits.splice(k, 1);
+      harvestPulse = Math.min(harvestPulse + 0.35, 1);  // 도착 → 플레이어가 반응
+      continue;
+    }
+    // 광맥 → (튀어오른 지점) → 플레이어 로 이어지는 2차 베지어
+    const q = 1 - p;
+    const tx = b.x0 * q * q + b.ax * 2 * q * p + player.x * p * p;
+    const tz = b.z0 * q * q + b.az * 2 * q * p + player.z * p * p;
+    b.mesh.position.set(tx, 0.5 + Math.sin(p * Math.PI) * 1.1, tz);
+    b.mesh.rotation.x += b.spin * dt;
+    b.mesh.rotation.y += b.spin * 0.7 * dt;
+    b.mesh.scale.setScalar((0.12 + 0.06) * (1 - p * 0.5));
+  }
+}
+
 function updateNodes(dt) {
   securedCount = 0;
   for (const n of nodes) {
@@ -557,20 +625,31 @@ function updateNodes(dt) {
       m.material.color.setHex(0x555a66);
       m.material.emissiveIntensity = 0;
       m.scale.setScalar(0.4);
+      m.position.y = 0.35;
       continue;
     }
     const w = cellToWorld(n.i, n.j);
     const secured = enemyReach && !enemyReach[worldToNav(w.x, w.z)];
-    m.scale.setScalar(0.5 + 0.5 * (n.amount / P.res.nodeAmount));
-    m.rotation.y += dt * 1.5;
+    const base = 0.5 + 0.5 * (n.amount / P.res.nodeAmount);
     if (secured) {
       securedCount++;
       const got = Math.min(P.res.mineRate * dt, n.amount);
       resources += got;
       n.amount -= got;
+      // 채굴 중: 빠르게 돌고, 들썩이고, 주기적으로 조각을 뱉는다
+      m.rotation.y += dt * 5.0;
+      const bob = Math.abs(Math.sin(performance.now() * 0.006));
+      m.position.y = 0.35 + bob * 0.22;
+      m.scale.setScalar(base * (1 + 0.08 * bob));
       m.material.emissive.setHex(0xf0b429);
-      m.material.emissiveIntensity = 0.5 + 0.3 * Math.sin(performance.now() * 0.008);
+      m.material.emissiveIntensity = 0.55 + 0.35 * bob;
+      n.bitT = (n.bitT || 0) + dt;
+      const every = 1 / Math.max(P.res.mineRate, 0.2);  // 채굴이 빠를수록 조각도 자주
+      if (n.bitT >= every) { n.bitT = 0; spawnCheeseBit(w.x, w.z); }
     } else {
+      m.rotation.y += dt * 1.5;
+      m.position.y = 0.35;
+      m.scale.setScalar(base);
       m.material.emissiveIntensity = 0;
     }
   }
@@ -870,7 +949,7 @@ const CAM_MODES = [
     params: { pitch: 22, dist: 6, fov: 72, lerp: 10 },
   },
 ];
-let camIndex = 0;
+let camIndex = 1; // 기본 = 쿼터뷰 (2번)
 let chaseYaw = Math.PI; // 플레이어 시선 따라가는 요
 const camTarget = new THREE.Vector3(player.x, 0, player.z);
 
@@ -1069,6 +1148,26 @@ function updatePlayer(dt) {
   playerVis.group.position.set(player.x, 0, player.z);
   playerVis.group.rotation.y = Math.atan2(player.faceX, player.faceZ) + Math.PI;
 
+  // ---- 채굴 리액션 ----
+  // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
+  // 위아래로 통통 튀면서 두 손을 흔든다 = "내가 지금 캐고 있다"
+  harvestPulse = Math.max(harvestPulse - dt * 1.6, 0);
+  const t = performance.now() * 0.012;
+  const bounce = harvestPulse * Math.abs(Math.sin(t * 1.4));
+  playerVis.group.position.y = bounce * 0.18;
+  playerVis.group.scale.set(
+    P.player.radius * (1 + bounce * 0.06),
+    P.player.radius * (1 - bounce * 0.08),
+    P.player.radius * (1 + bounce * 0.06)
+  );
+  if (playerVis.handL) {
+    const swing = harvestPulse * 0.9;
+    playerVis.armL.position.y = 1.38 + Math.sin(t * 2.2) * swing * 0.22;
+    playerVis.armR.position.y = 1.38 - Math.sin(t * 2.2) * swing * 0.22;
+    playerVis.handL.position.y = 0.98 + Math.sin(t * 2.2) * swing * 0.34;
+    playerVis.handR.position.y = 0.98 - Math.sin(t * 2.2) * swing * 0.34;
+  }
+
   // ---- 벽 설치 고스트: 마우스가 가리키는 타일 (설치 사거리 내) ----
   let gi = ghostCell.i, gj = ghostCell.j, hasTile = false;
   if (mouseValid) {
@@ -1148,7 +1247,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'count', 1, 12, 1).name('시작 마릿수')
     .onChange((v) => setEnemyCount(Math.max(v, targetEnemyCount())));
   f.add(P.enemy, 'speed', 2, 14, 0.1).name('이동 속도');
-  f.add(P.enemy, 'radius', 0.4, 2.2, 0.05).name('반지름 (덩치)')
+  f.add(P.enemy, 'radius', 0.4, 3.0, 0.05).name('반지름 (덩치)')
     .onChange((v) => {
       for (const e of enemies) e.vis.group.scale.setScalar(v);
       refreshReach();
@@ -1158,7 +1257,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'attackRange', 0.2, 2, 0.05).name('공격 사거리');
   f.add(P.enemy, 'repath', 0.1, 1.5, 0.05).name('경로 재계산 주기');
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('등장 딜레이(초)');
-  f.add(P.enemy, 'spread', 0, 8, 0.2).name('스폰 흩어짐 (재시작부터)');
+  f.add(P.enemy, 'spread', 0, 14, 0.5).name('스폰 흩어짐 (재시작부터)');
 }
 {
   const f = gui.addFolder('벽');
@@ -1287,7 +1386,7 @@ const settingsIO = {
 }
 
 let camFolder = null;
-const camSelector = { mode: CAM_MODES[0].name };
+const camSelector = { mode: CAM_MODES[camIndex].name };
 gui.add(camSelector, 'mode', CAM_MODES.map((m) => m.name)).name('카메라 (C키)')
   .onChange((name) => setCamera(CAM_MODES.findIndex((m) => m.name === name)));
 
@@ -1332,6 +1431,10 @@ function restart() {
   for (const f of [...fx]) { scene.remove(f.mesh); f.mesh.material.dispose(); }
   fx.length = 0;
   popping.length = 0;
+  for (const b of cheeseBits) scene.remove(b.mesh);
+  cheeseBits.length = 0;
+  harvestPulse = 0;
+  for (const n of nodes) n.bitT = 0;
   resources = startResources();
   for (const n of nodes) {
     n.amount = P.res.nodeAmount;
@@ -1457,6 +1560,7 @@ function tick(dt) {
       }
     }
     updateNodes(dt);
+    updateCheeseBits(dt);
     updateWallPops(dt);
   }
   updateFx(dt);
@@ -1492,6 +1596,8 @@ window.__game = {
   nodes, ghost, mouseNDC, CAM_MODES, enemies,
   setEnemyCount, targetEnemyCount, spawnBuildFx,
   get fxCount() { return fx.length; },
+  get cheeseBitCount() { return cheeseBits.length; },
+  get harvestPulse() { return harvestPulse; },
   setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
   threatLevel, enemySpeed, enemyDps,
   step(seconds, dt = 1 / 60) {
