@@ -7,14 +7,38 @@ import GUI from 'lil-gui';
 const P = {
   player: { speed: 6.0, radius: 0.35, graceTime: 1.5 },
   enemy: {
-    count: 3,              // 시작 마릿수
-    speed: 5.0, radius: 1.35, dps: 30, attackRange: 0.6, repath: 0.35,
+    count: 3,              // 시작 마릿수 (전부 순찰묘)
+    attackRange: 0.6, repath: 0.35,
     spawnDelay: 12,
     spread: 5.0,           // 스폰 지점 주변에 흩어지는 반경
   },
+  // ---- 적 3종 ----
+  // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
+  //  순찰묘: 크고 벽 못 부숨 → 벽이 완전한 안전을 줌. 처음부터 등장
+  //  날쌘묘: 작고 빠름, 벽 못 부숨 → 2칸 틈을 통과! 넓은 틈의 안전이 깨짐
+  //  파괴묘: 제일 크고 느림, 유일하게 벽을 부숨 → 밀폐도 시한부가 됨
+  chaser: { radius: 1.35, speed: 5.0 },
+  runner: { radius: 0.85, speed: 6.8, unlockAt: 60 },
+  breaker: { radius: 1.6, speed: 4.2, dps: 30, unlockAt: 120 },
   wall: { hp: 100, cooldown: 0.15, height: 1.1, range: 3.0 },
-  res: { startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40 },
+  res: {
+    startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40,
+    storeCap: 15,        // 광맥 저장고 상한 — 가득 차면 채굴 멈춤 (수확하러 가야 함)
+    collectRate: 8,      // E 홀드 수확 속도 (초당)
+    collectRange: 2.2,   // 수확 가능 거리
+  },
+  tools: {
+    trapCost: 8, trapSlow: 0.35, trapTime: 6,     // 끈끈이 덫: 밟는 동안 감속
+    decoyCost: 12, decoyTime: 8,                  // 미끼 치즈: 적을 유인
+  },
   threat: { interval: 25, speedGain: 0.5, dpsGain: 8, everyLevels: 2 },
+};
+
+// 적 종류 메타 (숫자가 아니라서 P 밖에 둠 — 세팅 스냅샷에 안 섞이게)
+const TYPE_INFO = {
+  chaser: { label: '순찰묘', canBreak: false },
+  runner: { label: '날쌘묘', canBreak: false },
+  breaker: { label: '파괴묘', canBreak: true },
 };
 // 시작 자원은 "벽 N개분"으로 정의 — 벽 비용을 바꿔도 시작 여유가 유지됨
 const startResources = () => P.res.startWalls * P.res.wallCost;
@@ -426,11 +450,19 @@ function makeHamster() {
 
 // 적 — 같은 저폴리 문법인데 길고 낮고 넓다. 귀가 뾰족하고 눈이 발광.
 // 햄스터와 나란히 놨을 때 "폭"이 먼저 읽히도록 몸통을 가로로 넓힘.
-function makeCat() {
-  const furA = MAT(0x8e4257);
-  const furB = MAT(0xb0596d);
+// 종류별 팔레트: 실루엣은 같아도 색으로 즉시 구분되게.
+const CAT_PALETTES = {
+  chaser: { a: 0x8e4257, b: 0xb0596d, eye: 0xffe14d, glow: 0xffc400 }, // 자주색·노란 눈
+  runner: { a: 0x4f6d8e, b: 0x7391b5, eye: 0x7dff9a, glow: 0x37e06b }, // 청회색·초록 눈
+  breaker: { a: 0x3d2a33, b: 0x5c3a46, eye: 0xff7a45, glow: 0xff4400 }, // 흑적색·주황 눈
+};
+
+function makeCat(type = 'chaser') {
+  const pal = CAT_PALETTES[type] || CAT_PALETTES.chaser;
+  const furA = MAT(pal.a);
+  const furB = MAT(pal.b);
   const dark = MAT(0x241a1e, { roughness: 0.5 });
-  const eye = MAT(0xffe14d, { emissive: new THREE.Color(0xffc400), emissiveIntensity: 0.9 });
+  const eye = MAT(pal.eye, { emissive: new THREE.Color(pal.glow), emissiveIntensity: 0.9 });
   return buildCreature([
     sphere(0.94, furA, 0, 0.8, 0.34, 1, 0.78, 1.05),    // 몸통 (뒤쪽으로 물림)
     sphere(0.62, furB, 0, 0.6, -0.2, 1, 0.78, 0.85),    // 가슴
@@ -474,15 +506,24 @@ function enemySpawnPos(n) {
   };
 }
 
-function makeEnemy(n) {
+// 종류별 스탯 접근자 — 위협 레벨 보정 포함
+const typeP = (e) => P[e.type];
+const enemyR = (e) => typeP(e).radius;
+const enemySpeedOf = (e) => typeP(e).speed + threatLevel() * P.threat.speedGain;
+const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain;
+const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
+
+function makeEnemy(type, n) {
   const p = enemySpawnPos(n);
-  const vis = makeCat();
-  vis.group.scale.setScalar(P.enemy.radius);
+  const vis = makeCat(type);
+  vis.group.scale.setScalar(P[type].radius);
   vis.setOpacity(0.15);
   return {
+    type,
     x: p.x, z: p.z,
     path: [],           // [{x, z, idx}]
     aiMode: '추격',      // 추격 / 파괴 / 배회
+    goalX: 0, goalZ: 0, // planEnemyPath가 정한 목적지 (플레이어 또는 미끼)
     repathT: Math.random() * P.enemy.repath, // 재계산 타이밍을 흩어 프레임 부하 분산
     attackTarget: null, // 공격 중인 벽
     stallT: 0,
@@ -493,7 +534,7 @@ function makeEnemy(n) {
 }
 
 function setEnemyCount(count) {
-  while (enemies.length < count) enemies.push(makeEnemy(enemies.length));
+  while (enemies.length < count) enemies.push(makeEnemy('chaser', enemies.length));
   while (enemies.length > count) {
     const e = enemies.pop();
     scene.remove(e.vis.group);
@@ -535,33 +576,42 @@ const nodes = NODE_LAYOUT.map(([i, j]) => {
   mesh.position.set(w.x, 0.35, w.z);
   mesh.castShadow = true;
   scene.add(mesh);
-  return { i, j, amount: P.res.nodeAmount, mesh };
+  return { i, j, amount: P.res.nodeAmount, stored: 0, mesh };
 });
 const nodeAt = (i, j) => nodes.find((n) => n.i === i && n.j === j);
 let securedCount = 0;
+let storedTotal = 0;   // 모든 광맥 저장고 합 (HUD용)
+let collecting = false; // 지금 수확 중인가 (E 홀드 + 사거리 내)
 
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
 //  → 노드가 이 영역 밖이면 "확보됨"
 let enemyReach = null;
 function refreshReach() {
   if (!clearAll) return;  // clearance 필드가 아직 없으면 건너뜀 (초기화 순서 보호)
-  const er = P.enemy.radius;
-  const pass = (i) => canPass(clearAll, i, er);
+  // 반지름이 다르면 지나갈 수 있는 칸도 다르다.
+  // 반지름별로 따로 flood fill 하고 합집합을 취한다.
+  //  → 광맥은 "어떤 종류의 어떤 적도 도달 못 할 때"만 확보로 친다.
+  //  (날쌘묘가 등장하면 2칸 틈으로 뚫려서, 넓게 막았던 확보가 깨질 수 있다)
   const vis = new Uint8Array(NAV * NAV);
-  const stack = [];
-  // 모든 적에서 동시에 퍼뜨린다 (합집합).
-  // → 광맥은 "어떤 적도 도달 못 할 때"만 확보로 친다.
-  for (const e of enemies) {
-    const start = nearestPassableNav(e.x, e.z, pass);
-    if (pass(start) && !vis[start]) { vis[start] = 1; stack.push(start); }
-  }
-  while (stack.length) {
-    const cur = stack.pop();
-    const cx = cur % NAV, cz = (cur / NAV) | 0;
-    if (cx > 0 && !vis[cur - 1] && pass(cur - 1)) { vis[cur - 1] = 1; stack.push(cur - 1); }
-    if (cx < NAV - 1 && !vis[cur + 1] && pass(cur + 1)) { vis[cur + 1] = 1; stack.push(cur + 1); }
-    if (cz > 0 && !vis[cur - NAV] && pass(cur - NAV)) { vis[cur - NAV] = 1; stack.push(cur - NAV); }
-    if (cz < NAV - 1 && !vis[cur + NAV] && pass(cur + NAV)) { vis[cur + NAV] = 1; stack.push(cur + NAV); }
+  const radii = [...new Set(enemies.map((e) => enemyR(e)))];
+  for (const r of radii) {
+    const pass = (i) => canPass(clearAll, i, r);
+    const seen = new Uint8Array(NAV * NAV);
+    const stack = [];
+    for (const e of enemies) {
+      if (enemyR(e) !== r) continue;
+      const start = nearestPassableNav(e.x, e.z, pass);
+      if (pass(start) && !seen[start]) { seen[start] = 1; stack.push(start); }
+    }
+    while (stack.length) {
+      const cur = stack.pop();
+      const cx = cur % NAV, cz = (cur / NAV) | 0;
+      if (cx > 0 && !seen[cur - 1] && pass(cur - 1)) { seen[cur - 1] = 1; stack.push(cur - 1); }
+      if (cx < NAV - 1 && !seen[cur + 1] && pass(cur + 1)) { seen[cur + 1] = 1; stack.push(cur + 1); }
+      if (cz > 0 && !seen[cur - NAV] && pass(cur - NAV)) { seen[cur - NAV] = 1; stack.push(cur - NAV); }
+      if (cz < NAV - 1 && !seen[cur + NAV] && pass(cur + NAV)) { seen[cur + NAV] = 1; stack.push(cur + NAV); }
+    }
+    for (let k = 0; k < vis.length; k++) if (seen[k]) vis[k] = 1;
   }
   enemyReach = vis;
 }
@@ -617,11 +667,16 @@ function updateCheeseBits(dt) {
   }
 }
 
+// 채굴은 "광맥의 저장고"에 쌓일 뿐이다. 주머니(=쓸 수 있는 치즈)에 넣으려면
+// 플레이어가 광맥 근처까지 가서 E를 홀드해 수확해야 한다.
+//  - 저장고가 가득 차면 채굴이 멈춘다 → 주기적으로 수확 원정을 떠나야 함
+//  - 밀폐한 광맥일수록 자기가 만든 1칸 틈으로 몸을 비집고 들어가야 한다 (코어 재사용)
 function updateNodes(dt) {
   securedCount = 0;
+  storedTotal = 0;
   for (const n of nodes) {
     const m = n.mesh;
-    if (n.amount <= 0) {
+    if (n.amount <= 0 && n.stored <= 0.01) {
       m.material.color.setHex(0x555a66);
       m.material.emissiveIntensity = 0;
       m.scale.setScalar(0.4);
@@ -631,28 +686,109 @@ function updateNodes(dt) {
     const w = cellToWorld(n.i, n.j);
     const secured = enemyReach && !enemyReach[worldToNav(w.x, w.z)];
     const base = 0.5 + 0.5 * (n.amount / P.res.nodeAmount);
-    if (secured) {
+    const fill = n.stored / P.res.storeCap;   // 저장고가 찰수록 밝고 높게 뜬다
+    storedTotal += n.stored;
+    if (secured && n.amount > 0 && n.stored < P.res.storeCap) {
       securedCount++;
-      const got = Math.min(P.res.mineRate * dt, n.amount);
-      resources += got;
+      const got = Math.min(P.res.mineRate * dt, n.amount, P.res.storeCap - n.stored);
+      n.stored += got;
       n.amount -= got;
-      // 채굴 중: 빠르게 돌고, 들썩이고, 주기적으로 조각을 뱉는다
       m.rotation.y += dt * 5.0;
-      const bob = Math.abs(Math.sin(performance.now() * 0.006));
-      m.position.y = 0.35 + bob * 0.22;
-      m.scale.setScalar(base * (1 + 0.08 * bob));
-      m.material.emissive.setHex(0xf0b429);
-      m.material.emissiveIntensity = 0.55 + 0.35 * bob;
-      n.bitT = (n.bitT || 0) + dt;
-      const every = 1 / Math.max(P.res.mineRate, 0.2);  // 채굴이 빠를수록 조각도 자주
-      if (n.bitT >= every) { n.bitT = 0; spawnCheeseBit(w.x, w.z); }
     } else {
+      if (secured && n.amount > 0) securedCount++;  // 가득 차서 쉬는 중도 확보 상태
       m.rotation.y += dt * 1.5;
-      m.position.y = 0.35;
-      m.scale.setScalar(base);
-      m.material.emissiveIntensity = 0;
+    }
+    const bob = Math.abs(Math.sin(performance.now() * 0.006));
+    m.position.y = 0.35 + fill * 0.45 + (secured ? bob * 0.15 : 0);
+    m.scale.setScalar(base * (1 + fill * 0.25));
+    m.material.color.setHex(0xf0b429);
+    m.material.emissive.setHex(0xf0b429);
+    // 발광 = 저장량. 가득 차면 강하게 깜빡여서 "수확하러 와!" 신호
+    m.material.emissiveIntensity =
+      fill >= 1 ? 0.7 + 0.5 * Math.abs(Math.sin(performance.now() * 0.012))
+                : fill * 0.7 + (secured ? 0.15 : 0);
+  }
+}
+
+// ============================================================
+// 도구 — 벽과 같은 "공간 조작" 문법의 소모품 (D3 유지: 공격 수단 아님)
+//  끈끈이 덫(Q): 밟은 적을 감속. 밟히는 동안만 닳음
+//  미끼 치즈(F): 모든 적이 플레이어 대신 미끼로 몰려감. 시간이 지나면(적이
+//               옆에서 먹으면 더 빨리) 사라짐 — 수확 원정길을 여는 용도
+// ============================================================
+const traps = new Map();  // "i,j" -> { i, j, mesh, left }
+const decoys = [];        // { x, z, mesh, left }
+const trapGeo = new THREE.BoxGeometry(CS * 0.92, 0.06, CS * 0.92);
+const decoyGeo = new THREE.OctahedronGeometry(0.55);
+
+function placeTrap(i, j) {
+  const key = cellKey(i, j);
+  if (traps.has(key) || obstacles.has(key) || nodeAt(i, j)) return false;
+  if (resources < P.tools.trapCost) return false;
+  resources -= P.tools.trapCost;
+  const w = cellToWorld(i, j);
+  const mesh = new THREE.Mesh(
+    trapGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0x59c9a5, roughness: 0.5, transparent: true, opacity: 0.85,
+      emissive: new THREE.Color(0x2a8f6e), emissiveIntensity: 0.35,
+    })
+  );
+  mesh.position.set(w.x, 0.03, w.z);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  traps.set(key, { i, j, mesh, left: P.tools.trapTime });
+  return true;
+}
+
+function removeTrap(tr) {
+  traps.delete(cellKey(tr.i, tr.j));
+  scene.remove(tr.mesh);
+  tr.mesh.material.dispose();
+}
+
+function placeDecoy(i, j) {
+  if (obstacles.has(cellKey(i, j)) || nodeAt(i, j)) return false;
+  if (resources < P.tools.decoyCost) return false;
+  resources -= P.tools.decoyCost;
+  const w = cellToWorld(i, j);
+  const mesh = new THREE.Mesh(
+    decoyGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0xffe066, roughness: 0.35,
+      emissive: new THREE.Color(0xf0b429), emissiveIntensity: 0.8,
+    })
+  );
+  mesh.position.set(w.x, 0.5, w.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  decoys.push({ x: w.x, z: w.z, mesh, left: P.tools.decoyTime });
+  repathAll();  // 모두 미끼 쪽으로 재계산
+  return true;
+}
+
+function updateDecoys(dt) {
+  for (let k = decoys.length - 1; k >= 0; k--) {
+    const d = decoys[k];
+    let eat = 1;  // 기본 부패 1배
+    for (const e of enemies)
+      if (Math.hypot(e.x - d.x, e.z - d.z) < enemyR(e) + 1.0) eat += 1; // 먹는 중
+    d.left -= dt * eat;
+    d.mesh.rotation.y += dt * 3;
+    d.mesh.scale.setScalar(Math.max(d.left / P.tools.decoyTime, 0.1));
+    if (d.left <= 0) {
+      scene.remove(d.mesh);
+      d.mesh.material.dispose();
+      decoys.splice(k, 1);
+      repathAll();  // 미끼가 사라졌으니 다시 플레이어에게
     }
   }
+}
+
+function clearTools() {
+  for (const tr of [...traps.values()]) removeTrap(tr);
+  for (const d of decoys) { scene.remove(d.mesh); d.mesh.material.dispose(); }
+  decoys.length = 0;
 }
 
 // ============================================================
@@ -710,11 +846,20 @@ function distToObstacle(ent, ob) {
 //  3) 그래도 없으면(지형만으로 막힘) → 최대한 접근해서 배회
 // ============================================================
 function planEnemyPath(enemy) {
-  const er = P.enemy.radius;
+  const er = enemyR(enemy);
   const passAll = (i) => canPass(clearAll, i, er);
   const passBed = (i) => canPass(clearBed, i, er);
   const start = nearestPassableNav(enemy.x, enemy.z, passAll);
-  const goal = worldToNav(player.x, player.z);
+
+  // 목표: 기본은 플레이어, 미끼 치즈가 있으면 가장 가까운 미끼
+  let gx = player.x, gz = player.z;
+  let bestD = Infinity;
+  for (const d of decoys) {
+    const dd = Math.hypot(d.x - enemy.x, d.z - enemy.z);
+    if (dd < bestD) { bestD = dd; gx = d.x; gz = d.z; }
+  }
+  enemy.goalX = gx; enemy.goalZ = gz;
+  const goal = worldToNav(gx, gz);
 
   const res = astar(start, goal, passAll, () => 0);
   if (res.found || res.closestWorld < 1.3) {
@@ -722,16 +867,19 @@ function planEnemyPath(enemy) {
     enemy.aiMode = '추격';
     return;
   }
-  // 막혀 있음 → 플레이어가 지은 벽을 부수는 경로 (지형은 못 부숨)
-  const wallAt = (idx) => {
-    const ob = obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
-    return ob && !ob.bedrock ? ob : null;
-  };
-  const res2 = astar(start, goal, passBed, (idx) => (wallAt(idx) ? 80 : 0));
-  if (res2.found && res2.path.some((idx) => wallAt(idx))) {
-    enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
-    enemy.aiMode = '파괴';
-    return;
+  // 막혀 있음 → 벽을 부술 수 있는 종류(파괴묘)만 돌파 경로를 계산한다.
+  // 순찰묘/날쌘묘는 벽 앞에서 배회 — 벽이 이들에게는 완전한 답이 된다.
+  if (canBreakWalls(enemy)) {
+    const wallAt = (idx) => {
+      const ob = obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
+      return ob && !ob.bedrock ? ob : null;
+    };
+    const res2 = astar(start, goal, passBed, (idx) => (wallAt(idx) ? 80 : 0));
+    if (res2.found && res2.path.some((idx) => wallAt(idx))) {
+      enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      enemy.aiMode = '파괴';
+      return;
+    }
   }
   enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   enemy.aiMode = '배회';
@@ -755,39 +903,61 @@ const enemyActive = () => survival >= P.enemy.spawnDelay;
 function threatLevel() {
   return Math.max(0, Math.floor((survival - P.enemy.spawnDelay) / P.threat.interval));
 }
-function enemySpeed() {
-  return P.enemy.speed + threatLevel() * P.threat.speedGain;
-}
-function enemyDps() {
-  return P.enemy.dps + threatLevel() * P.threat.dpsGain;
+// ---- 시간에 따른 적 투입 ----
+//  1) unlockAt 시각에 새 종류가 1마리 등장 (날쌘묘 60s, 파괴묘 120s)
+//  2) everyLevels 위협 레벨마다 +1마리 — 그 시점에 풀린 종류 중 랜덤
+const unlockSpawned = new Set();
+let growthSpawned = 0;
+
+function unlockedTypes() {
+  const t = survival - P.enemy.spawnDelay;
+  const out = ['chaser'];
+  if (t >= P.runner.unlockAt) out.push('runner');
+  if (t >= P.breaker.unlockAt) out.push('breaker');
+  return out;
 }
 
-// 시간이 지나면 마릿수도 는다 (everyLevels = 0 이면 안 늘어남)
-function targetEnemyCount() {
+function updateSpawns() {
+  const t = survival - P.enemy.spawnDelay;
+  for (const ty of ['runner', 'breaker']) {
+    if (!unlockSpawned.has(ty) && t >= P[ty].unlockAt) {
+      unlockSpawned.add(ty);
+      enemies.push(makeEnemy(ty, enemies.length));
+      refreshReach();
+      flashMsg(`새로운 적 등장: ${TYPE_INFO[ty].label}!`, '#ff8b5e');
+    }
+  }
   const per = P.threat.everyLevels;
-  return P.enemy.count + (per > 0 ? Math.floor(threatLevel() / per) : 0);
+  const growthTarget = per > 0 ? Math.floor(threatLevel() / per) : 0;
+  while (growthSpawned < growthTarget) {
+    growthSpawned++;
+    const pool = unlockedTypes();
+    const ty = pool[Math.floor(Math.random() * pool.length)];
+    enemies.push(makeEnemy(ty, enemies.length));
+    refreshReach();
+    flashMsg(`적이 늘었다! (${enemies.length}마리)`, '#ffb347');
+  }
 }
 
 // 적끼리 겹치지 않게 서로 밀어냄 — 한 덩어리로 뭉쳐 다니는 걸 막는다
 function separateEnemies() {
-  const r = P.enemy.radius;
   for (let a = 0; a < enemies.length; a++)
     for (let b = a + 1; b < enemies.length; b++) {
       const e1 = enemies[a], e2 = enemies[b];
       let dx = e2.x - e1.x, dz = e2.z - e1.z;
       let d = Math.hypot(dx, dz);
-      const min = r * 1.75;
+      const min = (enemyR(e1) + enemyR(e2)) * 0.875;
       if (d >= min) continue;
       if (d < 1e-4) { dx = 0.01; dz = 0; d = 0.01; }
       const push = ((min - d) / d) * 0.5;
       e1.x -= dx * push; e1.z -= dz * push;
       e2.x += dx * push; e2.z += dz * push;
     }
-  for (const e of enemies) collideWithObstacles(e, r);
+  for (const e of enemies) collideWithObstacles(e, enemyR(e));
 }
 
 function updateEnemy(enemy, dt) {
-  const er = P.enemy.radius;
+  const er = enemyR(enemy);
   enemy.repathT -= dt;
   if (enemy.repathT <= 0) {
     enemy.repathT = P.enemy.repath;
@@ -810,16 +980,25 @@ function updateEnemy(enemy, dt) {
   if (enemy.path.length) {
     tx = enemy.path[0].x; tz = enemy.path[0].z;
   } else if (enemy.aiMode !== '배회') {
-    tx = player.x; tz = player.z; // 마지막 구간은 직진
+    tx = enemy.goalX; tz = enemy.goalZ; // 마지막 구간은 직진 (플레이어 또는 미끼)
   } else {
     tx = enemy.x; tz = enemy.z;
+  }
+  // 끈끈이 덫: 밟고 있는 동안 감속 + 덫이 닳는다
+  let spd = enemySpeedOf(enemy);
+  const ec = worldToCell(enemy.x, enemy.z);
+  const tr = traps.get(cellKey(ec.i, ec.j));
+  if (tr) {
+    spd *= P.tools.trapSlow;
+    tr.left -= dt;
+    if (tr.left <= 0) removeTrap(tr);
   }
   let dx = tx - enemy.x, dz = tz - enemy.z;
   const dl = Math.hypot(dx, dz);
   if (dl > 0.05) {
     dx /= dl; dz /= dl;
-    enemy.x += dx * enemySpeed() * dt;
-    enemy.z += dz * enemySpeed() * dt;
+    enemy.x += dx * spd * dt;
+    enemy.z += dz * spd * dt;
   }
   collideWithObstacles(enemy, er);
 
@@ -838,19 +1017,18 @@ function updateEnemy(enemy, dt) {
   }
   // 정체 감지
   const moved = Math.hypot(enemy.x - enemy.prevX, enemy.z - enemy.prevZ);
-  if (moved < enemySpeed() * dt * 0.3) enemy.stallT += dt;
+  if (moved < spd * dt * 0.3) enemy.stallT += dt;
   else enemy.stallT = 0;
   enemy.prevX = enemy.x; enemy.prevZ = enemy.z;
 
   // 우회 우선 원칙:
   //  - 추격 중(우회로 있음) 정체 → 벽을 부수지 말고 경로 재계산부터
-  //  - 그래도 오래(>2.5s) 막혀 있으면 안전장치로 공격 허용
-  //  - 파괴/배회(우회로 없음) 정체 → 손 닿는 벽 공격
-  //    (배회 중 공격 유지: 벽 1개를 부숴 1칸 틈이 생겨도 몸이 안 들어가면
-  //     옆의 벽을 마저 부숴 틈을 넓히는 행동이 여기서 나옴)
+  //  - 파괴묘만: 오래 막히면 손 닿는 벽 공격 (배회 중 공격 유지:
+  //    벽 1개를 부숴 틈이 생겨도 몸이 안 들어가면 옆 벽을 마저 부숨)
+  //  - 순찰묘/날쌘묘는 어떤 경우에도 벽을 건드리지 않는다
   if (enemy.aiMode === '추격' && enemy.stallT > 0.4) enemy.repathT = 0;
   const stallLimit = enemy.aiMode === '추격' ? 2.5 : 0.6;
-  if (!enemy.attackTarget && enemy.stallT > stallLimit) {
+  if (canBreakWalls(enemy) && !enemy.attackTarget && enemy.stallT > stallLimit) {
     let best = null, bestD = reach + 0.4;
     for (const ob of obstacles.values()) {
       if (ob.bedrock) continue;
@@ -862,7 +1040,7 @@ function updateEnemy(enemy, dt) {
 
   if (enemy.attackTarget) {
     const ob = enemy.attackTarget;
-    ob.hp -= enemyDps() * dt;
+    ob.hp -= enemyDpsOf(enemy) * dt;
     updateWallColor(ob);
     ob.mesh.position.y = (ob.mesh.scale.y / 2) + Math.sin(performance.now() * 0.05) * 0.03;
     if (ob.hp <= 0) {
@@ -902,6 +1080,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyP') paused = !paused;
   if (e.code === 'KeyR') restart();
   if (e.code === 'KeyX') removeGhostWall();
+  if (e.code === 'KeyQ' && alive && ghostCell.valid !== undefined) placeTrap(ghostCell.i, ghostCell.j);
+  if (e.code === 'KeyF' && alive) placeDecoy(ghostCell.i, ghostCell.j);
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -1148,6 +1328,24 @@ function updatePlayer(dt) {
   playerVis.group.position.set(player.x, 0, player.z);
   playerVis.group.rotation.y = Math.atan2(player.faceX, player.faceZ) + Math.PI;
 
+  // ---- 수확 (E 홀드, 광맥 사거리 내) ----
+  // 확보만으로는 주머니에 안 들어온다. 광맥까지 가서 퍼담아야 한다.
+  collecting = false;
+  if (keys.has('KeyE')) {
+    for (const n of nodes) {
+      if (n.stored <= 0.01) continue;
+      const w = cellToWorld(n.i, n.j);
+      if (Math.hypot(player.x - w.x, player.z - w.z) > P.res.collectRange) continue;
+      const got = Math.min(P.res.collectRate * dt, n.stored);
+      n.stored -= got;
+      resources += got;
+      collecting = true;
+      n.cBitT = (n.cBitT || 0) + dt;
+      if (n.cBitT >= 0.12) { n.cBitT = 0; spawnCheeseBit(w.x, w.z); }
+      break; // 한 번에 한 광맥
+    }
+  }
+
   // ---- 채굴 리액션 ----
   // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
   // 위아래로 통통 튀면서 두 손을 흔든다 = "내가 지금 캐고 있다"
@@ -1187,7 +1385,7 @@ function updatePlayer(dt) {
   const hitsPlayer = distCellToPoint(gi, gj, player.x, player.z) < P.player.radius + 0.02;
   let hitsEnemy = false;
   for (const e of enemies)
-    if (distCellToPoint(gi, gj, e.x, e.z) < P.enemy.radius + 0.02) { hitsEnemy = true; break; }
+    if (distCellToPoint(gi, gj, e.x, e.z) < enemyR(e) + 0.02) { hitsEnemy = true; break; }
   const affordable = resources >= P.res.wallCost;
   ghostCell = {
     i: gi, j: gj,
@@ -1243,21 +1441,34 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'graceTime', 0, 5, 0.1).name('잡힌 뒤 무적(초)');
 }
 {
-  const f = gui.addFolder('적');
-  f.add(P.enemy, 'count', 1, 12, 1).name('시작 마릿수')
-    .onChange((v) => setEnemyCount(Math.max(v, targetEnemyCount())));
-  f.add(P.enemy, 'speed', 2, 14, 0.1).name('이동 속도');
-  f.add(P.enemy, 'radius', 0.4, 3.0, 0.05).name('반지름 (덩치)')
-    .onChange((v) => {
-      for (const e of enemies) e.vis.group.scale.setScalar(v);
-      refreshReach();
-      repathAll();
-    });
-  f.add(P.enemy, 'dps', 5, 150, 1).name('벽 공격력(초당)');
+  const f = gui.addFolder('적 (공통)');
+  f.add(P.enemy, 'count', 1, 12, 1).name('시작 마릿수 (순찰묘)')
+    .onChange((v) => setEnemyCount(v));
   f.add(P.enemy, 'attackRange', 0.2, 2, 0.05).name('공격 사거리');
   f.add(P.enemy, 'repath', 0.1, 1.5, 0.05).name('경로 재계산 주기');
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('등장 딜레이(초)');
   f.add(P.enemy, 'spread', 0, 14, 0.5).name('스폰 흩어짐 (재시작부터)');
+}
+{
+  // 종류별 스탯 — 반지름을 바꾸면 그 종류의 모델 크기와 통행권이 같이 바뀐다
+  const f = gui.addFolder('적 유형');
+  const radiusChanged = (type) => () => {
+    for (const e of enemies) if (e.type === type) e.vis.group.scale.setScalar(P[type].radius);
+    refreshReach();
+    repathAll();
+  };
+  const f1 = f.addFolder('순찰묘 (벽 못 부숨)');
+  f1.add(P.chaser, 'radius', 0.4, 3.0, 0.05).name('반지름').onChange(radiusChanged('chaser'));
+  f1.add(P.chaser, 'speed', 2, 14, 0.1).name('이동 속도');
+  const f2 = f.addFolder('날쌘묘 (작고 빠름)');
+  f2.add(P.runner, 'radius', 0.4, 3.0, 0.05).name('반지름').onChange(radiusChanged('runner'));
+  f2.add(P.runner, 'speed', 2, 14, 0.1).name('이동 속도');
+  f2.add(P.runner, 'unlockAt', 0, 300, 5).name('등장 시각(초)');
+  const f3 = f.addFolder('파괴묘 (벽 부숨)');
+  f3.add(P.breaker, 'radius', 0.4, 3.0, 0.05).name('반지름').onChange(radiusChanged('breaker'));
+  f3.add(P.breaker, 'speed', 2, 14, 0.1).name('이동 속도');
+  f3.add(P.breaker, 'dps', 5, 150, 1).name('벽 공격력(초당)');
+  f3.add(P.breaker, 'unlockAt', 0, 300, 5).name('등장 시각(초)');
 }
 {
   const f = gui.addFolder('벽');
@@ -1278,6 +1489,17 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.res, 'wallCost', 1, 30, 1).name('벽 비용');
   f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
   f.add(P.res, 'nodeAmount', 5, 200, 5).name('광맥 매장량 (재시작부터)');
+  f.add(P.res, 'storeCap', 3, 60, 1).name('광맥 저장고 상한');
+  f.add(P.res, 'collectRate', 1, 30, 0.5).name('수확 속도(E 홀드)');
+  f.add(P.res, 'collectRange', 0.8, 6, 0.1).name('수확 사거리');
+}
+{
+  const f = gui.addFolder('도구 (Q 덫 · F 미끼)');
+  f.add(P.tools, 'trapCost', 1, 30, 1).name('덫 비용');
+  f.add(P.tools, 'trapSlow', 0.1, 0.9, 0.05).name('덫 감속 배율');
+  f.add(P.tools, 'trapTime', 1, 20, 0.5).name('덫 지속(밟는 동안)');
+  f.add(P.tools, 'decoyCost', 1, 40, 1).name('미끼 비용');
+  f.add(P.tools, 'decoyTime', 2, 30, 1).name('미끼 지속(초)');
 }
 {
   const f = gui.addFolder('위협 (시간 경과 강화)');
@@ -1295,14 +1517,9 @@ const gui = new GUI({ title: '튜닝' });
 function snapshotSettings() {
   const cams = {};
   for (const m of CAM_MODES) cams[m.key] = { ...m.params };
-  return {
-    player: { ...P.player },
-    enemy: { ...P.enemy },
-    wall: { ...P.wall },
-    res: { ...P.res },
-    threat: { ...P.threat },
-    camera: cams,
-  };
+  const out = { camera: cams };
+  for (const k of Object.keys(P)) out[k] = { ...P[k] };
+  return out;
 }
 
 // 소스에 그대로 붙여넣을 수 있는 형태로 출력
@@ -1310,8 +1527,8 @@ function settingsAsSource(s) {
   const line = (obj) =>
     Object.entries(obj).map(([k, v]) => `${k}: ${+v.toFixed(3)}`).join(', ');
   let out = 'const P = {\n';
-  for (const k of ['player', 'enemy', 'wall', 'res', 'threat'])
-    out += `  ${k}: { ${line(s[k])} },\n`;
+  for (const k of Object.keys(P))
+    if (s[k]) out += `  ${k}: { ${line(s[k])} },\n`;
   out += '};\n\n// 카메라 기본값\n';
   for (const [key, p] of Object.entries(s.camera))
     out += `// ${key}: { ${line(p)} }\n`;
@@ -1319,13 +1536,13 @@ function settingsAsSource(s) {
 }
 
 function applySettings(s) {
-  for (const k of ['player', 'enemy', 'wall', 'res', 'threat'])
+  for (const k of Object.keys(P))
     if (s[k]) Object.assign(P[k], s[k]);
   if (s.camera)
     for (const m of CAM_MODES) if (s.camera[m.key]) Object.assign(m.params, s.camera[m.key]);
   // 슬라이더 표시 갱신 + 값에 연동된 것들 반영
   playerVis.group.scale.setScalar(P.player.radius);
-  for (const e of enemies) e.vis.group.scale.setScalar(P.enemy.radius);
+  for (const e of enemies) e.vis.group.scale.setScalar(enemyR(e));
   for (const ob of obstacles.values()) {
     if (ob.bedrock || ob.building) continue;
     ob.mesh.scale.y = P.wall.height;
@@ -1414,10 +1631,10 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 마우스로 타일 선택 → 클릭/Space: 벽 즉시 건설 · X 벽 제거\n' +
-  '노란 광맥을 벽으로 감싸 적이 못 오게 하면 자동 채굴됨\n' +
-  '잡히면 죽지 않고 적 시작 지점으로 끌려감 — 거기서 다시 도망쳐 나와야 함\n' +
-  'C 또는 1~4 카메라 전환 · P 일시정지 · R 재시작';
+  'WASD 이동 · 클릭/Space: 벽 · Q: 끈끈이 덫 · F: 미끼 치즈 · X: 벽 제거\n' +
+  '광맥을 벽으로 감싸면 치즈가 광맥에 쌓임 → 옆에 가서 E 홀드로 수확 (가득 차면 채굴 멈춤)\n' +
+  '순찰묘·날쌘묘는 벽을 못 부순다 · 날쌘묘는 좁은 틈도 통과 · 파괴묘만 벽을 부순다\n' +
+  '잡히면 적 본진으로 끌려감 · C/1~4 카메라 · P 일시정지 · R 재시작';
 
 let alive = true;
 let paused = false;
@@ -1438,8 +1655,12 @@ function restart() {
   resources = startResources();
   for (const n of nodes) {
     n.amount = P.res.nodeAmount;
+    n.stored = 0;
     n.mesh.material.color.setHex(0xf0b429);
   }
+  clearTools();
+  unlockSpawned.clear();
+  growthSpawned = 0;
   for (const ob of [...obstacles.values()]) if (!ob.bedrock) removeObstacle(ob);
   refreshClearance();
   player.x = PLAYER_SPAWN.x; player.z = PLAYER_SPAWN.z;
@@ -1477,13 +1698,23 @@ function caught() {
   flashT = 1.6;
 }
 
-// 무리의 AI 상태를 "추격 2 · 파괴 1" 식으로 요약
+function flashMsg(text, color = '#6ee07a') {
+  flashEl.textContent = text;
+  flashEl.style.color = color;
+  flashEl.style.opacity = '1';
+  flashT = 2.0;
+}
+
+// 무리 구성을 "순찰묘 3 · 날쌘묘 1" 식으로 요약
 function enemyModeSummary() {
   const c = {};
-  for (const e of enemies) c[e.aiMode] = (c[e.aiMode] || 0) + 1;
-  const parts = Object.entries(c).map(([k, v]) => `${k} ${v}`);
+  for (const e of enemies) c[e.type] = (c[e.type] || 0) + 1;
+  const parts = Object.entries(c).map(([k, v]) => `${TYPE_INFO[k].label} ${v}`);
   const atk = enemies.filter((e) => e.attackTarget).length;
-  return parts.join(' · ') + (atk ? ` (${atk}마리 벽 부수는 중!)` : '');
+  const prowl = enemies.filter((e) => e.aiMode === '배회').length;
+  return parts.join(' · ')
+    + (prowl ? ` · 막힘 ${prowl}` : '')
+    + (atk ? ` · ${atk}마리 벽 부수는 중!` : '');
 }
 
 function updateHUD() {
@@ -1499,8 +1730,9 @@ function updateHUD() {
     (waiting
       ? `적 ${enemies.length}마리 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
       : `적 ${enemies.length}마리: ${enemyModeSummary()}\n`) +
-    `치즈: ${resources.toFixed(1)} · 확보한 광맥 ${securedCount}/${nodes.length}\n` +
-    (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s) · 적 속도 ${enemySpeed().toFixed(1)}\n`) +
+    `치즈: ${resources.toFixed(1)} · 확보 광맥 ${securedCount}/${nodes.length}` +
+    (storedTotal > 0.5 ? ` · 광맥에 쌓인 치즈 ${storedTotal.toFixed(0)}${collecting ? ' ⛏ 수확 중!' : ' (가서 E)'}` : '') + '\n' +
+    (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
     (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
     (paused ? '\n⏸ 일시정지 (P)' : '');
@@ -1529,16 +1761,7 @@ function tick(dt) {
       if (flashT <= 0) flashEl.style.opacity = '0';
     }
     if (enemyActive()) {
-      // 위협 레벨에 따라 마릿수가 늘면 스폰 지점에서 추가 투입
-      const want = targetEnemyCount();
-      if (enemies.length < want) {
-        while (enemies.length < want) enemies.push(makeEnemy(enemies.length));
-        refreshReach();
-        flashEl.textContent = `적이 늘었다! (${enemies.length}마리)`;
-        flashEl.style.color = '#ffb347';
-        flashEl.style.opacity = '1';
-        flashT = 1.6;
-      }
+      updateSpawns();   // 새 종류 해금 + 주기적 증원
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
@@ -1548,7 +1771,7 @@ function tick(dt) {
       if (grace <= 0) {
         for (const e of enemies) {
           const d = Math.hypot(player.x - e.x, player.z - e.z);
-          if (d < P.player.radius + P.enemy.radius - 0.02) { caught(); break; }
+          if (d < P.player.radius + enemyR(e) - 0.02) { caught(); break; }
         }
       }
     } else {
@@ -1561,6 +1784,7 @@ function tick(dt) {
     }
     updateNodes(dt);
     updateCheeseBits(dt);
+    updateDecoys(dt);
     updateWallPops(dt);
   }
   updateFx(dt);
@@ -1594,12 +1818,15 @@ window.__game = {
   get securedCount() { return securedCount; },
   get enemyReach() { return enemyReach; },
   nodes, ghost, mouseNDC, CAM_MODES, enemies,
-  setEnemyCount, targetEnemyCount, spawnBuildFx,
+  setEnemyCount, spawnBuildFx, placeTrap, placeDecoy, traps, decoys,
+  get storedTotal() { return storedTotal; },
+  get collecting() { return collecting; },
+  enemyR, unlockedTypes,
   get fxCount() { return fx.length; },
   get cheeseBitCount() { return cheeseBits.length; },
   get harvestPulse() { return harvestPulse; },
   setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
-  threatLevel, enemySpeed, enemyDps,
+  threatLevel, enemySpeedOf, enemyDpsOf,
   step(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) tick(dt);
     renderer.render(scene, activeCam());
