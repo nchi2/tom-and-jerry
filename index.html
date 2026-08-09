@@ -27,6 +27,22 @@
     #overlay h1 { font-size: 42px; margin: 0 0 10px; }
     #overlay p { font-size: 16px; color: #c8cede; margin: 0; }
     #overlay.hidden { display: none; }
+    #hotbar {
+      position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+      z-index: 12; display: flex; gap: 6px; pointer-events: none;
+      font-family: "SF Mono", Menlo, monospace; font-size: 12px;
+    }
+    #hotbar .slot {
+      background: rgba(16, 20, 30, 0.82); color: #aeb6c6;
+      border: 1px solid #3a4054; border-radius: 6px;
+      padding: 6px 10px; line-height: 1.35; text-align: center; min-width: 74px;
+    }
+    #hotbar .slot b { display: block; color: #7d879c; font-size: 11px; }
+    #hotbar .slot.sel {
+      border-color: #6ee07a; color: #eaf7ec;
+      background: rgba(30, 48, 36, 0.9);
+    }
+    #hotbar .slot.dim { opacity: 0.55; }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
       text-align: center; pointer-events: none;
@@ -40,6 +56,7 @@
   <div id="hud"></div>
   <div id="help"></div>
   <div id="flash"></div>
+  <div id="hotbar"></div>
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
     <p id="overlay-sub">R 키로 다시 시작</p>

@@ -11,6 +11,15 @@ const P = {
     attackRange: 0.6, repath: 0.35,
     spawnDelay: 12,
     spread: 5.0,           // 스폰 지점 주변에 흩어지는 반경
+    aggroRange: 7.0,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
+    aggroChance: 0.35,     // 경로 재계산 때 한눈팔 확률
+    aggroTime: 4.0,        // 한 번 끌리면 이 시간 동안 유지
+  },
+  ally: {
+    enabled: 1,            // 1=AI 동료 햄스터 (재시작부터). 0=솔로: 잡히면 즉시 전멸
+    speed: 6.0, radius: 0.35,
+    followDist: 2.6,       // 이보다 멀면 플레이어를 따라옴
+    fleeDist: 4.5,         // 이 거리 안에 적이 오면 도망이 우선
   },
   // ---- 적 3종 ----
   // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
@@ -26,8 +35,8 @@ const P = {
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
-  depot: { cost: 20, hp: 400, mineRadius: 3.0, storeCap: 30 },   // 치즈 창고 (B)
-  workshop: { cost: 15, hp: 300 },                               // 공방 (T) — 덫/미끼 해금
+  depot: { cost: 0, hp: 400, mineRadius: 3.0, storeCap: 30 },    // 치즈 창고 — 무료 (공간이 비용)
+  workshop: { cost: 15, hp: 300 },                               // 공방 — 덫/미끼 해금
   res: {
     startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40,
     collectRate: 8,      // E 홀드 수확 속도 (초당)
@@ -56,6 +65,18 @@ const STAGES = [
   { goal: 260, add: { breaker: 1, runner: 1 } },   // 9
   { goal: 300, add: { breaker: 1, chaser: 1 } },   // 10
 ];
+
+// ---- 건설 핫바 ----
+// 숫자키 1~9로 선택하고 클릭/Space로 짓는다 (6~9는 예약 슬롯)
+const BUILD_SLOTS = [
+  { key: 'wall', label: '벽', size: 1, cost: () => P.res.wallCost },
+  { key: 'depot', label: '치즈 창고', size: 2, cost: () => P.depot.cost },
+  { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
+  { key: 'trap', label: '끈끈이 덫', size: 1, cost: () => P.tools.trapCost },
+  { key: 'decoy', label: '미끼 치즈', size: 1, cost: () => P.tools.decoyCost },
+];
+let buildSlot = 0;
+let prevWantBuild = false;
 
 // 적 종류 메타 (숫자가 아니라서 P 밖에 둠 — 세팅 스냅샷에 안 섞이게)
 const TYPE_INFO = {
@@ -245,21 +266,25 @@ const BEDROCK_LAYOUT = [];
 // ============================================================
 let clearAll = null;
 let clearBed = null;
+let clearNoBldg = null; // 지형+벽만 막힘 — 순찰묘/날쌘묘의 "건물 뚫기" 경로용
 
-function navBlocked(i, j, bedrockOnly) {
+// mode: 'all' = 전부 막힘 / 'bed' = 지형만 / 'noBldg' = 지형+벽 (건물은 통과 취급)
+function navBlocked(i, j, mode) {
   if (i <= 0 || j <= 0 || i >= NAV - 1 || j >= NAV - 1) return true; // 외곽 림
   const ob = obstacles.get(cellKey(i >> 1, j >> 1));
   if (!ob) return false;
-  return bedrockOnly ? ob.bedrock : true;
+  if (mode === 'bed') return ob.bedrock;
+  if (mode === 'noBldg') return ob.bedrock || !ob.bldgRef;
+  return true;
 }
 
-function computeClearance(bedrockOnly) {
+function computeClearance(mode) {
   const d = new Float32Array(NAV * NAV);
   const INF = 1e9;
   const S2 = Math.SQRT2;
   for (let j = 0; j < NAV; j++)
     for (let i = 0; i < NAV; i++)
-      d[j * NAV + i] = navBlocked(i, j, bedrockOnly) ? 0 : INF;
+      d[j * NAV + i] = navBlocked(i, j, mode) ? 0 : INF;
   // forward pass
   for (let j = 0; j < NAV; j++)
     for (let i = 0; i < NAV; i++) {
@@ -287,8 +312,9 @@ function computeClearance(bedrockOnly) {
 }
 
 function refreshClearance() {
-  clearAll = computeClearance(false);
-  clearBed = computeClearance(true);
+  clearAll = computeClearance('all');
+  clearBed = computeClearance('bed');
+  clearNoBldg = computeClearance('noBldg');
   refreshReach(); // 벽이 바뀌면 적 도달 가능 영역(자원 확보 판정)도 갱신
 }
 
@@ -438,8 +464,8 @@ const cone = (r, h, mat, x, y, z, rot = 0) => {
 };
 
 // 햄스터 — 둥글고 낮고 뭉툭. 볼주머니 때문에 얼굴이 몸에 파묻힌 실루엣.
-function makeHamster() {
-  const fur = MAT(0xe8b45a);
+function makeHamster(furColor = 0xe8b45a) {
+  const fur = MAT(furColor);
   const cream = MAT(0xf7e3c0);
   const dark = MAT(0x2a2320, { roughness: 0.5 });
   const pink = MAT(0xe89aa8);
@@ -511,6 +537,18 @@ function makeCat(type = 'chaser') {
 
 const playerVis = makeHamster();
 playerVis.group.scale.setScalar(P.player.radius);
+
+// AI 동료 햄스터 (회색). 잡히면 적 본진에서 기절 — 가서 터치하면 구출.
+// 원작 "동료가 와야 부활"(D7)의 솔로용 대역이다.
+const allyVis = makeHamster(0xb8b8c4);
+allyVis.group.scale.setScalar(P.ally.radius);
+const ally = {
+  active: false,
+  x: 0, z: 0, faceX: 0, faceZ: -1,
+  stunned: false,
+  path: [], repathT: 0,
+  goalX: 0, goalZ: 0,
+};
 
 const PLAYER_SPAWN = cellToWorld(22, 22);
 const ENEMY_SPAWN = cellToWorld(22, 3);
@@ -996,36 +1034,90 @@ function distToObstacle(ent, ob) {
 //  2) 길이 없으면 → 플레이어 벽에 비용을 얹은 돌파 경로 탐색, 막는 벽 공격
 //  3) 그래도 없으면(지형만으로 막힘) → 최대한 접근해서 배회
 // ============================================================
+// 살아있고 기절 안 한 햄스터들 (적의 추격 대상)
+function chaseTargets() {
+  const out = [];
+  if (!playerStunned) out.push(player);
+  if (ally.active && !ally.stunned) out.push(ally);
+  return out;
+}
+
 function planEnemyPath(enemy) {
   const er = enemyR(enemy);
   const passAll = (i) => canPass(clearAll, i, er);
-  const passBed = (i) => canPass(clearBed, i, er);
   const start = nearestPassableNav(enemy.x, enemy.z, passAll);
 
-  // 목표: 기본은 플레이어, 미끼 치즈가 있으면 가장 가까운 미끼
-  let gx = player.x, gz = player.z;
+  // ---- 목표 선택 ----
+  // 1) 미끼 치즈 (강제 유인)
+  // 2) 어그로 유지 중인 건물 / 새로 눈에 띈 건물 (확률)
+  // 3) 가장 가까운 햄스터 (플레이어/동료 중 기절 안 한 쪽)
+  let gx = null, gz = null, raiding = false;
   let bestD = Infinity;
   for (const d of decoys) {
     const dd = Math.hypot(d.x - enemy.x, d.z - enemy.z);
     if (dd < bestD) { bestD = dd; gx = d.x; gz = d.z; }
   }
+  if (gx === null) {
+    // 어그로: 쫓는 중에도 시야에 건물이 들어오면 한눈판다
+    if (enemy.raidTarget && buildings.includes(enemy.raidTarget) && survival < enemy.raidUntil) {
+      raiding = true;
+    } else {
+      enemy.raidTarget = null;
+      if (Math.random() < P.enemy.aggroChance) {
+        let bBest = null, bD = P.enemy.aggroRange;
+        for (const b of buildings) {
+          const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
+          if (dd < bD) { bD = dd; bBest = b; }
+        }
+        if (bBest) {
+          enemy.raidTarget = bBest;
+          enemy.raidUntil = survival + P.enemy.aggroTime;
+          raiding = true;
+        }
+      }
+    }
+    if (raiding) { gx = enemy.raidTarget.cx; gz = enemy.raidTarget.cz; }
+  }
+  if (gx === null) {
+    const ts = chaseTargets();
+    if (!ts.length) { enemy.path = []; enemy.aiMode = '배회'; return; }
+    let tBest = ts[0], tD = Infinity;
+    for (const t of ts) {
+      const dd = Math.hypot(t.x - enemy.x, t.z - enemy.z);
+      if (dd < tD) { tD = dd; tBest = t; }
+    }
+    gx = tBest.x; gz = tBest.z;
+  }
   enemy.goalX = gx; enemy.goalZ = gz;
   const goal = worldToNav(gx, gz);
 
+  // ---- 직행 경로 ----
   const res = astar(start, goal, passAll, () => 0);
-  if (res.found || res.closestWorld < 1.3) {
+  if (res.found || res.closestWorld < 1.3 + (raiding ? enemyR(enemy) : 0)) {
     enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
-    enemy.aiMode = '추격';
+    enemy.aiMode = raiding ? '습격' : '추격';
     return;
   }
-  // 플레이어에게 못 감 → 도달 가능한 건물이 있으면 그리로 (습격).
-  // 모든 종류가 건물은 공격한다. 원작에서 톰이 넥서스·생산 건물을 부수던 압박의 이식 —
-  // 벽 안에 못 넣은 건물은 어떤 고양이에게든 밥이다.
-  enemy.raidTarget = null;
+
+  // ---- 돌파 경로: 가로막는 아군 구조물을 부수며 뚫고 온다 ----
+  // 파괴묘: 벽+건물 전부 / 순찰묘·날쌘묘: 건물만 (벽은 여전히 절대 못 부숨)
+  const obAt = (idx) => obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
+  const canBreakOb = (ob) =>
+    ob && !ob.bedrock && (canBreakWalls(enemy) || !!ob.bldgRef);
+  const passBreak = canBreakWalls(enemy)
+    ? (i) => canPass(clearBed, i, er)
+    : (i) => canPass(clearNoBldg, i, er);
+  const res2 = astar(start, goal, passBreak, (idx) => (canBreakOb(obAt(idx)) ? 80 : 0));
+  if (res2.found && res2.path.some((idx) => canBreakOb(obAt(idx)))) {
+    enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
+    enemy.aiMode = '파괴';
+    return;
+  }
+
+  // ---- 뚫을 수도 없음 → 도달 가능한 건물이라도 (습격) ----
   let raidBest = null, raidPath = null, raidD = Infinity;
   for (const b of buildings) {
     const bres = astar(start, worldToNav(b.cx, b.cz), passAll, () => 0);
-    // 건물 자체는 막힌 칸이라 found는 안 뜸 — 접근 거리가 닿는지로 판정
     if (bres.closestWorld < 1.6 + enemyR(enemy)) {
       const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
       if (dd < raidD) { raidD = dd; raidBest = b; raidPath = bres.path; }
@@ -1035,22 +1127,9 @@ function planEnemyPath(enemy) {
     enemy.path = raidPath.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = '습격';
     enemy.raidTarget = raidBest;
+    enemy.raidUntil = survival + P.enemy.aggroTime;
     enemy.goalX = raidBest.cx; enemy.goalZ = raidBest.cz;
     return;
-  }
-  // 건물도 없음 → 벽을 부술 수 있는 종류(파괴묘)만 돌파 경로를 계산한다.
-  // 순찰묘/날쌘묘는 벽 앞에서 배회 — 벽이 이들에게는 완전한 답이 된다.
-  if (canBreakWalls(enemy)) {
-    const wallAt = (idx) => {
-      const ob = obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
-      return ob && !ob.bedrock ? ob : null;
-    };
-    const res2 = astar(start, goal, passBed, (idx) => (wallAt(idx) ? 80 : 0));
-    if (res2.found && res2.path.some((idx) => wallAt(idx))) {
-      enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
-      enemy.aiMode = '파괴';
-      return;
-    }
   }
   enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   enemy.aiMode = '배회';
@@ -1205,7 +1284,9 @@ function updateEnemy(enemy, dt) {
     for (let k = 0; k < Math.min(enemy.path.length, 6); k++) {
       const idx = enemy.path[k].idx;
       const ob = obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
-      if (ob && !ob.bedrock && distToObstacle(enemy, ob) <= reach) {
+      if (!ob || ob.bedrock) continue;
+      if (!canBreakWalls(enemy) && !ob.bldgRef) continue; // 순찰/날쌘은 벽 스킵
+      if (distToObstacle(enemy, ob) <= reach) {
         enemy.attackTarget = ob;
         break;
       }
@@ -1253,6 +1334,9 @@ function updateEnemy(enemy, dt) {
     else enemy.attackTarget = bestWall;
   }
 
+  if (!bldgTarget && enemy.attackTarget && enemy.attackTarget.bldgRef)
+    bldgTarget = enemy.attackTarget.bldgRef; // 파괴 경로상의 건물 셀
+
   if (bldgTarget) {
     damageBuilding(bldgTarget, (typeP(enemy).bldgDps + threatLevel() * P.threat.dpsGain) * dt);
     enemy.attackTarget = null;
@@ -1296,17 +1380,17 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
-  if (e.code === 'Digit1') setCamera(0);
-  if (e.code === 'Digit2') setCamera(1);
-  if (e.code === 'Digit3') setCamera(2);
-  if (e.code === 'Digit4') setCamera(3);
+  // 숫자키 = 건설 슬롯 선택 (카메라는 C키/드롭다운으로)
+  for (let k = 0; k < 9; k++) {
+    if (e.code === 'Digit' + (k + 1)) {
+      if (k < BUILD_SLOTS.length) { buildSlot = k; updateHotbar(); }
+      break;
+    }
+  }
   if (e.code === 'KeyP') paused = !paused;
   if (e.code === 'KeyR') restart();
   if (e.code === 'KeyX') removeGhostWall();
-  if (e.code === 'KeyQ' && alive) placeTrap(ghostCell.i, ghostCell.j);
-  if (e.code === 'KeyF' && alive) placeDecoy(ghostCell.i, ghostCell.j);
-  if (e.code === 'KeyB' && alive) placeBuilding('depot', ghostCell.i, ghostCell.j);
-  if (e.code === 'KeyT' && alive) placeBuilding('workshop', ghostCell.i, ghostCell.j);
+
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -1530,7 +1614,22 @@ function updateWallPops(dt) {
 }
 
 function updatePlayer(dt) {
+  // ---- 기절: 조작 불능, 누워서 동료를 기다린다 ----
+  if (playerStunned) {
+    playerVis.group.position.set(player.x, 0.25, player.z);
+    playerVis.group.rotation.x = -Math.PI / 2;
+    playerVis.mats?.forEach?.(() => {});
+    playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
+    ghost.visible = false;
+    collecting = false;
+    return;
+  }
+  playerVis.group.rotation.x = 0;
+  playerVis.setOpacity(1);
+
   const wantBuild = keys.has('Space') || mouseDown;
+  const buildPressed = wantBuild && !prevWantBuild; // 눌리는 순간 (연사 방지용)
+  prevWantBuild = wantBuild;
 
   // ---- 이동 (건설이 즉시라 이동을 막는 구간이 없다) ----
   {
@@ -1597,7 +1696,7 @@ function updatePlayer(dt) {
     playerVis.handR.position.y = 0.98 - Math.sin(t * 2.2) * swing * 0.34;
   }
 
-  // ---- 벽 설치 고스트: 마우스가 가리키는 타일 (설치 사거리 내) ----
+  // ---- 건설 고스트: 마우스가 가리키는 타일 + 선택 슬롯의 발자국 ----
   let gi = ghostCell.i, gj = ghostCell.j, hasTile = false;
   if (mouseValid) {
     raycaster.setFromCamera(mouseNDC, activeCam());
@@ -1607,40 +1706,61 @@ function updatePlayer(dt) {
       hasTile = true;
     }
   }
-  const key = cellKey(gi, gj);
+  const slot = BUILD_SLOTS[buildSlot];
   const w = cellToWorld(gi, gj);
-  const occupied = obstacles.has(key);
-  const inRange = distCellToPoint(gi, gj, player.x, player.z) <= P.wall.range;
-  const onNode = !!nodeAt(gi, gj);
-  // 설치 시 플레이어/적이 벽 안에 갇히지 않게
-  const hitsPlayer = distCellToPoint(gi, gj, player.x, player.z) < P.player.radius + 0.02;
-  let hitsEnemy = false;
-  for (const e of enemies)
-    if (distCellToPoint(gi, gj, e.x, e.z) < enemyR(e) + 0.02) { hitsEnemy = true; break; }
-  const affordable = resources >= P.res.wallCost;
-  ghostCell = {
-    i: gi, j: gj,
-    valid: hasTile && inRange && !occupied && !onNode && !hitsPlayer && !hitsEnemy && affordable,
-  };
+  const affordable = resources >= slot.cost();
+  let valid = false;
+  if (hasTile) {
+    if (slot.size === 2) {
+      valid = affordable && !buildingPlacement(gi, gj);
+    } else {
+      const occupied = obstacles.has(cellKey(gi, gj));
+      const inRange = distCellToPoint(gi, gj, player.x, player.z) <= P.wall.range;
+      const onNode = !!nodeAt(gi, gj);
+      const hitsPlayer = distCellToPoint(gi, gj, player.x, player.z) < P.player.radius + 0.02;
+      let hitsEnemy = false;
+      for (const e of enemies)
+        if (distCellToPoint(gi, gj, e.x, e.z) < enemyR(e) + 0.02) { hitsEnemy = true; break; }
+      const allyBlock = ally.active && distCellToPoint(gi, gj, ally.x, ally.z) < P.ally.radius + 0.02
+        && slot.key === 'wall';
+      valid = inRange && !occupied && !onNode && !hitsPlayer && !hitsEnemy && !allyBlock && affordable
+        && (slot.key !== 'trap' || !traps.has(cellKey(gi, gj)));
+    }
+  }
+  ghostCell = { i: gi, j: gj, valid };
   ghost.visible = alive && hasTile;
-  ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
-  ghost.position.set(w.x, P.wall.height / 2, w.z);
-  ghost.material.color.setHex(ghostCell.valid ? 0x6ee07a : 0xe05050);
+  if (slot.size === 2) {
+    ghost.scale.set(CS * 1.98, slot.key === 'wall' ? P.wall.height : 1.2, CS * 1.98);
+    ghost.position.set(w.x + CS / 2, 0.6, w.z + CS / 2);
+  } else if (slot.key === 'trap' || slot.key === 'decoy') {
+    ghost.scale.set(CS * 0.9, 0.15, CS * 0.9);
+    ghost.position.set(w.x, 0.08, w.z);
+  } else {
+    ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
+    ghost.position.set(w.x, P.wall.height / 2, w.z);
+  }
+  ghost.material.color.setHex(valid ? 0x6ee07a : 0xe05050);
 
-  // ---- 즉시 건설 ----
-  // 클릭한 프레임에 벽이 완성되고 충돌/길찾기에 바로 반영된다.
-  // 이펙트(펑)는 그 뒤에 얹히는 연출일 뿐 게임 상태를 지연시키지 않는다.
+  // ---- 즉시 건설 (선택 슬롯) ----
+  // 벽: 홀드하면 쿨다운마다 연속 설치 / 나머지: 누르는 순간 1회
   buildCooldown -= dt;
-  if (wantBuild && buildCooldown <= 0 && ghostCell.valid) {
-    resources -= P.res.wallCost;
-    const ob = addObstacle(gi, gj, false);
-    refreshClearance();
-    repathAll();
-    ob.mesh.scale.y = 0.02;
-    ob.mesh.position.y = 0.01;
-    popping.push({ ob, t: 0 });
-    spawnBuildFx(w.x, w.z);
-    buildCooldown = P.wall.cooldown;
+  if (slot.key === 'wall') {
+    if (wantBuild && buildCooldown <= 0 && valid) {
+      resources -= P.res.wallCost;
+      const ob = addObstacle(gi, gj, false);
+      refreshClearance();
+      repathAll();
+      ob.mesh.scale.y = 0.02;
+      ob.mesh.position.y = 0.01;
+      popping.push({ ob, t: 0 });
+      spawnBuildFx(w.x, w.z);
+      buildCooldown = P.wall.cooldown;
+    }
+  } else if (buildPressed && hasTile) {
+    if (slot.key === 'depot') placeBuilding('depot', gi, gj);
+    else if (slot.key === 'workshop') placeBuilding('workshop', gi, gj);
+    else if (slot.key === 'trap') placeTrap(gi, gj);
+    else if (slot.key === 'decoy') placeDecoy(gi, gj);
   }
 }
 
@@ -1679,6 +1799,9 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'repath', 0.1, 1.5, 0.05).name('경로 재계산 주기');
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('등장 딜레이(초)');
   f.add(P.enemy, 'spread', 0, 14, 0.5).name('스폰 흩어짐 (재시작부터)');
+  f.add(P.enemy, 'aggroRange', 0, 16, 0.5).name('건물 어그로 시야');
+  f.add(P.enemy, 'aggroChance', 0, 1, 0.05).name('한눈팔 확률');
+  f.add(P.enemy, 'aggroTime', 1, 12, 0.5).name('어그로 지속(초)');
 }
 {
   // 종류별 스탯 — 반지름을 바꾸면 그 종류의 모델 크기와 통행권이 같이 바뀐다
@@ -1722,7 +1845,14 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.res, 'collectRange', 0.8, 6, 0.1).name('수확 사거리');
 }
 {
-  const f = gui.addFolder('건물 (B 창고 · T 공방)');
+  const f = gui.addFolder('동료 (AI 햄스터)');
+  f.add(P.ally, 'enabled', 0, 1, 1).name('사용 (재시작부터, 0=솔로)');
+  f.add(P.ally, 'speed', 2, 12, 0.1).name('이동 속도');
+  f.add(P.ally, 'followDist', 1, 8, 0.1).name('따라오는 거리');
+  f.add(P.ally, 'fleeDist', 1, 10, 0.1).name('도망 시작 거리');
+}
+{
+  const f = gui.addFolder('건물 (2번 창고 · 3번 공방)');
   f.add(P.depot, 'cost', 5, 60, 1).name('창고 비용');
   f.add(P.depot, 'hp', 50, 1500, 10).name('창고 내구도 (새 건물부터)');
   f.add(P.depot, 'mineRadius', 1, 8, 0.5).name('창고 채굴 사거리');
@@ -1731,7 +1861,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
 }
 {
-  const f = gui.addFolder('도구 (Q 덫 · F 미끼) — 공방 필요');
+  const f = gui.addFolder('도구 (4번 덫 · 5번 미끼) — 공방 필요');
   f.add(P.tools, 'trapCost', 1, 30, 1).name('덫 비용');
   f.add(P.tools, 'trapSlow', 0.1, 0.9, 0.05).name('덫 감속 배율');
   f.add(P.tools, 'trapTime', 1, 20, 0.5).name('덫 지속(밟는 동안)');
@@ -1868,17 +1998,18 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 클릭/Space: 벽 · B: 치즈 창고(2x2) · T: 공방(2x2) · Q: 덫 · F: 미끼 · X: 벽 제거\n' +
-  '광맥 옆에 창고를 지어야 채굴됨 → 창고 옆에서 E 홀드로 수확 = 스테이지 목표 달성\n' +
-  '건물은 모든 고양이가 부순다 (벽은 파괴묘만) — 건물까지 벽으로 감쌀 공간을 확보할 것\n' +
-  '덫·미끼는 공방이 있어야 사용 가능 · 잡히면 적 본진으로 끌려감 · C/1~4 카메라 · P 일시정지 · R 재시작';
+  'WASD 이동 · 1~5 건설 선택 → 클릭/Space 설치 · X: 벽 제거 · E 홀드: 창고에서 수확\n' +
+  '광맥 옆에 창고(무료)를 지어야 채굴됨 · 수확량이 스테이지 목표 · 덫·미끼는 공방 필요\n' +
+  '고양이는 쫓아오다 가로막는 건물을 부수고, 눈에 띄면 한눈판다 (벽은 파괴묘만 부숨)\n' +
+  '잡히면 펑! 본진에서 기절 — 동료가 터치하면 구출. 모두 잡히면 끝 · C 카메라 · P 일시정지 · R 재시작';
 
 let alive = true;
 let paused = false;
 let survival = 0;
 let hudT = 0;
 let caughtCount = 0;
-let grace = 0;   // 잡힌 직후 짧은 무적 (초)
+let playerStunned = false; // 동료 모드에서 잡힌 상태 — 동료가 와서 깨워야 함
+let grace = 0;   // 구출/시작 직후 짧은 무적 (초)
 let flashT = 0;  // 화면 중앙 알림 남은 시간
 
 function restart() {
@@ -1900,6 +2031,17 @@ function restart() {
   stageCollected = 0;
   victory = false;
   growthSpawned = 0;
+  playerStunned = false;
+  allyGrace = 0;
+  ally.active = !!P.ally.enabled;
+  ally.stunned = false;
+  ally.path = [];
+  ally.x = PLAYER_SPAWN.x + 1.4;
+  ally.z = PLAYER_SPAWN.z + 0.6;
+  allyVis.group.rotation.x = 0;
+  allyVis.setOpacity(1);
+  playerVis.group.rotation.x = 0;
+  playerVis.setOpacity(1);
   for (const ob of [...obstacles.values()]) if (!ob.bedrock) removeObstacle(ob);
   refreshClearance();
   player.x = PLAYER_SPAWN.x; player.z = PLAYER_SPAWN.z;
@@ -1919,22 +2061,168 @@ function restart() {
 
 // 잡힘 — 죽지 않고 적의 시작 지점으로 끌려간다.
 //  (원작 유즈맵처럼: 잡히면 적 본진에 떨궈져 다시 도망쳐 나와야 함)
-function caught() {
+// 잡힘 — "펑" 하고 적 본진으로 끌려간다.
+//  동료 모드: 기절 상태로 눕는다. 동료(또는 플레이어)가 터치하면 부활.
+//  모두 기절하면 전멸 = 게임 오버. 동료가 없으면 한 번 잡히면 바로 전멸.
+function caught(who) {
   caughtCount++;
-  player.x = ENEMY_SPAWN.x; // 적 시작 지점으로 강제 이동
-  player.z = ENEMY_SPAWN.z;
-  player.faceX = 0; player.faceZ = 1;
-  collideWithObstacles(player, P.player.radius);
-  camTarget.set(player.x, 0, player.z); // 카메라 순간이동 (끌려간 게 보이게)
-  grace = P.player.graceTime;           // 짧은 무적 — 즉시 재포획 방지
+  spawnBuildFx(who.x, who.z); // 잡힌 자리에서 펑
+  who.x = ENEMY_SPAWN.x;
+  who.z = ENEMY_SPAWN.z + (who === ally ? 1.2 : 0);
+  who.faceX = 0; who.faceZ = 1;
+  collideWithObstacles(who, P.player.radius);
+  spawnBuildFx(who.x, who.z); // 떨어진 자리에서도 펑
   // 무리 전체가 잠깐 멈칫하고 다시 판단
   for (const e of enemies) {
-    e.path = []; e.repathT = 0; e.stallT = 0; e.attackTarget = null;
+    e.path = []; e.repathT = 0; e.stallT = 0; e.attackTarget = null; e.raidTarget = null;
   }
-  flashEl.textContent = `잡혔다! 적 본진으로 끌려감 (${caughtCount}회)`;
-  flashEl.style.color = '#ff6b6b';
-  flashEl.style.opacity = '1';
-  flashT = 1.6;
+  const soloMode = !ally.active;
+  if (who === player) {
+    playerStunned = true;
+    camTarget.set(player.x, 0, player.z); // 카메라가 끌려간 걸 보여줌
+    if (soloMode || ally.stunned) return gameOver();
+    flashMsg('잡혔다! 동료가 구하러 올 때까지 기절', '#ff6b6b');
+  } else {
+    ally.stunned = true;
+    ally.path = [];
+    if (playerStunned) return gameOver();
+    flashMsg('동료가 잡혔다! 적 본진에서 기절 — 구하러 가자', '#ff6b6b');
+  }
+}
+
+function gameOver() {
+  alive = false;
+  ghost.visible = false;
+  overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
+  document.getElementById('overlay-sub').textContent =
+    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 · 잡힘 ${caughtCount}회 — R 키로 다시 시작`;
+  overlayEl.classList.remove('hidden');
+}
+
+// 구출: 기절한 쪽에 다른 햄스터가 닿으면 부활
+function updateRescue() {
+  if (!ally.active) return;
+  const near = (a, b) => Math.hypot(a.x - b.x, a.z - b.z) < 1.2;
+  if (playerStunned && !ally.stunned && near(ally, player)) {
+    playerStunned = false;
+    grace = P.player.graceTime;
+    spawnBuildFx(player.x, player.z);
+    flashMsg('구출됐다!', '#6ee07a');
+  }
+  if (ally.stunned && !playerStunned && near(player, ally)) {
+    ally.stunned = false;
+    allyGrace = P.player.graceTime;
+    spawnBuildFx(ally.x, ally.z);
+    flashMsg('동료를 구출했다!', '#6ee07a');
+  }
+}
+
+// ---- 동료 AI ----
+//  기절 → 눕기 / 플레이어 기절 → 구조하러 이동 / 적 접근 → 도망 /
+//  그 외 → 플레이어 따라다니기. 이동은 자기 반지름 기준 A* + 웨이포인트.
+let allyGrace = 0;
+function updateAlly(dt) {
+  if (!ally.active) { allyVis.group.visible = false; return; }
+  allyVis.group.visible = true;
+  if (allyGrace > 0) allyGrace -= dt;
+
+  if (ally.stunned) {
+    // 기절 연출: 눕고 반투명 맥동
+    allyVis.group.position.set(ally.x, 0.25, ally.z);
+    allyVis.group.rotation.x = -Math.PI / 2;
+    allyVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
+    return;
+  }
+  allyVis.group.rotation.x = 0;
+  allyVis.setOpacity(1);
+
+  // 목표 결정
+  let gx = player.x, gz = player.z, urgent = false;
+  let eBest0 = null, eD0 = Infinity;
+  for (const e of enemies) {
+    const dd = Math.hypot(e.x - ally.x, e.z - ally.z);
+    if (dd < eD0) { eD0 = dd; eBest0 = e; }
+  }
+  if (playerStunned) {
+    // 구조: 적이 붙어 있으면 카이팅으로 떼어내고, 틈이 나면 달려간다.
+    // 동료가 적보다 약간 빨라서 시간이 지나면 반드시 틈이 생긴다.
+    if (eBest0 && eD0 < P.ally.fleeDist * 0.9) {
+      const ax = ally.x - eBest0.x, az = ally.z - eBest0.z;
+      const l = Math.hypot(ax, az) || 1;
+      // 도망가되 플레이어 쪽으로 살짝 휘게 (원을 그리며 접근)
+      gx = clamp(ally.x + (ax / l) * 5 + (player.x - ally.x) * 0.25, -HALF + 1, HALF - 1);
+      gz = clamp(ally.z + (az / l) * 5 + (player.z - ally.z) * 0.25, -HALF + 1, HALF - 1);
+    }
+    urgent = true;
+  } else {
+    // 도망: 가장 가까운 적이 너무 가까우면 반대쪽으로
+    const eBest = eBest0, eD = eD0;
+    if (eBest && eD < P.ally.fleeDist) {
+      const ax = ally.x - eBest.x, az = ally.z - eBest.z;
+      const l = Math.hypot(ax, az) || 1;
+      gx = clamp(ally.x + (ax / l) * 6, -HALF + 1, HALF - 1);
+      gz = clamp(ally.z + (az / l) * 6, -HALF + 1, HALF - 1);
+      urgent = true;
+    } else if (Math.hypot(player.x - ally.x, player.z - ally.z) < P.ally.followDist) {
+      ally.path = [];
+      allyVis.group.position.set(ally.x, 0, ally.z);
+      allyVis.group.rotation.y = Math.atan2(ally.faceX, ally.faceZ) + Math.PI;
+      return; // 충분히 가까움 — 대기
+    }
+  }
+  ally.goalX = gx; ally.goalZ = gz;
+
+  // 경로 (플레이어와 같은 몸집이라 1칸 틈도 지나다닌다)
+  ally.repathT -= dt;
+  if (ally.repathT <= 0 || !ally.path.length) {
+    ally.repathT = urgent ? 0.25 : 0.5;
+    const r = P.ally.radius;
+    const pass = (i) => canPass(clearAll, i, r);
+    const res = astar(nearestPassableNav(ally.x, ally.z, pass), worldToNav(gx, gz), pass, () => 0);
+    ally.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+  }
+  while (ally.path.length && Math.hypot(ally.x - ally.path[0].x, ally.z - ally.path[0].z) < navRes * 0.9)
+    ally.path.shift();
+  const tx = ally.path.length ? ally.path[0].x : gx;
+  const tz = ally.path.length ? ally.path[0].z : gz;
+  let dx = tx - ally.x, dz = tz - ally.z;
+  const dl = Math.hypot(dx, dz);
+  if (dl > 0.05) {
+    dx /= dl; dz /= dl;
+    // 회피 조향: 가까운 적을 밀어내는 벡터를 섞는다.
+    // 구조하러 갈 때도 정면 돌파 대신 스치듯 우회하는 움직임이 나온다.
+    let rx = 0, rz = 0;
+    for (const e of enemies) {
+      const ex = ally.x - e.x, ez = ally.z - e.z;
+      const ed = Math.hypot(ex, ez);
+      const danger = enemyR(e) + 2.6;
+      if (ed < danger && ed > 1e-3) {
+        const wgt = (danger - ed) / danger;
+        rx += (ex / ed) * wgt * 1.6;
+        rz += (ez / ed) * wgt * 1.6;
+      }
+    }
+    dx += rx; dz += rz;
+    const l2 = Math.hypot(dx, dz) || 1;
+    dx /= l2; dz /= l2;
+    ally.x += dx * P.ally.speed * dt;
+    ally.z += dz * P.ally.speed * dt;
+    ally.faceX = dx; ally.faceZ = dz;
+  }
+  collideWithObstacles(ally, P.ally.radius);
+  allyVis.group.position.set(ally.x, 0, ally.z);
+  allyVis.group.rotation.y = Math.atan2(ally.faceX, ally.faceZ) + Math.PI;
+}
+
+const hotbarEl = document.getElementById('hotbar');
+function updateHotbar() {
+  hotbarEl.innerHTML = BUILD_SLOTS.map((sl, k) => {
+    const cost = sl.cost();
+    const afford = resources >= cost;
+    const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
+    const costTxt = cost > 0 ? `${cost}치즈` : '무료';
+    return `<div class="${cls}"><b>${k + 1}</b>${sl.label}<br>${costTxt}</div>`;
+  }).join('');
 }
 
 function flashMsg(text, color = '#6ee07a') {
@@ -1975,6 +2263,7 @@ function updateHUD() {
     (storedTotal > 0.5 ? ` (저장 ${storedTotal.toFixed(0)}${collecting ? ' ⛏ 수확 중!' : ' — 가서 E)'}` : '') +
     (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(T)') + '\n' +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
+    (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : '동행 중'}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
     (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
     (paused ? '\n⏸ 일시정지 (P)' : '');
@@ -1986,6 +2275,8 @@ function updateHUD() {
 for (const [i, j] of BEDROCK_LAYOUT) addObstacle(i, j, true);
 refreshClearance();          // clearAll 먼저 — refreshReach가 이걸 읽는다
 setEnemyCount(P.enemy.count);
+restart();                   // 동료·스테이지·핫바까지 한 번에 초기 상태로
+updateHotbar();
 
 window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
@@ -2002,18 +2293,26 @@ function tick(dt) {
       flashT -= dt;
       if (flashT <= 0) flashEl.style.opacity = '0';
     }
+    updateAlly(dt);
+    updateRescue();
     if (enemyActive()) {
-      updateSpawns();   // 새 종류 해금 + 주기적 증원
+      updateSpawns();   // 스테이지 외 추가 증원 (옵션)
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
       }
       separateEnemies();
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
-      if (grace <= 0) {
-        for (const e of enemies) {
-          const d = Math.hypot(player.x - e.x, player.z - e.z);
-          if (d < P.player.radius + enemyR(e) - 0.02) { caught(); break; }
+      for (const e of enemies) {
+        if (!alive) break;
+        const er2 = enemyR(e);
+        if (grace <= 0 && !playerStunned &&
+            Math.hypot(player.x - e.x, player.z - e.z) < P.player.radius + er2 - 0.02) {
+          caught(player);
+        }
+        if (alive && ally.active && !ally.stunned && allyGrace <= 0 &&
+            Math.hypot(ally.x - e.x, ally.z - e.z) < P.ally.radius + er2 - 0.02) {
+          caught(ally);
         }
       }
     } else {
@@ -2033,7 +2332,7 @@ function tick(dt) {
   updateFx(dt);
   updateCamera(dt);
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); }
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); }
 }
 
 let prevT = performance.now();
@@ -2067,6 +2366,11 @@ window.__game = {
   get victory() { return victory; },
   set stageCollected(v) { stageCollected = v; },
   advanceStage, stageGoal, hasWorkshop, depotCount,
+  ally, updateAlly, caught, gameOver,
+  get playerStunned() { return playerStunned; },
+  set playerStunned(v) { playerStunned = v; },
+  get buildSlot() { return buildSlot; },
+  set buildSlot(v) { buildSlot = v; },
   get storedTotal() { return storedTotal; },
   get collecting() { return collecting; },
   enemyR, unlockedTypes,
