@@ -14,6 +14,10 @@ const P = {
     aggroRange: 7.0,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
     aggroChance: 0.35,     // 경로 재계산 때 한눈팔 확률
     aggroTime: 4.0,        // 한 번 끌리면 이 시간 동안 유지
+    flankRadius: 5.5,      // 목표 둘레 이 반경의 지점을 노리고 접근한다
+    probeTurn: 1.1,        // 막혔을 때 접근각을 돌리는 크기(라디안)
+    probeHold: 2.5,        // 새 접근각을 유지하는 시간(초)
+    drift: 0.35,           // 평상시 접근각이 흐르는 속도(라디안/초)
   },
   ally: {
     enabled: 1,            // 1=AI 동료 햄스터 (재시작부터). 0=솔로: 잡히면 즉시 전멸
@@ -28,16 +32,21 @@ const P = {
   //  파괴묘: 제일 크고 느림, 유일하게 벽을 부숨 → 밀폐도 시한부가 됨
   // bldgDps: 건물(창고/공방) 공격력 — 모든 종류가 건물은 부술 수 있다 (원작:
   //          무적 파일런은 못 부숴도 넥서스/생산 건물은 부서짐)
-  chaser: { radius: 1.35, speed: 5.0, bldgDps: 15, stamina: 70 },
-  runner: { radius: 0.85, speed: 6.8, bldgDps: 10, stamina: 45 },
-  breaker: { radius: 1.6, speed: 4.2, dps: 30, bldgDps: 40, stamina: 130 },
+  // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
+  // reward = 처치 시 주는 치즈.
+  chaser: { radius: 1.35, speed: 5.0, bldgDps: 15, hp: 260, reward: 18 },
+  runner: { radius: 0.85, speed: 6.8, bldgDps: 10, hp: 150, reward: 12 },
+  breaker: { radius: 1.6, speed: 4.2, dps: 30, bldgDps: 40, hp: 420, reward: 30 },
   wall: { hp: 100, cooldown: 0.15, height: 1.1, range: 3.0 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
   depot: { cost: 0, hp: 400, mineRadius: 3.0 },                  // 치즈 창고 — 무료 (공간이 비용)
   workshop: { cost: 15, hp: 300 },                               // 공방 — 덫/미끼/업그레이드 해금
-  tower: { cost: 35, hp: 260, range: 6.5, dps: 22 },             // 경비탑 — 적을 쫓아냄 (죽이진 않음)
+  tower: { cost: 35, hp: 260, range: 6.5, dps: 26 },             // 경비탑 — 적을 처치한다
+  // 방어병 — 타일에 배치하고 우클릭으로 재배치 명령. 벽 너머로 던진다.
+  // 적과 닿으면 즉시 쓰러진다(햄스터니까) → 벽 뒤에 세우는 게 정석
+  guard: { cost: 25, range: 7.0, dmg: 26, reload: 1.1, speed: 5.2, radius: 0.35 },
   res: {
     startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 60,
   },
@@ -64,7 +73,7 @@ const P = {
     trapCost: 8, trapSlow: 0.35, trapTime: 6,     // 끈끈이 덫: 밟는 동안 감속
     decoyCost: 12, decoyTime: 8,                  // 미끼 치즈: 적을 유인
   },
-  threat: { interval: 30, speedGain: 0.4, dpsGain: 6, everyLevels: 0, repelTime: 6 },
+  threat: { interval: 30, speedGain: 0.4, dpsGain: 6, everyLevels: 0, hpGain: 25 },
 };
 
 // ---- 10 스테이지 (시간 기반) ----
@@ -91,6 +100,7 @@ const BUILD_SLOTS = [
   { key: 'depot', label: '치즈 창고', size: 2, cost: () => P.depot.cost },
   { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
   { key: 'tower', label: '경비탑', size: 2, cost: () => P.tower.cost },
+  { key: 'guard', label: '방어병', size: 1, cost: () => P.guard.cost },
   { key: 'trap', label: '끈끈이 덫', size: 1, cost: () => P.tools.trapCost },
   { key: 'decoy', label: '미끼 치즈', size: 1, cost: () => P.tools.decoyCost },
 ];
@@ -698,6 +708,8 @@ const enemyR = (e) => typeP(e).radius;
 const enemySpeedOf = (e) => typeP(e).speed + threatLevel() * P.threat.speedGain;
 const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain;
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
+const typeMaxHp = (type) => P[type].hp + threatLevel() * P.threat.hpGain;
+const enemyMaxHp = (e) => typeMaxHp(e.type);
 
 function makeEnemy(type, n) {
   const p = enemySpawnPos(n);
@@ -715,8 +727,9 @@ function makeEnemy(type, n) {
     stallT: 0,
     prevX: p.x, prevZ: p.z,
     dirX: 0, dirZ: 1,
-    stamina: P[type].stamina,
-    repelT: 0,       // >0이면 쫓겨나 무력화된 상태
+    hp: typeMaxHp(type),
+    approachA: n * 2.399963,  // 접근 각도 — 막히면 돌려서 다른 방향으로 시도
+    probeT: 0,                // 현재 접근각을 유지할 남은 시간
     hitFlash: 0,
     vis,
   };
@@ -754,6 +767,7 @@ const nodeGeo = new THREE.OctahedronGeometry(0.32);
 const nodes = [];   // rebuildWorld에서 채운다
 const nodeAt = (i, j) => nodes.find((n) => n.i === i && n.j === j);
 let minedCount = 0; // 지금 채굴 중인 광맥 수 (HUD용)
+let killCount = 0;  // 처치한 적 수 (HUD용)
 
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
 //  → 노드가 이 영역 밖이면 "확보됨"
@@ -999,17 +1013,17 @@ function updateBuildings(dt) {
 }
 
 // ---- 경비탑 ----
-// 적을 죽이지 않는다. 스태미나를 깎아 본진으로 "쫓아낼" 뿐이고,
-// 쫓겨난 적은 repelTime 뒤 다시 온다 (D3: 플레이어는 여전히 살상력이 없다).
+// 사거리 안의 적 체력을 깎아 **처치한다**. 적은 체력이 높아서(260~420) 탑 하나로는
+// 오래 걸리고, 처치하면 치즈를 준다 (D27). 웨이브는 스테이지마다 다시 채워지므로
+// 처치가 압박을 영구히 없애지는 않는다.
 const beamGeo = new THREE.CylinderGeometry(0.06, 0.06, 1, 6);
 function updateTower(b, dt) {
-  // 사거리 안에서 가장 스태미나가 적은(= 곧 쫓아낼 수 있는) 적을 노린다
+  // 사거리 안에서 체력이 가장 적은(= 곧 정리할 수 있는) 적을 노린다
   let target = null, best = Infinity;
   for (const e of enemies) {
-    if (e.repelT > 0) continue;
     const d = Math.hypot(e.x - b.cx, e.z - b.cz);
     if (d > P.tower.range) continue;
-    if (e.stamina < best) { best = e.stamina; target = e; }
+    if (e.hp < best) { best = e.hp; target = e; }
   }
   const head = b.mesh.userData.head;
   if (!b.beam) {
@@ -1022,11 +1036,9 @@ function updateTower(b, dt) {
     scene.add(b.beam);
   }
   if (!target) { b.beam.visible = false; return; }
-  if (head) head.rotation.y = Math.atan2(target.x - b.cx, -(target.z - b.cz)) + Math.PI;
+  if (head) head.rotation.y = Math.atan2(target.x - b.cx, target.z - b.cz) + Math.PI;
 
-  target.stamina -= effTowerDps() * dt;
-  target.hitFlash = 0.15;
-  if (target.stamina <= 0) repelEnemy(target);
+  damageEnemy(target, effTowerDps() * dt);
 
   // 빔: 탑 머리 → 적 몸통
   const ax = b.cx, ay = 1.5, az = b.cz;
@@ -1043,17 +1055,21 @@ function updateTower(b, dt) {
   b.beam.material.opacity = 0.5 + 0.3 * Math.abs(Math.sin(performance.now() * 0.03));
 }
 
-// 쫓아내기 — 본진으로 돌려보내고 잠시 무력화. 죽는 게 아니라 다시 온다.
-function repelEnemy(e) {
+// 적 피해 → 처치. 처치하면 치즈를 준다.
+function damageEnemy(e, dmg) {
+  e.hp -= dmg;
+  e.hitFlash = 0.15;
+  if (e.hp > 0) return;
+  const reward = P[e.type].reward;
+  resources += reward;
   spawnBuildFx(e.x, e.z);
-  const p = enemySpawnPos(enemies.indexOf(e));
-  e.x = p.x; e.z = p.z;
-  e.prevX = p.x; e.prevZ = p.z;
-  e.stamina = typeP(e).stamina;
-  e.repelT = P.threat.repelTime;
-  e.path = []; e.repathT = 0; e.attackTarget = null; e.raidTarget = null;
-  spawnBuildFx(e.x, e.z);
-  flashMsg(`${TYPE_INFO[e.type].label}를 쫓아냈다!`, '#bfaaff');
+  for (let k = 0; k < 3; k++) spawnCheeseBit(e.x, e.z, null);
+  scene.remove(e.vis.group);
+  const idx = enemies.indexOf(e);
+  if (idx >= 0) enemies.splice(idx, 1);
+  killCount++;
+  flashMsg(`${TYPE_INFO[e.type].label} 처치! 치즈 +${reward}`, '#bfaaff');
+  refreshReach();
 }
 
 // 광맥은 이제 시각 전용 — 채굴 주체는 창고다
@@ -1083,6 +1099,169 @@ function updateNodes(dt) {
       m.material.emissiveIntensity = 0;
     }
     n.beingMined = false; // 다음 프레임에 updateBuildings가 다시 세움
+  }
+}
+
+// ============================================================
+// 방어병 — 배치하고 명령하는 유닛 (D29)
+//  · 타일에 배치 (핫바). 우클릭으로 선택 → 다른 타일 우클릭으로 이동 명령
+//  · 사거리 안 적에게 물건을 던진다. 투사체는 벽을 넘어간다
+//  · 적과 닿으면 즉시 쓰러진다 — 벽 뒤에 세워야 오래 산다
+// ============================================================
+const guards = [];
+const projectiles = [];
+const projGeo = new THREE.SphereGeometry(0.16, 8, 6);
+const projMat = new THREE.MeshStandardMaterial({
+  color: 0xffe9a8, roughness: 0.5,
+  emissive: new THREE.Color(0xd8a63a), emissiveIntensity: 0.5,
+});
+const selRingGeo = new THREE.RingGeometry(0.5, 0.62, 20);
+let selectedGuard = null;
+
+function makeGuardVis() {
+  const v = makeHamster(0x6f8f4f);            // 군용 올리브색
+  const helm = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0x44502f, roughness: 0.6 })
+  );
+  helm.position.set(0, 2.55, -0.1);
+  helm.castShadow = true;
+  v.group.add(helm);
+  v.group.scale.setScalar(P.guard.radius);
+  return v;
+}
+
+function placeGuard(i, j) {
+  if (resources < P.guard.cost) { flashMsg(`치즈가 부족합니다 (방어병 ${P.guard.cost})`, '#e05050'); return null; }
+  if (obstacles.has(cellKey(i, j)) || nodeAt(i, j)) { flashMsg('그 자리에는 세울 수 없습니다', '#e05050'); return null; }
+  const w = cellToWorld(i, j);
+  if (Math.hypot(player.x - w.x, player.z - w.z) > P.wall.range + 1.0) { flashMsg('너무 멉니다', '#e05050'); return null; }
+  resources -= P.guard.cost;
+  const vis = makeGuardVis();
+  const ring = new THREE.Mesh(
+    selRingGeo,
+    new THREE.MeshBasicMaterial({ color: 0x9fe8a0, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  ring.renderOrder = 996;
+  ring.visible = false;
+  scene.add(ring);
+  const g = { x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1, vis, ring, path: [], repathT: 0, reload: 0 };
+  guards.push(g);
+  spawnBuildFx(w.x, w.z);
+  return g;
+}
+
+function removeGuard(g, byEnemy) {
+  scene.remove(g.vis.group);
+  scene.remove(g.ring);
+  g.ring.material.dispose();
+  const k = guards.indexOf(g);
+  if (k >= 0) guards.splice(k, 1);
+  if (selectedGuard === g) selectedGuard = null;
+  if (byEnemy) { spawnBuildFx(g.x, g.z); flashMsg('방어병이 쓰러졌다!', '#ff6b6b'); }
+}
+
+function clearGuards() {
+  for (const g of [...guards]) removeGuard(g, false);
+  projectiles.length = 0;
+}
+
+function guardAtWorld(x, z) {
+  let best = null, bd = 1.1;
+  for (const g of guards) {
+    const d = Math.hypot(g.x - x, g.z - z);
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
+}
+
+function throwAt(g, e) {
+  const m = new THREE.Mesh(projGeo, projMat);
+  m.position.set(g.x, 0.9, g.z);
+  m.castShadow = true;
+  scene.add(m);
+  projectiles.push({
+    mesh: m, t: 0, dur: 0.35 + Math.hypot(e.x - g.x, e.z - g.z) * 0.045,
+    x0: g.x, z0: g.z, target: e, dmg: P.guard.dmg,
+  });
+}
+
+function updateProjectiles(dt) {
+  for (let k = projectiles.length - 1; k >= 0; k--) {
+    const q = projectiles[k];
+    q.t += dt;
+    const p = Math.min(q.t / q.dur, 1);
+    const tx = q.target && enemies.includes(q.target) ? q.target.x : q.mesh.position.x;
+    const tz = q.target && enemies.includes(q.target) ? q.target.z : q.mesh.position.z;
+    q.mesh.position.set(
+      q.x0 + (tx - q.x0) * p,
+      0.9 + Math.sin(p * Math.PI) * 1.6,   // 포물선 — 벽을 넘어간다
+      q.z0 + (tz - q.z0) * p
+    );
+    q.mesh.rotation.x += dt * 10;
+    if (p >= 1) {
+      if (q.target && enemies.includes(q.target)) damageEnemy(q.target, q.dmg);
+      scene.remove(q.mesh);
+      projectiles.splice(k, 1);
+    }
+  }
+}
+
+function updateGuards(dt) {
+  for (const g of [...guards]) {
+    // 적과 접촉 → 즉시 쓰러짐
+    for (const e of enemies) {
+      if (Math.hypot(g.x - e.x, g.z - e.z) < P.guard.radius + enemyR(e) - 0.02) {
+        removeGuard(g, true);
+        break;
+      }
+    }
+    if (!guards.includes(g)) continue;
+
+    // 명령받은 자리로 이동
+    const dGoal = Math.hypot(g.gx - g.x, g.gz - g.z);
+    if (dGoal > 0.25) {
+      g.repathT -= dt;
+      if (g.repathT <= 0 || !g.path.length) {
+        g.repathT = 0.4;
+        const pass = (i) => canPass(clearAll, i, P.guard.radius);
+        const res = astar(nearestPassableNav(g.x, g.z, pass), worldToNav(g.gx, g.gz), pass, () => 0);
+        g.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      }
+      while (g.path.length && Math.hypot(g.x - g.path[0].x, g.z - g.path[0].z) < navRes * 0.9) g.path.shift();
+      const tx = g.path.length ? g.path[0].x : g.gx;
+      const tz = g.path.length ? g.path[0].z : g.gz;
+      let dx = tx - g.x, dz = tz - g.z;
+      const dl = Math.hypot(dx, dz);
+      if (dl > 0.03) {
+        dx /= dl; dz /= dl;
+        g.x += dx * P.guard.speed * dt;
+        g.z += dz * P.guard.speed * dt;
+        g.faceX = dx; g.faceZ = dz;
+      }
+      collideWithObstacles(g, P.guard.radius);
+    } else {
+      g.path.length = 0;
+    }
+
+    // 사거리 안 적에게 투척 (가장 가까운 적)
+    g.reload -= dt;
+    let tgt = null, bd = P.guard.range;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - g.x, e.z - g.z);
+      if (d < bd) { bd = d; tgt = e; }
+    }
+    if (tgt) {
+      g.faceX = (tgt.x - g.x) / bd; g.faceZ = (tgt.z - g.z) / bd;
+      if (g.reload <= 0) { throwAt(g, tgt); g.reload = P.guard.reload; }
+    }
+
+    g.vis.group.position.set(g.x, 0, g.z);
+    g.vis.group.rotation.y = Math.atan2(g.faceX, g.faceZ) + Math.PI;
+    g.ring.position.set(g.x, 0.06, g.z);
+    g.ring.visible = selectedGuard === g;
   }
 }
 
@@ -1356,7 +1535,20 @@ function planEnemyPath(enemy) {
       const dd = Math.hypot(t.x - enemy.x, t.z - enemy.z);
       if (dd < tD) { tD = dd; tBest = t; }
     }
-    gx = tBest.x; gz = tBest.z;
+    // 직진만 하지 않는다 — 목표 둘레의 "접근 지점"을 노린다 (D28).
+    // 각 적이 서로 다른 각도(approachA)를 갖고, 반경은 거리에 비례해 줄어든다.
+    // → 멀리서는 서로 다른 방향으로 벌어져 오다가 가까워지며 조여든다(나선형).
+    //   막히면 각도를 크게 돌려 다른 방향에서 다시 시도한다.
+    if (tD < 1.5) {
+      gx = tBest.x; gz = tBest.z;                 // 코앞이면 직진
+    } else {
+      const r = Math.min(P.enemy.flankRadius, tD * 0.55);
+      const ax = clamp(tBest.x + Math.cos(enemy.approachA) * r, -HALF + 1, HALF - 1);
+      const az = clamp(tBest.z + Math.sin(enemy.approachA) * r, -HALF + 1, HALF - 1);
+      // 접근 지점이 내 몸집으로 설 수 없는 자리면 그냥 목표 직행
+      if (canPass(clearAll, worldToNav(ax, az), er)) { gx = ax; gz = az; }
+      else { gx = tBest.x; gz = tBest.z; }
+    }
   }
   enemy.goalX = gx; enemy.goalZ = gz;
   const goal = worldToNav(gx, gz);
@@ -1461,6 +1653,24 @@ function updateStageTimer(dt) {
   if (stageT >= stageDur()) advanceStage();
 }
 
+// 스테이지 표가 의도한 누적 구성. 처치로 줄어들었으면 웨이브 때 다시 채운다.
+function cumulativeComposition() {
+  const c = { chaser: P.enemy.count, runner: 0, breaker: 0 };
+  for (let k = 0; k < Math.min(stage, STAGES.length); k++)
+    for (const [ty, n] of Object.entries(STAGES[k].add)) c[ty] += n;
+  return c;
+}
+
+function topUpToCurve() {
+  const want = cumulativeComposition();
+  const have = { chaser: 0, runner: 0, breaker: 0 };
+  for (const e of enemies) have[e.type]++;
+  let added = 0;
+  for (const ty of Object.keys(want))
+    while (have[ty] < want[ty]) { enemies.push(makeEnemy(ty, enemies.length)); have[ty]++; added++; }
+  if (added) { refreshReach(); flashMsg(`새 무리가 몰려온다! (+${added})`, '#ff8b5e'); }
+}
+
 function advanceStage() {
   if (stage >= STAGES.length) {
     victory = true;
@@ -1474,6 +1684,7 @@ function advanceStage() {
   stageT = 0;
   for (const n of nodes) n.amount = P.res.nodeAmount; // 새 치즈가 익음
   spawnStageAdds(stage - 1);
+  topUpToCurve();   // 처치로 줄어든 만큼 보충 — 처치는 한숨 돌릴 시간을 줄 뿐
   flashMsg(`스테이지 ${stage} — ${stageDur()}초 버티기`, '#6ee07a');
 }
 
@@ -1510,19 +1721,11 @@ function separateEnemies() {
 
 function updateEnemy(enemy, dt) {
   const er = enemyR(enemy);
-  // 쫓겨난 상태: 본진에서 잠시 멈춰 있다가 스태미나를 회복하고 다시 온다
-  if (enemy.repelT > 0) {
-    enemy.repelT -= dt;
-    enemy.isAttacking = false;
-    enemy.aiMode = '후퇴';
-    enemy.vis.setOpacity(0.35 + 0.25 * Math.sin(performance.now() * 0.006));
-    enemy.vis.group.position.set(enemy.x, 0, enemy.z);
-    if (enemy.repelT <= 0) { enemy.vis.setOpacity(1); enemy.repathT = 0; }
-    return;
-  }
-  // 스태미나 서서히 회복 (탑 사거리를 벗어나면 다시 차오름)
-  enemy.stamina = Math.min(enemy.stamina + typeP(enemy).stamina * 0.05 * dt, typeP(enemy).stamina);
+  // 체력 아주 느린 자연 회복 (찔끔찔끔 누적으로 죽지 않게 — 처치엔 집중 화력이 필요)
+  enemy.hp = Math.min(enemy.hp + enemyMaxHp(enemy) * 0.02 * dt, enemyMaxHp(enemy));
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt;
+  if (enemy.probeT > 0) enemy.probeT -= dt;
+  else enemy.approachA += P.enemy.drift * dt;   // 천천히 돌며 계속 각도를 바꿔 본다
   enemy.repathT -= dt;
   if (enemy.repathT <= 0) {
     enemy.repathT = P.enemy.repath;
@@ -1593,6 +1796,15 @@ function updateEnemy(enemy, dt) {
   //  - 습격: 목표 건물이 손에 닿으면 공격 (모든 종류)
   //  - 파괴묘만: 오래 막히면 손 닿는 벽 공격
   //  - 순찰묘/날쌘묘는 벽은 절대 건드리지 않는다 (건물만 공격 가능)
+  // 막혔다 → 접근각을 크게 돌려 "다른 방향에서 다시" 시도한다.
+  // 벽에 부딪힌 채 같은 자리를 파는 대신 옆구리를 노리는 움직임이 여기서 나온다.
+  if (enemy.stallT > 0.45 && enemy.probeT <= 0) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    enemy.approachA += dir * (P.enemy.probeTurn * (0.7 + Math.random() * 0.8));
+    enemy.probeT = P.enemy.probeHold;
+    enemy.repathT = 0;
+    enemy.stallT = 0;
+  }
   if (enemy.aiMode === '추격' && enemy.stallT > 0.4) enemy.repathT = 0;
   const stallLimit = enemy.aiMode === '추격' ? 2.5 : 0.6;
 
@@ -1648,7 +1860,7 @@ function updateEnemy(enemy, dt) {
   }
 
   // 공격 중 = 빨간 펄스 / 탑에 맞는 중 = 보라 섬광 / 스태미나 낮음 = 옅은 발광
-  const stFrac = enemy.stamina / typeP(enemy).stamina;
+  const stFrac = enemy.hp / enemyMaxHp(enemy);
   if (enemy.hitFlash > 0) {
     enemy.vis.setEmissive(0xbfaaff, 0.9);
   } else if (bldgTarget || enemy.attackTarget) {
@@ -1663,7 +1875,7 @@ function updateEnemy(enemy, dt) {
   enemy.vis.group.position.set(enemy.x, 0, enemy.z);
   if (dl > 0.05) {
     enemy.dirX = dx; enemy.dirZ = dz;
-    enemy.vis.group.rotation.y = Math.atan2(dx, -dz) + Math.PI;
+    enemy.vis.group.rotation.y = Math.atan2(dx, dz) + Math.PI;
   }
 }
 
@@ -1694,6 +1906,36 @@ window.addEventListener('blur', () => keys.clear());
 let mouseDown = false;
 window.addEventListener('mousedown', (e) => { if (e.button === 0 && e.target === renderer.domElement) mouseDown = true; });
 window.addEventListener('mouseup', () => (mouseDown = false));
+window.addEventListener('contextmenu', (e) => {
+  if (e.target === renderer.domElement) e.preventDefault();
+});
+// 우클릭 = 방어병 명령 (좌클릭은 건설이라 충돌을 피함)
+window.addEventListener('mousedown', (e) => {
+  if (e.button !== 2 || e.target !== renderer.domElement || !alive) return;
+  const hit = pointerGround(e);
+  if (!hit) return;
+  const g = guardAtWorld(hit.x, hit.z);
+  if (g) { selectedGuard = g; flashMsg('방어병 선택 — 우클릭으로 이동 명령', '#9fe8a0'); return; }
+  if (selectedGuard) {
+    const c = worldToCell(hit.x, hit.z);
+    if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
+    const w = cellToWorld(c.i, c.j);
+    selectedGuard.gx = w.x; selectedGuard.gz = w.z;
+    selectedGuard.repathT = 0;
+    selectedGuard.path.length = 0;
+  }
+});
+
+// 화면 좌표 → 바닥 평면 교점
+function pointerGround(ev) {
+  const ndc = new THREE.Vector2(
+    (ev.clientX / innerWidth) * 2 - 1,
+    -(ev.clientY / innerHeight) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, activeCam());
+  const hit = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(groundPlane, hit) ? hit : null;
+}
 
 // 마우스 → 바닥 평면 레이캐스트 (타일 선택)
 const raycaster = new THREE.Raycaster();
@@ -2032,6 +2274,7 @@ function updatePlayer(dt) {
     if (slot.key === 'depot') placeBuilding('depot', gi, gj);
     else if (slot.key === 'workshop') placeBuilding('workshop', gi, gj);
     else if (slot.key === 'tower') placeBuilding('tower', gi, gj);
+    else if (slot.key === 'guard') placeGuard(gi, gj);
     else if (slot.key === 'trap') placeTrap(gi, gj);
     else if (slot.key === 'decoy') placeDecoy(gi, gj);
   }
@@ -2133,7 +2376,31 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.tower, 'hp', 50, 1500, 10).name('경비탑 내구도 (새 건물부터)');
   f.add(P.tower, 'range', 2, 16, 0.5).name('경비탑 사거리');
   f.add(P.tower, 'dps', 2, 80, 1).name('경비탑 화력(초당)');
-  f.add(P.threat, 'repelTime', 1, 20, 0.5).name('쫓겨난 뒤 복귀까지(초)');
+  f.add(P.threat, 'hpGain', 0, 120, 5).name('적 체력 증가/레벨');
+}
+{
+  const f = gui.addFolder('방어병 (우클릭 명령)');
+  f.add(P.guard, 'cost', 5, 100, 1).name('비용');
+  f.add(P.guard, 'range', 2, 16, 0.5).name('투척 사거리');
+  f.add(P.guard, 'dmg', 2, 100, 1).name('투척 피해');
+  f.add(P.guard, 'reload', 0.2, 4, 0.1).name('투척 간격(초)');
+  f.add(P.guard, 'speed', 1, 12, 0.1).name('이동 속도');
+}
+{
+  const f = gui.addFolder('적 체력 / 보상');
+  f.add(P.chaser, 'hp', 30, 900, 10).name('순찰묘 체력');
+  f.add(P.chaser, 'reward', 0, 100, 1).name('순찰묘 처치 보상');
+  f.add(P.runner, 'hp', 30, 900, 10).name('날쌘묘 체력');
+  f.add(P.runner, 'reward', 0, 100, 1).name('날쌘묘 처치 보상');
+  f.add(P.breaker, 'hp', 30, 900, 10).name('파괴묘 체력');
+  f.add(P.breaker, 'reward', 0, 100, 1).name('파괴묘 처치 보상');
+}
+{
+  const f = gui.addFolder('적 접근 방식 (우회 시도)');
+  f.add(P.enemy, 'flankRadius', 0, 14, 0.5).name('접근 반경');
+  f.add(P.enemy, 'probeTurn', 0.2, 3, 0.1).name('막혔을 때 각도 전환');
+  f.add(P.enemy, 'probeHold', 0.5, 8, 0.5).name('새 각도 유지(초)');
+  f.add(P.enemy, 'drift', 0, 2, 0.05).name('평상시 각도 흐름');
 }
 {
   const f = gui.addFolder('픽업 (밖에 나갈 이유)');
@@ -2301,10 +2568,10 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 1~6 건설 선택 → 클릭/Space 설치 · X: 벽 제거 · U: 개조(업그레이드)\n' +
-  '광맥 옆에 창고(무료)를 지으면 치즈가 자동으로 들어온다 · 스테이지는 시간이 지나면 넘어간다\n' +
-  '파란 부품 상자는 밖에만 떨어진다 — 위험을 감수하고 주워서 개조에 쓴다\n' +
-  '경비탑은 적을 죽이지 않고 쫓아낸다 · 잡히면 기절, 동료가 구출 · 모두 잡히면 끝 · C 카메라 · R 재시작';
+  'WASD 이동 · 1~7 건설 선택 → 클릭/Space 설치 · X: 벽 제거 · U: 개조(업그레이드)\n' +
+  '우클릭: 방어병 선택 → 다른 곳 우클릭으로 이동 명령 (적과 닿으면 쓰러짐 — 벽 뒤에 세울 것)\n' +
+  '경비탑·방어병으로 적을 처치하면 치즈를 준다. 단 다음 웨이브에 다시 채워진다\n' +
+  '파란 부품 상자는 밖에만 떨어진다 · 잡히면 기절, 동료가 구출 · 모두 잡히면 끝 · C 카메라 · R 재시작';
 
 let alive = true;
 let paused = false;
@@ -2327,6 +2594,7 @@ function rebuildWorld(idx) {
   for (const b of [...buildings]) destroyBuilding(b, false);
   clearTools();
   clearPickups();
+  clearGuards();
   for (const ob of [...obstacles.values()]) removeObstacle(ob);
   obstacles.clear();
   for (const n of nodes) { scene.remove(n.mesh); n.mesh.material.dispose(); }
@@ -2382,6 +2650,8 @@ function restart() {
   }
   clearTools();
   clearPickups();
+  clearGuards();
+  killCount = 0;
   for (const b of [...buildings]) destroyBuilding(b, false);
   parts = 0;
   for (const k of Object.keys(upg)) upg[k] = 0;
@@ -2658,7 +2928,9 @@ function updateHUD() {
     (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
     `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개` +
     (minedCount ? ` (${minedCount}곳 채굴 중)` : '') +
-    (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') + '\n' +
+    (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') +
+    (guards.length ? ` · 방어병 ${guards.length}` : '') +
+    (killCount ? ` · 처치 ${killCount}` : '') + '\n' +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
     (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : '동행 중'}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
@@ -2700,7 +2972,6 @@ function tick(dt) {
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
       for (const e of enemies) {
         if (!alive) break;
-        if (e.repelT > 0) continue;   // 쫓겨난 적은 못 잡는다
         const er2 = enemyR(e);
         if (grace <= 0 && !playerStunned &&
             Math.hypot(player.x - e.x, player.z - e.z) < P.player.radius + er2 - 0.02) {
@@ -2720,6 +2991,8 @@ function tick(dt) {
       }
     }
     updateStageTimer(dt);
+    updateGuards(dt);
+    updateProjectiles(dt);
     updateBuildings(dt);
     updateNodes(dt);
     updateCheeseBits(dt);
@@ -2750,6 +3023,7 @@ window.__game = {
   refreshClearance, planEnemyPath,
   get alive() { return alive; },
   get resources() { return resources; },
+  set resources(v) { resources = v; },
   get caughtCount() { return caughtCount; },
   get grace() { return grace; },
   ENEMY_SPAWN, PLAYER_SPAWN,
@@ -2764,7 +3038,11 @@ window.__game = {
   get victory() { return victory; },
   set stageT(v) { stageT = v; },
   advanceStage, stageDur, hasWorkshop, depotCount,
-  pickups, spawnPickup, upg, UPGRADES, buyUpgrade, repelEnemy,
+  pickups, spawnPickup, upg, UPGRADES, buyUpgrade,
+  guards, projectiles, placeGuard, damageEnemy, topUpToCurve,
+  get killCount() { return killCount; },
+  get selectedGuard() { return selectedGuard; },
+  set selectedGuard(v) { selectedGuard = v; },
   get parts() { return parts; }, set parts(v) { parts = v; },
   MAPS, get mapIndex() { return mapIndex; }, setMap,
   ally, updateAlly, caught, gameOver,
