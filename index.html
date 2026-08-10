@@ -43,6 +43,27 @@
       background: rgba(30, 48, 36, 0.9);
     }
     #hotbar .slot.dim { opacity: 0.55; }
+    #upgrade {
+      position: fixed; top: 50%; right: 18px; transform: translateY(-50%);
+      z-index: 18; display: none; min-width: 300px;
+      background: rgba(14, 18, 28, 0.94); border: 1px solid #46506a; border-radius: 8px;
+      padding: 10px 12px; color: #d6dced;
+      font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+    }
+    #upgrade .uhead {
+      font-weight: 700; color: #8fd6ff; margin-bottom: 8px;
+      border-bottom: 1px solid #333d55; padding-bottom: 6px;
+    }
+    #upgrade .warn { color: #ff8b5e; }
+    #upgrade .urow { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+    #upgrade .urow b {
+      background: #2a3550; color: #cfe0ff; border-radius: 4px;
+      padding: 1px 6px; font-size: 11px;
+    }
+    #upgrade .urow .lv { color: #7d879c; }
+    #upgrade .urow .cost { margin-left: auto; color: #8fd6ff; }
+    #upgrade .urow .eff { color: #6ee07a; min-width: 56px; text-align: right; }
+    #upgrade .urow.dim { opacity: 0.45; }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
       text-align: center; pointer-events: none;
@@ -57,6 +78,7 @@
   <div id="help"></div>
   <div id="flash"></div>
   <div id="hotbar"></div>
+  <div id="upgrade"></div>
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
     <p id="overlay-sub">R 키로 다시 시작</p>

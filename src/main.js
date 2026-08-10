@@ -28,42 +28,60 @@ const P = {
   //  파괴묘: 제일 크고 느림, 유일하게 벽을 부숨 → 밀폐도 시한부가 됨
   // bldgDps: 건물(창고/공방) 공격력 — 모든 종류가 건물은 부술 수 있다 (원작:
   //          무적 파일런은 못 부숴도 넥서스/생산 건물은 부서짐)
-  chaser: { radius: 1.35, speed: 5.0, bldgDps: 15 },
-  runner: { radius: 0.85, speed: 6.8, bldgDps: 10 },
-  breaker: { radius: 1.6, speed: 4.2, dps: 30, bldgDps: 40 },
+  chaser: { radius: 1.35, speed: 5.0, bldgDps: 15, stamina: 70 },
+  runner: { radius: 0.85, speed: 6.8, bldgDps: 10, stamina: 45 },
+  breaker: { radius: 1.6, speed: 4.2, dps: 30, bldgDps: 40, stamina: 130 },
   wall: { hp: 100, cooldown: 0.15, height: 1.1, range: 3.0 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
-  depot: { cost: 0, hp: 400, mineRadius: 3.0, storeCap: 30 },    // 치즈 창고 — 무료 (공간이 비용)
-  workshop: { cost: 15, hp: 300 },                               // 공방 — 덫/미끼 해금
+  depot: { cost: 0, hp: 400, mineRadius: 3.0 },                  // 치즈 창고 — 무료 (공간이 비용)
+  workshop: { cost: 15, hp: 300 },                               // 공방 — 덫/미끼/업그레이드 해금
+  tower: { cost: 35, hp: 260, range: 6.5, dps: 22 },             // 경비탑 — 적을 쫓아냄 (죽이진 않음)
   res: {
-    startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 40,
-    collectRate: 8,      // E 홀드 수확 속도 (초당)
-    collectRange: 2.6,   // 창고에서 수확 가능 거리
+    startWalls: 10, mineRate: 1.2, wallCost: 5, nodeAmount: 60,
+  },
+  // 부품 — 밖에 흩어진 픽업으로만 얻는다. 업그레이드 전용 화폐.
+  pickup: {
+    interval: 14,        // 새 픽업이 생기는 주기(초)
+    maxOnMap: 5,         // 동시에 존재할 수 있는 최대 개수
+    minPlayerDist: 14,   // 플레이어에게서 이만큼 떨어진 곳에만 생성 (= 위험을 감수해야 함)
+    partsEach: 1,        // 부품 상자 하나당 부품
+    cheeseEach: 35,      // 치즈 더미 하나당 치즈
+    partsRatio: 0.6,     // 부품 상자가 나올 확률
+  },
+  // 업그레이드 (부품으로 구매, 공방 필요) — 레벨당 증가폭
+  upgrade: {
+    maxLevel: 5,
+    baseCost: 1, costStep: 1,   // n레벨 비용 = baseCost + costStep * n
+    mineStep: 0.5,              // 채굴 속도
+    speedStep: 0.6,             // 햄스터 이동 속도
+    radiusStep: 0.8,            // 창고 채굴 사거리
+    wallhpStep: 45,             // 새 벽 내구도
+    towerStep: 9,               // 경비탑 화력
   },
   tools: {
     trapCost: 8, trapSlow: 0.35, trapTime: 6,     // 끈끈이 덫: 밟는 동안 감속
     decoyCost: 12, decoyTime: 8,                  // 미끼 치즈: 적을 유인
   },
-  threat: { interval: 30, speedGain: 0.4, dpsGain: 6, everyLevels: 0 },
+  threat: { interval: 30, speedGain: 0.4, dpsGain: 6, everyLevels: 0, repelTime: 6 },
 };
 
-// ---- 10 스테이지 ----
-// 목표: 그 스테이지 동안 "수확한" 치즈 (쓴 것과 무관한 누적량).
-// 클리어 시 광맥 매장량이 리필되고(새 치즈가 익음) 적이 표대로 증원된다.
-// 새 종류의 첫 등장도 스테이지가 정한다: 3스테이지 날쌘묘, 5스테이지 파괴묘.
+// ---- 10 스테이지 (시간 기반) ----
+// 각 스테이지는 정해진 시간 동안 지속된다. 시간이 다 되면 다음 스테이지로 넘어가며
+// 표대로 적이 증원되고 광맥이 리필된다. 치즈 잔고는 진행과 무관하다 —
+// 돈을 모으는 속도가 아니라 "버티는 시간"이 진행이다.
 const STAGES = [
-  { goal: 30,  add: {} },                          // 1 — 시작 무리는 enemy.count(순찰묘)
-  { goal: 50,  add: { chaser: 1 } },               // 2
-  { goal: 70,  add: { runner: 1 } },               // 3 — 날쌘묘 첫 등장
-  { goal: 90,  add: { chaser: 1, runner: 1 } },    // 4
-  { goal: 120, add: { breaker: 1 } },              // 5 — 파괴묘 첫 등장
-  { goal: 150, add: { chaser: 1, runner: 1 } },    // 6
-  { goal: 180, add: { breaker: 1 } },              // 7
-  { goal: 220, add: { runner: 2 } },               // 8
-  { goal: 260, add: { breaker: 1, runner: 1 } },   // 9
-  { goal: 300, add: { breaker: 1, chaser: 1 } },   // 10
+  { time: 45, add: {} },                          // 1 — 시작 무리는 enemy.count(순찰묘)
+  { time: 50, add: { chaser: 1 } },               // 2
+  { time: 55, add: { runner: 1 } },               // 3 — 날쌘묘 첫 등장
+  { time: 55, add: { chaser: 1, runner: 1 } },    // 4
+  { time: 60, add: { breaker: 1 } },              // 5 — 파괴묘 첫 등장
+  { time: 60, add: { chaser: 1, runner: 1 } },    // 6
+  { time: 65, add: { breaker: 1 } },              // 7
+  { time: 65, add: { runner: 2 } },               // 8
+  { time: 70, add: { breaker: 1, runner: 1 } },   // 9
+  { time: 75, add: { breaker: 1, chaser: 1 } },   // 10
 ];
 
 // ---- 건설 핫바 ----
@@ -72,11 +90,32 @@ const BUILD_SLOTS = [
   { key: 'wall', label: '벽', size: 1, cost: () => P.res.wallCost },
   { key: 'depot', label: '치즈 창고', size: 2, cost: () => P.depot.cost },
   { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
+  { key: 'tower', label: '경비탑', size: 2, cost: () => P.tower.cost },
   { key: 'trap', label: '끈끈이 덫', size: 1, cost: () => P.tools.trapCost },
   { key: 'decoy', label: '미끼 치즈', size: 1, cost: () => P.tools.decoyCost },
 ];
 let buildSlot = 0;
 let prevWantBuild = false;
+
+// ---- 업그레이드 ----
+// 부품(밖에서 주운 것)으로만 산다. P는 그대로 두고 유효값 계산에서 더한다
+// (튜닝 슬라이더와 업그레이드가 서로 덮어쓰지 않게).
+const UPGRADES = [
+  { key: 'mine', label: '채굴 효율', unit: () => `+${P.upgrade.mineStep}/s` },
+  { key: 'speed', label: '이동 속도', unit: () => `+${P.upgrade.speedStep}` },
+  { key: 'radius', label: '창고 사거리', unit: () => `+${P.upgrade.radiusStep}m` },
+  { key: 'wallhp', label: '벽 내구도', unit: () => `+${P.upgrade.wallhpStep}` },
+  { key: 'tower', label: '경비탑 화력', unit: () => `+${P.upgrade.towerStep}/s` },
+];
+const upg = { mine: 0, speed: 0, radius: 0, wallhp: 0, tower: 0 };
+let parts = 0;
+
+const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
+const effMineRate = () => P.res.mineRate + upg.mine * P.upgrade.mineStep;
+const effPlayerSpeed = () => P.player.speed + upg.speed * P.upgrade.speedStep;
+const effMineRadius = () => P.depot.mineRadius + upg.radius * P.upgrade.radiusStep;
+const effWallHp = () => P.wall.hp + upg.wallhp * P.upgrade.wallhpStep;
+const effTowerDps = () => P.tower.dps + upg.tower * P.upgrade.towerStep;
 
 // 적 종류 메타 (숫자가 아니라서 P 밖에 둠 — 세팅 스냅샷에 안 섞이게)
 const TYPE_INFO = {
@@ -92,11 +131,12 @@ const startResources = () => P.res.startWalls * P.res.wallCost;
 //  - 벽 격자: CELLS x CELLS, 한 칸 CS(1.0m)
 //  - 내비 격자: 벽 격자의 2배 해상도 (navRes = 0.5m)
 // ============================================================
-const CELLS = 44;
+// 맵마다 크기가 다르므로 가변. 모든 헬퍼가 호출 시점에 읽는다.
+let CELLS = 56;
 const CS = 1.0;
-const HALF = (CELLS * CS) / 2;
+let HALF = (CELLS * CS) / 2;
 const navRes = CS / 2;
-const NAV = CELLS * 2;
+let NAV = CELLS * 2;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const cellKey = (i, j) => i + ',' + j;
@@ -140,30 +180,48 @@ sun.shadow.camera.top = HALF + 2;
 sun.shadow.camera.bottom = -HALF - 2;
 scene.add(sun);
 
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(CELLS * CS, CELLS * CS),
-  new THREE.MeshStandardMaterial({ color: 0x2b3040, roughness: 1 })
-);
-floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
-scene.add(floor);
-const grid = new THREE.GridHelper(CELLS * CS, CELLS, 0x4a5268, 0x3a4054);
-grid.position.y = 0.01;
-scene.add(grid);
+// 바닥/그리드/외곽 림 — 맵을 바꿀 때마다 다시 만든다
+const groundGroup = new THREE.Group();
+scene.add(groundGroup);
 
-// 외곽 림 (시각용 — 충돌은 경계 클램프로 처리)
-{
+function buildGround(floorColor, gridColor) {
+  while (groundGroup.children.length) {
+    const c = groundGroup.children.pop();
+    groundGroup.remove(c);
+    c.geometry?.dispose?.();
+    if (c.material) (Array.isArray(c.material) ? c.material : [c.material]).forEach((m) => m.dispose());
+  }
+  const fl = new THREE.Mesh(
+    new THREE.PlaneGeometry(CELLS * CS, CELLS * CS),
+    new THREE.MeshStandardMaterial({ color: floorColor, roughness: 1 })
+  );
+  fl.rotation.x = -Math.PI / 2;
+  fl.receiveShadow = true;
+  groundGroup.add(fl);
+  const gh = new THREE.GridHelper(CELLS * CS, CELLS, gridColor, gridColor);
+  gh.material.opacity = 0.5;
+  gh.material.transparent = true;
+  gh.position.y = 0.01;
+  groundGroup.add(gh);
+
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x454c5e, roughness: 1 });
   const mk = (w, d, x, z) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.8, d), rimMat);
     m.position.set(x, 0.4, z);
     m.castShadow = m.receiveShadow = true;
-    scene.add(m);
+    groundGroup.add(m);
   };
   mk(CELLS * CS + 1, 0.5, 0, -HALF - 0.25);
   mk(CELLS * CS + 1, 0.5, 0, HALF + 0.25);
   mk(0.5, CELLS * CS + 1, -HALF - 0.25, 0);
   mk(0.5, CELLS * CS + 1, HALF + 0.25, 0);
+
+  // 그림자 카메라도 맵 크기에 맞춤
+  sun.shadow.camera.left = -HALF - 2;
+  sun.shadow.camera.right = HALF + 2;
+  sun.shadow.camera.top = HALF + 2;
+  sun.shadow.camera.bottom = -HALF - 2;
+  sun.shadow.camera.updateProjectionMatrix();
 }
 
 // ============================================================
@@ -194,8 +252,8 @@ function addObstacle(i, j, bedrock, building = false) {
   scene.add(mesh);
   const ob = {
     i, j,
-    hp: building ? P.wall.hp * 0.1 : P.wall.hp,
-    maxHp: P.wall.hp,
+    hp: building ? effWallHp() * 0.1 : effWallHp(),
+    maxHp: effWallHp(),
     bedrock, building, mesh,
   };
   obstacles.set(key, ob);
@@ -219,20 +277,21 @@ function updateWallColor(ob) {
 }
 
 // ============================================================
-// 지형 레이아웃 (44x44) — 파괴 불가
-//  설계 규칙 (의도적으로 아주 성기게):
-//   1. 방/요새 금지. 지형이 어떤 영역도 감싸지 않는다.
-//      → 지형만으로 광맥이 거의 확보되는 "공짜 요새"가 존재하지 않음.
-//        광맥 확보 비용은 맵 어디서나 플레이어가 직접 쌓는 벽으로만 지불.
-//   2. 뭉치기 금지. 기둥은 전부 1칸. 2x2 이상 덩어리 없음.
-//   3. 미로 금지. 벽은 전부 양 끝이 열린 독립 직선 — 항상 돌아갈 수 있다.
-//      (적의 "우회 먼저, 부수기는 최후" AI가 실제로 작동하는 조건)
-//  남긴 목적: 틈 폭(1칸 vs 2칸) 비교를 눈으로 하게 하는 것.
+// 맵 3종 — 파괴 불가 지형 + 광맥 배치
+//  공통 설계 규칙 (D9, 전 맵 적용):
+//   1. 요새 금지 — 지형이 어떤 영역도 감싸지 않는다 (공짜 요새 없음)
+//   2. 뭉치기 금지 — 2x2 이상 덩어리 없음, 기둥은 전부 1칸
+//   3. 미로 금지 — 모든 벽은 양 끝이 열린 독립 직선. 항상 돌아갈 수 있다
+//  광맥은 외벽에서 5칸 이상, 지형에서 3칸 이상 이격 (싸게 감싸는 자리 없음)
+//
+//  통과 폭은 적 반지름에서 나온다 (r=1.35 → 1·2칸 막힘, 3칸 통과 /
+//  날쌘묘 r=0.85 → 2칸 통과 / 파괴묘 r=1.6 → 4칸부터).
+//  맵마다 틈 폭 구성이 달라서 "어느 종류가 어디로 들어오는가"가 달라진다.
 // ============================================================
-const BEDROCK_LAYOUT = [];
-{
+function layoutTools() {
+  const cells = [];
   const put = (i, j) => {
-    if (i >= 0 && j >= 0 && i < CELLS && j < CELLS) BEDROCK_LAYOUT.push([i, j]);
+    if (i >= 0 && j >= 0 && i < CELLS && j < CELLS) cells.push([i, j]);
   };
   const hLine = (i0, i1, j, gaps = []) => {
     for (let i = i0; i <= i1; i++) if (!gaps.includes(i)) put(i, j);
@@ -240,23 +299,86 @@ const BEDROCK_LAYOUT = [];
   const vLine = (i, j0, j1, gaps = []) => {
     for (let j = j0; j <= j1; j++) if (!gaps.includes(j)) put(i, j);
   };
-
-  // 나란한 두 벽 — 왼쪽은 1칸 틈(플레이어만), 오른쪽은 3칸 틈(적도 통과).
-  // 같은 화면에 놓아 "저 틈이 저 놈보다 좁은가"를 비교하게 함.
-  //
-  // 통과 폭은 적 반지름에서 나온다. 기본 r=1.35 → 지름 2.7m 이므로
-  //   1칸(1.0m) 막힘 / 2칸(2.0m) 막힘 / 3칸(3.0m) 통과.
-  // 적 크기를 슬라이더로 바꾸면 이 교보재의 의미도 같이 바뀐다.
-  vLine(14, 10, 20, [15]);
-  vLine(30, 10, 20, [14, 15, 16]);
-
-  // 아래쪽 가로 벽 — 1칸 틈 하나. 양 끝이 열려 있어 우회 가능.
-  hLine(12, 24, 30, [18]);
-
-  // 흩어진 낱개 기둥 (엄폐/시야 변화용). 전부 1칸, 서로 멀리.
-  put(8, 8); put(36, 8); put(8, 36); put(36, 36);
-  put(22, 22); put(24, 6); put(6, 22); put(38, 24); put(24, 38);
+  const diag = (i0, j0, len, di, dj, gaps = []) => {
+    for (let k = 0; k < len; k++) if (!gaps.includes(k)) put(i0 + k * di, j0 + k * dj);
+  };
+  return { cells, put, hLine, vLine, diag };
 }
+
+const MAPS = [
+  {
+    name: '허허벌판',
+    size: 56,
+    floor: 0x2b3040, gridColor: 0x4a5268,
+    desc: '원작 기본형. 지형이 거의 없어 벽을 전부 직접 쌓아야 한다',
+    playerSpawn: [28, 28], enemySpawn: [28, 4],
+    // 성긴 교보재 두 벽 + 낱개 기둥. 나머지는 완전 개활지.
+    build(t) {
+      // 나란한 두 벽: 왼쪽 1칸 틈(플레이어만) / 오른쪽 3칸 틈(순찰묘도 통과)
+      t.vLine(18, 14, 26, [20]);
+      t.vLine(38, 14, 26, [19, 20, 21]);
+      // 아래쪽 가로 벽 — 2칸 틈 (날쌘묘만 통과)
+      t.hLine(16, 32, 38, [24, 25]);
+      // 흩어진 낱개 기둥
+      for (const [i, j] of [[10, 10], [46, 10], [10, 46], [46, 46],
+                            [28, 28], [30, 8], [8, 30], [48, 30], [30, 48]])
+        t.put(i, j);
+    },
+    nodes: [[11, 19], [26, 10], [45, 19], [26, 31], [44, 35],
+            [12, 33], [38, 45], [15, 45]],
+  },
+  {
+    name: '협곡',
+    size: 56,
+    floor: 0x322b2b, gridColor: 0x5c4a44,
+    desc: '남북으로 뻗은 능선들. 틈 폭이 1·2·3·4칸으로 달라 어느 종류가 뚫는지가 갈린다',
+    playerSpawn: [28, 44], enemySpawn: [28, 5],
+    build(t) {
+      // 평행 능선 5줄 — 간격 8칸이라 미로가 아니라 회랑으로 읽힌다.
+      // 위아래 끝(j<12, j>43)은 열려 있어 언제나 우회 가능.
+      t.vLine(10, 12, 43, [27]);              // 1칸 틈 — 플레이어 전용
+      t.vLine(19, 12, 43, [26, 27]);          // 2칸 — 날쌘묘까지
+      t.vLine(28, 12, 43, [26, 27, 28]);      // 3칸 — 순찰묘까지
+      t.vLine(37, 12, 43, [25, 26, 27, 28]);  // 4칸 — 전부 통과
+      t.vLine(46, 12, 43, [27]);              // 1칸
+      // 회랑을 가로지르는 짧은 턱 (완전 개활 회랑이 되지 않게, 전부 짧고 끝이 열림)
+      t.hLine(12, 17, 18);
+      t.hLine(30, 35, 36);
+      t.hLine(39, 44, 20);
+      t.hLine(21, 26, 40);
+    },
+    nodes: [[14, 24], [23, 33], [32, 21], [41, 33],
+            [14, 38], [32, 44], [50, 24], [50, 40]],
+  },
+  {
+    name: '폐허',
+    size: 56,
+    floor: 0x2a3230, gridColor: 0x46605a,
+    desc: '무너진 담장 조각과 기둥이 흩어진 곳. 엄폐가 많아 시야 싸움이 된다',
+    playerSpawn: [28, 30], enemySpawn: [6, 6],
+    build(t) {
+      // 짧게 끊긴 담장 조각들 (전부 3~6칸, 서로 떨어져 있음)
+      t.hLine(8, 13, 14);   t.vLine(16, 9, 13);
+      t.hLine(22, 27, 10);  t.vLine(31, 12, 17);
+      t.hLine(38, 44, 15);  t.vLine(47, 18, 23);
+      t.hLine(9, 14, 26);   t.vLine(20, 27, 32);
+      t.hLine(26, 31, 36);  t.vLine(36, 30, 35);
+      t.hLine(41, 46, 33);  t.vLine(12, 38, 43);
+      t.hLine(19, 24, 46);  t.vLine(29, 41, 46);
+      t.hLine(36, 41, 44);
+      // 무너진 대각 조각 (중간에 틈)
+      t.diag(42, 38, 7, 1, 1, [3]);
+      t.diag(6, 20, 6, 1, -1, [2]);
+      // 낱개 기둥
+      for (const [i, j] of [[24, 20], [34, 24], [17, 35], [44, 27],
+                            [8, 32], [50, 44], [24, 52], [46, 8]])
+        t.put(i, j);
+    },
+    nodes: [[13, 20], [27, 16], [42, 21], [24, 27],
+            [46, 50], [16, 30], [33, 44], [50, 34]],
+  },
+];
+let mapIndex = 0;
 
 // ============================================================
 // clearance 필드 (chamfer distance transform)
@@ -550,8 +672,8 @@ const ally = {
   goalX: 0, goalZ: 0,
 };
 
-const PLAYER_SPAWN = cellToWorld(22, 22);
-const ENEMY_SPAWN = cellToWorld(22, 3);
+let PLAYER_SPAWN = cellToWorld(28, 28);
+let ENEMY_SPAWN = cellToWorld(28, 4);
 
 const player = { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z, faceX: 0, faceZ: -1 };
 
@@ -593,6 +715,9 @@ function makeEnemy(type, n) {
     stallT: 0,
     prevX: p.x, prevZ: p.z,
     dirX: 0, dirZ: 1,
+    stamina: P[type].stamina,
+    repelT: 0,       // >0이면 쫓겨나 무력화된 상태
+    hitFlash: 0,
     vis,
   };
 }
@@ -625,26 +750,10 @@ scene.add(ghost);
 //  - 맵 외벽(파괴 불가)에서 5칸 이상 → 외벽을 공짜 벽으로 못 씀
 //  - 지형에서 3칸 이상 → 지형에 기대어 싸게 감싸는 자리가 없음
 //  결과: 어느 광맥이든 확보 비용이 비슷하게 "플레이어가 쌓는 벽"으로만 결정됨
-const NODE_LAYOUT = [
-  [9, 15], [20, 8], [35, 15],
-  [20, 25], [34, 28], [10, 26],
-  [30, 35], [12, 36],
-];
 const nodeGeo = new THREE.OctahedronGeometry(0.32);
-const nodes = NODE_LAYOUT.map(([i, j]) => {
-  const w = cellToWorld(i, j);
-  const mesh = new THREE.Mesh(
-    nodeGeo,
-    new THREE.MeshStandardMaterial({ color: 0xf0b429, roughness: 0.4 })
-  );
-  mesh.position.set(w.x, 0.35, w.z);
-  mesh.castShadow = true;
-  scene.add(mesh);
-  return { i, j, amount: P.res.nodeAmount, mesh };
-});
+const nodes = [];   // rebuildWorld에서 채운다
 const nodeAt = (i, j) => nodes.find((n) => n.i === i && n.j === j);
-let storedTotal = 0;   // 모든 광맥 저장고 합 (HUD용)
-let collecting = false; // 지금 수확 중인가 (E 홀드 + 사거리 내)
+let minedCount = 0; // 지금 채굴 중인 광맥 수 (HUD용)
 
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
 //  → 노드가 이 영역 밖이면 "확보됨"
@@ -745,6 +854,7 @@ const buildings = []; // { kind, i, j, cells:[key], hp, maxHp, store, mesh, cx, 
 const BLDG_INFO = {
   depot: { label: '치즈 창고', body: 0xd9a13b, roof: 0x8a6420 },
   workshop: { label: '공방', body: 0x4f8f8a, roof: 0x2c524e },
+  tower: { label: '경비탑', body: 0x7a6ea8, roof: 0x40386b },
 };
 
 function buildingAt(i, j) {
@@ -769,6 +879,28 @@ function makeBuildingMesh(kind) {
   body.receiveShadow = true;
   g.add(body, roof);
   g.userData.body = body;
+  if (kind === 'tower') {
+    // 포탑 머리 — 조준 대상 쪽으로 돈다 (연출 전용)
+    const head = new THREE.Group();
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 14, 10),
+      new THREE.MeshStandardMaterial({ color: 0xb9aee8, roughness: 0.5 })
+    );
+    dome.castShadow = true;
+    const horn = new THREE.Mesh(
+      new THREE.ConeGeometry(0.2, 0.9, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xe6e0ff, roughness: 0.4,
+        emissive: new THREE.Color(0x6c5ce7), emissiveIntensity: 0.5,
+      })
+    );
+    horn.rotation.x = -Math.PI / 2;
+    horn.position.z = -0.7;
+    head.add(dome, horn);
+    head.position.y = 1.5;
+    g.add(head);
+    g.userData.head = head;
+  }
   return g;
 }
 
@@ -814,14 +946,12 @@ function placeBuilding(kind, i, j) {
 
 function destroyBuilding(b, byEnemy) {
   for (const key of b.cells) obstacles.delete(key);
+  if (b.beam) { scene.remove(b.beam); b.beam.material.dispose(); b.beam = null; }
   scene.remove(b.mesh);
   buildings.splice(buildings.indexOf(b), 1);
   refreshClearance();
   repathAll();
-  if (byEnemy) {
-    const lost = b.store > 0.5 ? ` (저장 치즈 ${b.store.toFixed(0)} 소실!)` : '';
-    flashMsg(`${BLDG_INFO[b.kind].label}가 파괴됐다!${lost}`, '#ff6b6b');
-  }
+  if (byEnemy) flashMsg(`${BLDG_INFO[b.kind].label}가 파괴됐다!`, '#ff6b6b');
 }
 
 function damageBuilding(b, dmg) {
@@ -836,35 +966,94 @@ function damageBuilding(b, dmg) {
 const hasWorkshop = () => buildings.some((b) => b.kind === 'workshop');
 const depotCount = () => buildings.filter((b) => b.kind === 'depot').length;
 
-// 창고 채굴: 사거리 안 광맥에서 저장고로
+// 창고 채굴 → 잔고로 바로 들어온다 (자동 수입).
+// 수확하러 돌아다닐 필요가 없는 대신, 밖에 나갈 이유는 픽업(부품/치즈)이 맡는다.
 function updateBuildings(dt) {
-  storedTotal = 0;
+  minedCount = 0;
   for (const b of buildings) {
+    if (b.kind === 'tower') { updateTower(b, dt); continue; }
     if (b.kind !== 'depot') continue;
-    storedTotal += b.store;
-    const fill = b.store / P.depot.storeCap;
-    // 저장량 표시: 지붕 발광, 가득 차면 깜빡임 = "수확하러 와"
-    const roof = b.mesh.children[1];
-    roof.material.emissive.setHex(0xf0b429);
-    roof.material.emissiveIntensity =
-      fill >= 1 ? 0.5 + 0.4 * Math.abs(Math.sin(performance.now() * 0.012)) : fill * 0.5;
-    if (b.store >= P.depot.storeCap) continue;
+    let mining = false;
     for (const n of nodes) {
       if (n.amount <= 0) continue;
       const w = cellToWorld(n.i, n.j);
-      if (Math.hypot(w.x - b.cx, w.z - b.cz) > P.depot.mineRadius) continue;
-      const got = Math.min(P.res.mineRate * dt, n.amount, P.depot.storeCap - b.store);
+      if (Math.hypot(w.x - b.cx, w.z - b.cz) > effMineRadius()) continue;
+      const got = Math.min(effMineRate() * dt, n.amount);
       n.amount -= got;
-      b.store += got;
+      resources += got;
       n.beingMined = true;
-      b.bitT += dt;
-      if (b.bitT >= 1 / Math.max(P.res.mineRate, 0.2)) {
+      mining = true;
+      b.bitT = (b.bitT || 0) + dt;
+      if (b.bitT >= 1 / Math.max(effMineRate(), 0.2)) {
         b.bitT = 0;
         spawnCheeseBit(w.x, w.z, { x: b.cx, z: b.cz });
       }
-      if (b.store >= P.depot.storeCap) break;
     }
+    if (mining) minedCount++;
+    // 가동 중이면 지붕이 은은하게 맥동
+    const roof = b.mesh.children[1];
+    roof.material.emissive.setHex(0xf0b429);
+    roof.material.emissiveIntensity =
+      mining ? 0.25 + 0.25 * Math.abs(Math.sin(performance.now() * 0.006)) : 0;
   }
+}
+
+// ---- 경비탑 ----
+// 적을 죽이지 않는다. 스태미나를 깎아 본진으로 "쫓아낼" 뿐이고,
+// 쫓겨난 적은 repelTime 뒤 다시 온다 (D3: 플레이어는 여전히 살상력이 없다).
+const beamGeo = new THREE.CylinderGeometry(0.06, 0.06, 1, 6);
+function updateTower(b, dt) {
+  // 사거리 안에서 가장 스태미나가 적은(= 곧 쫓아낼 수 있는) 적을 노린다
+  let target = null, best = Infinity;
+  for (const e of enemies) {
+    if (e.repelT > 0) continue;
+    const d = Math.hypot(e.x - b.cx, e.z - b.cz);
+    if (d > P.tower.range) continue;
+    if (e.stamina < best) { best = e.stamina; target = e; }
+  }
+  const head = b.mesh.userData.head;
+  if (!b.beam) {
+    b.beam = new THREE.Mesh(
+      beamGeo,
+      new THREE.MeshBasicMaterial({ color: 0xbfaaff, transparent: true, opacity: 0.75, depthTest: false })
+    );
+    b.beam.renderOrder = 997;
+    b.beam.visible = false;
+    scene.add(b.beam);
+  }
+  if (!target) { b.beam.visible = false; return; }
+  if (head) head.rotation.y = Math.atan2(target.x - b.cx, -(target.z - b.cz)) + Math.PI;
+
+  target.stamina -= effTowerDps() * dt;
+  target.hitFlash = 0.15;
+  if (target.stamina <= 0) repelEnemy(target);
+
+  // 빔: 탑 머리 → 적 몸통
+  const ax = b.cx, ay = 1.5, az = b.cz;
+  const bx = target.x, by = 0.9 * enemyR(target), bz = target.z;
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  b.beam.visible = true;
+  b.beam.position.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
+  b.beam.scale.set(1, len, 1);
+  b.beam.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx / len, dy / len, dz / len)
+  );
+  b.beam.material.opacity = 0.5 + 0.3 * Math.abs(Math.sin(performance.now() * 0.03));
+}
+
+// 쫓아내기 — 본진으로 돌려보내고 잠시 무력화. 죽는 게 아니라 다시 온다.
+function repelEnemy(e) {
+  spawnBuildFx(e.x, e.z);
+  const p = enemySpawnPos(enemies.indexOf(e));
+  e.x = p.x; e.z = p.z;
+  e.prevX = p.x; e.prevZ = p.z;
+  e.stamina = typeP(e).stamina;
+  e.repelT = P.threat.repelTime;
+  e.path = []; e.repathT = 0; e.attackTarget = null; e.raidTarget = null;
+  spawnBuildFx(e.x, e.z);
+  flashMsg(`${TYPE_INFO[e.type].label}를 쫓아냈다!`, '#bfaaff');
 }
 
 // 광맥은 이제 시각 전용 — 채굴 주체는 창고다
@@ -895,6 +1084,87 @@ function updateNodes(dt) {
     }
     n.beingMined = false; // 다음 프레임에 updateBuildings가 다시 세움
   }
+}
+
+// ============================================================
+// 픽업 — 밖에 나갈 이유 (D22)
+//  창고 수입이 자동이 되면서 안전지대 안에만 있어도 치즈가 쌓인다.
+//  그래서 "위험을 감수하고 나가야만 얻는 것"을 따로 만든다:
+//   부품 상자 = 업그레이드 전용 화폐 (안에서는 절대 안 나옴)
+//   치즈 더미 = 즉시 목돈
+//  플레이어에게서 최소 거리 밖, 적이 도달 가능한 개활지에만 생긴다.
+// ============================================================
+const pickups = [];
+const partGeo = new THREE.BoxGeometry(0.55, 0.55, 0.55);
+const pileGeo = new THREE.DodecahedronGeometry(0.42);
+let pickupT = 0;
+
+function randomOpenCell() {
+  for (let tries = 0; tries < 120; tries++) {
+    const i = 2 + Math.floor(Math.random() * (CELLS - 4));
+    const j = 2 + Math.floor(Math.random() * (CELLS - 4));
+    if (obstacles.has(cellKey(i, j)) || nodeAt(i, j) || traps.has(cellKey(i, j))) continue;
+    const w = cellToWorld(i, j);
+    if (Math.hypot(w.x - player.x, w.z - player.z) < P.pickup.minPlayerDist) continue;
+    // 적이 갈 수 있는 곳 = 안전지대 밖 (여기가 핵심 조건)
+    if (enemyReach && !enemyReach[worldToNav(w.x, w.z)]) continue;
+    return { i, j, x: w.x, z: w.z };
+  }
+  return null;
+}
+
+function spawnPickup() {
+  const spot = randomOpenCell();
+  if (!spot) return;
+  const isParts = Math.random() < P.pickup.partsRatio;
+  const mesh = new THREE.Mesh(
+    isParts ? partGeo : pileGeo,
+    new THREE.MeshStandardMaterial({
+      color: isParts ? 0x8fd6ff : 0xffd24a,
+      roughness: 0.4,
+      emissive: new THREE.Color(isParts ? 0x2b8fd6 : 0xf0b429),
+      emissiveIntensity: 0.7,
+    })
+  );
+  mesh.position.set(spot.x, 0.5, spot.z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  pickups.push({ kind: isParts ? 'parts' : 'cheese', x: spot.x, z: spot.z, mesh, t: 0 });
+}
+
+function updatePickups(dt) {
+  pickupT += dt;
+  if (pickupT >= P.pickup.interval) {
+    pickupT = 0;
+    if (pickups.length < P.pickup.maxOnMap) spawnPickup();
+  }
+  for (let k = pickups.length - 1; k >= 0; k--) {
+    const u = pickups[k];
+    u.t += dt;
+    u.mesh.rotation.y += dt * 2;
+    u.mesh.position.y = 0.5 + Math.sin(u.t * 3) * 0.12;
+    // 플레이어 또는 동료가 밟으면 획득
+    const got = Math.hypot(player.x - u.x, player.z - u.z) < 1.1
+      || (ally.active && !ally.stunned && Math.hypot(ally.x - u.x, ally.z - u.z) < 1.1);
+    if (!got) continue;
+    if (u.kind === 'parts') {
+      parts += P.pickup.partsEach;
+      flashMsg(`부품 +${P.pickup.partsEach} (U: 업그레이드)`, '#8fd6ff');
+    } else {
+      resources += P.pickup.cheeseEach;
+      flashMsg(`치즈 +${P.pickup.cheeseEach}`, '#ffd24a');
+    }
+    spawnBuildFx(u.x, u.z);
+    scene.remove(u.mesh);
+    u.mesh.material.dispose();
+    pickups.splice(k, 1);
+  }
+}
+
+function clearPickups() {
+  for (const u of pickups) { scene.remove(u.mesh); u.mesh.material.dispose(); }
+  pickups.length = 0;
+  pickupT = 0;
 }
 
 // ============================================================
@@ -1159,11 +1429,11 @@ function threatLevel() {
 let growthSpawned = 0;
 
 // ---- 스테이지 상태 ----
-let stage = 1;            // 1..10
-let stageCollected = 0;   // 이번 스테이지에 "수확한" 치즈 (소비와 무관한 누적)
+let stage = 1;        // 1..10
+let stageT = 0;       // 이번 스테이지 경과 시간
 let victory = false;
 
-const stageGoal = () => STAGES[Math.min(stage, STAGES.length) - 1].goal;
+const stageDur = () => STAGES[Math.min(stage, STAGES.length) - 1].time;
 
 // 지금까지의 스테이지 표에 등장한 종류들 (증원 스폰 풀)
 function unlockedTypes() {
@@ -1184,20 +1454,27 @@ function spawnStageAdds(idx) {
     if (!before.has(ty)) flashMsg(`새로운 적 등장: ${TYPE_INFO[ty].label}!`, '#ff8b5e');
 }
 
+// 시간이 다 되면 다음 스테이지 (치즈 잔고와 무관)
+function updateStageTimer(dt) {
+  if (victory || !enemyActive()) return;
+  stageT += dt;
+  if (stageT >= stageDur()) advanceStage();
+}
+
 function advanceStage() {
   if (stage >= STAGES.length) {
     victory = true;
-    overlayEl.querySelector('h1').textContent = '10 스테이지 클리어!';
+    overlayEl.querySelector('h1').textContent = '10 스테이지 돌파!';
     document.getElementById('overlay-sub').textContent =
-      `${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
+      `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
     overlayEl.classList.remove('hidden');
     return;
   }
   stage++;
-  stageCollected = 0;
+  stageT = 0;
   for (const n of nodes) n.amount = P.res.nodeAmount; // 새 치즈가 익음
   spawnStageAdds(stage - 1);
-  flashMsg(`스테이지 ${stage} — 목표 치즈 ${stageGoal()}`, '#6ee07a');
+  flashMsg(`스테이지 ${stage} — ${stageDur()}초 버티기`, '#6ee07a');
 }
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
@@ -1233,6 +1510,19 @@ function separateEnemies() {
 
 function updateEnemy(enemy, dt) {
   const er = enemyR(enemy);
+  // 쫓겨난 상태: 본진에서 잠시 멈춰 있다가 스태미나를 회복하고 다시 온다
+  if (enemy.repelT > 0) {
+    enemy.repelT -= dt;
+    enemy.isAttacking = false;
+    enemy.aiMode = '후퇴';
+    enemy.vis.setOpacity(0.35 + 0.25 * Math.sin(performance.now() * 0.006));
+    enemy.vis.group.position.set(enemy.x, 0, enemy.z);
+    if (enemy.repelT <= 0) { enemy.vis.setOpacity(1); enemy.repathT = 0; }
+    return;
+  }
+  // 스태미나 서서히 회복 (탑 사거리를 벗어나면 다시 차오름)
+  enemy.stamina = Math.min(enemy.stamina + typeP(enemy).stamina * 0.05 * dt, typeP(enemy).stamina);
+  if (enemy.hitFlash > 0) enemy.hitFlash -= dt;
   enemy.repathT -= dt;
   if (enemy.repathT <= 0) {
     enemy.repathT = P.enemy.repath;
@@ -1357,9 +1647,14 @@ function updateEnemy(enemy, dt) {
     }
   }
 
-  // 공격 중 표시 (몸 색 펄스)
-  if (bldgTarget || enemy.attackTarget) {
+  // 공격 중 = 빨간 펄스 / 탑에 맞는 중 = 보라 섬광 / 스태미나 낮음 = 옅은 발광
+  const stFrac = enemy.stamina / typeP(enemy).stamina;
+  if (enemy.hitFlash > 0) {
+    enemy.vis.setEmissive(0xbfaaff, 0.9);
+  } else if (bldgTarget || enemy.attackTarget) {
     enemy.vis.setEmissive(0xff2222, 0.35 + 0.25 * Math.sin(performance.now() * 0.02));
+  } else if (stFrac < 0.6) {
+    enemy.vis.setEmissive(0x8f7bd8, (1 - stFrac) * 0.5);
   } else {
     enemy.vis.setEmissive(0x000000, 0);
   }
@@ -1380,10 +1675,12 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
-  // 숫자키 = 건설 슬롯 선택 (카메라는 C키/드롭다운으로)
+  if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
+  // 숫자키 = 업그레이드 패널이 열려 있으면 구매, 아니면 건설 슬롯 선택
   for (let k = 0; k < 9; k++) {
     if (e.code === 'Digit' + (k + 1)) {
-      if (k < BUILD_SLOTS.length) { buildSlot = k; updateHotbar(); }
+      if (upgOpen) buyUpgrade(k);
+      else if (k < BUILD_SLOTS.length) { buildSlot = k; updateHotbar(); }
       break;
     }
   }
@@ -1621,7 +1918,6 @@ function updatePlayer(dt) {
     playerVis.mats?.forEach?.(() => {});
     playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
     ghost.visible = false;
-    collecting = false;
     return;
   }
   playerVis.group.rotation.x = 0;
@@ -1642,8 +1938,8 @@ function updatePlayer(dt) {
     const ml = Math.hypot(mx, mz);
     if (ml > 1e-4) {
       mx /= ml; mz /= ml;
-      player.x += mx * P.player.speed * dt;
-      player.z += mz * P.player.speed * dt;
+      player.x += mx * effPlayerSpeed() * dt;
+      player.z += mz * effPlayerSpeed() * dt;
       player.faceX = mx; player.faceZ = mz;
     }
   }
@@ -1651,30 +1947,6 @@ function updatePlayer(dt) {
 
   playerVis.group.position.set(player.x, 0, player.z);
   playerVis.group.rotation.y = Math.atan2(player.faceX, player.faceZ) + Math.PI;
-
-  // ---- 수확 (E 홀드, 창고 사거리 내) ----
-  // 창고 저장고 → 주머니. 수확량이 스테이지 목표에 카운트된다.
-  collecting = false;
-  if (keys.has('KeyE')) {
-    for (const b of buildings) {
-      if (b.kind !== 'depot' || b.store <= 0.01) continue;
-      let dMin = Infinity;
-      for (const key of b.cells) {
-        const ob = obstacles.get(key);
-        if (ob) dMin = Math.min(dMin, distCellToPoint(ob.i, ob.j, player.x, player.z));
-      }
-      if (dMin > P.res.collectRange) continue;
-      const got = Math.min(P.res.collectRate * dt, b.store);
-      b.store -= got;
-      resources += got;
-      stageCollected += got;
-      collecting = true;
-      b.cBitT = (b.cBitT || 0) + dt;
-      if (b.cBitT >= 0.12) { b.cBitT = 0; spawnCheeseBit(b.cx, b.cz); }
-      break; // 한 번에 한 창고
-    }
-    if (!victory && stageCollected >= stageGoal()) advanceStage();
-  }
 
   // ---- 채굴 리액션 ----
   // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
@@ -1759,6 +2031,7 @@ function updatePlayer(dt) {
   } else if (buildPressed && hasTile) {
     if (slot.key === 'depot') placeBuilding('depot', gi, gj);
     else if (slot.key === 'workshop') placeBuilding('workshop', gi, gj);
+    else if (slot.key === 'tower') placeBuilding('tower', gi, gj);
     else if (slot.key === 'trap') placeTrap(gi, gj);
     else if (slot.key === 'decoy') placeDecoy(gi, gj);
   }
@@ -1841,8 +2114,6 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.res, 'wallCost', 1, 30, 1).name('벽 비용');
   f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
   f.add(P.res, 'nodeAmount', 5, 200, 5).name('광맥 매장량 (재시작부터)');
-  f.add(P.res, 'collectRate', 1, 30, 0.5).name('수확 속도(E 홀드)');
-  f.add(P.res, 'collectRange', 0.8, 6, 0.1).name('수확 사거리');
 }
 {
   const f = gui.addFolder('동료 (AI 햄스터)');
@@ -1855,10 +2126,34 @@ const gui = new GUI({ title: '튜닝' });
   const f = gui.addFolder('건물 (2번 창고 · 3번 공방)');
   f.add(P.depot, 'cost', 5, 60, 1).name('창고 비용');
   f.add(P.depot, 'hp', 50, 1500, 10).name('창고 내구도 (새 건물부터)');
-  f.add(P.depot, 'mineRadius', 1, 8, 0.5).name('창고 채굴 사거리');
-  f.add(P.depot, 'storeCap', 5, 120, 5).name('창고 저장 상한');
+  f.add(P.depot, 'mineRadius', 1, 12, 0.5).name('창고 채굴 사거리');
   f.add(P.workshop, 'cost', 5, 60, 1).name('공방 비용');
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
+  f.add(P.tower, 'cost', 5, 120, 5).name('경비탑 비용');
+  f.add(P.tower, 'hp', 50, 1500, 10).name('경비탑 내구도 (새 건물부터)');
+  f.add(P.tower, 'range', 2, 16, 0.5).name('경비탑 사거리');
+  f.add(P.tower, 'dps', 2, 80, 1).name('경비탑 화력(초당)');
+  f.add(P.threat, 'repelTime', 1, 20, 0.5).name('쫓겨난 뒤 복귀까지(초)');
+}
+{
+  const f = gui.addFolder('픽업 (밖에 나갈 이유)');
+  f.add(P.pickup, 'interval', 3, 40, 1).name('생성 주기(초)');
+  f.add(P.pickup, 'maxOnMap', 1, 12, 1).name('동시 최대 개수');
+  f.add(P.pickup, 'minPlayerDist', 4, 30, 1).name('플레이어 최소 거리');
+  f.add(P.pickup, 'partsRatio', 0, 1, 0.05).name('부품 비율');
+  f.add(P.pickup, 'partsEach', 1, 5, 1).name('부품 상자당 부품');
+  f.add(P.pickup, 'cheeseEach', 5, 150, 5).name('치즈 더미당 치즈');
+}
+{
+  const f = gui.addFolder('업그레이드');
+  f.add(P.upgrade, 'maxLevel', 1, 12, 1).name('최대 레벨');
+  f.add(P.upgrade, 'baseCost', 1, 10, 1).name('1레벨 비용(부품)');
+  f.add(P.upgrade, 'costStep', 0, 6, 1).name('레벨당 비용 증가');
+  f.add(P.upgrade, 'mineStep', 0.1, 3, 0.1).name('채굴 효율/레벨');
+  f.add(P.upgrade, 'speedStep', 0.1, 3, 0.1).name('이동 속도/레벨');
+  f.add(P.upgrade, 'radiusStep', 0.1, 3, 0.1).name('창고 사거리/레벨');
+  f.add(P.upgrade, 'wallhpStep', 5, 200, 5).name('벽 내구도/레벨');
+  f.add(P.upgrade, 'towerStep', 1, 40, 1).name('경비탑 화력/레벨');
 }
 {
   const f = gui.addFolder('도구 (4번 덫 · 5번 미끼) — 공방 필요');
@@ -1969,6 +2264,14 @@ const settingsIO = {
   f.add(settingsIO, '기본값으로').name('기본값으로 되돌리기');
 }
 
+{
+  const f = gui.addFolder('맵');
+  const sel = { map: MAPS[mapIndex].name };
+  f.add(sel, 'map', MAPS.map((m) => m.name)).name('맵 선택 (재시작됨)')
+    .onChange((name) => setMap(MAPS.findIndex((m) => m.name === name)));
+  f.add({ 다시시작: () => restart() }, '다시시작').name('현재 맵 재시작 (R)');
+}
+
 let camFolder = null;
 const camSelector = { mode: CAM_MODES[camIndex].name };
 gui.add(camSelector, 'mode', CAM_MODES.map((m) => m.name)).name('카메라 (C키)')
@@ -1998,10 +2301,10 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 1~5 건설 선택 → 클릭/Space 설치 · X: 벽 제거 · E 홀드: 창고에서 수확\n' +
-  '광맥 옆에 창고(무료)를 지어야 채굴됨 · 수확량이 스테이지 목표 · 덫·미끼는 공방 필요\n' +
-  '고양이는 쫓아오다 가로막는 건물을 부수고, 눈에 띄면 한눈판다 (벽은 파괴묘만 부숨)\n' +
-  '잡히면 펑! 본진에서 기절 — 동료가 터치하면 구출. 모두 잡히면 끝 · C 카메라 · P 일시정지 · R 재시작';
+  'WASD 이동 · 1~6 건설 선택 → 클릭/Space 설치 · X: 벽 제거 · U: 개조(업그레이드)\n' +
+  '광맥 옆에 창고(무료)를 지으면 치즈가 자동으로 들어온다 · 스테이지는 시간이 지나면 넘어간다\n' +
+  '파란 부품 상자는 밖에만 떨어진다 — 위험을 감수하고 주워서 개조에 쓴다\n' +
+  '경비탑은 적을 죽이지 않고 쫓아낸다 · 잡히면 기절, 동료가 구출 · 모두 잡히면 끝 · C 카메라 · R 재시작';
 
 let alive = true;
 let paused = false;
@@ -2011,6 +2314,58 @@ let caughtCount = 0;
 let playerStunned = false; // 동료 모드에서 잡힌 상태 — 동료가 와서 깨워야 함
 let grace = 0;   // 구출/시작 직후 짧은 무적 (초)
 let flashT = 0;  // 화면 중앙 알림 남은 시간
+
+// 맵을 통째로 다시 만든다. 크기가 바뀌므로 바닥/그리드/림/지형/광맥/스폰을 전부 재생성.
+function rebuildWorld(idx) {
+  const M = MAPS[idx];
+  mapIndex = idx;
+  CELLS = M.size;
+  HALF = (CELLS * CS) / 2;
+  NAV = CELLS * 2;
+
+  // 기존 월드 오브젝트 정리
+  for (const b of [...buildings]) destroyBuilding(b, false);
+  clearTools();
+  clearPickups();
+  for (const ob of [...obstacles.values()]) removeObstacle(ob);
+  obstacles.clear();
+  for (const n of nodes) { scene.remove(n.mesh); n.mesh.material.dispose(); }
+  nodes.length = 0;
+  for (const e of enemies) scene.remove(e.vis.group);
+  enemies.length = 0;
+
+  buildGround(M.floor, M.gridColor);
+
+  // 지형
+  const t = layoutTools();
+  M.build(t);
+  for (const [i, j] of t.cells) addObstacle(i, j, true);
+
+  // 광맥
+  for (const [i, j] of M.nodes) {
+    const w = cellToWorld(i, j);
+    const mesh = new THREE.Mesh(
+      nodeGeo,
+      new THREE.MeshStandardMaterial({ color: 0xf0b429, roughness: 0.4 })
+    );
+    mesh.position.set(w.x, 0.35, w.z);
+    mesh.castShadow = true;
+    scene.add(mesh);
+    nodes.push({ i, j, amount: P.res.nodeAmount, mesh });
+  }
+
+  PLAYER_SPAWN = cellToWorld(M.playerSpawn[0], M.playerSpawn[1]);
+  ENEMY_SPAWN = cellToWorld(M.enemySpawn[0], M.enemySpawn[1]);
+
+  clearAll = null; // 크기가 바뀌었으므로 이전 필드는 버린다
+  refreshClearance();
+}
+
+function setMap(idx) {
+  rebuildWorld(((idx % MAPS.length) + MAPS.length) % MAPS.length);
+  restart();
+  flashMsg(`${MAPS[mapIndex].name} — ${MAPS[mapIndex].desc}`, '#6ee07a');
+}
 
 function restart() {
   for (const f of [...fx]) { scene.remove(f.mesh); f.mesh.material.dispose(); }
@@ -2026,9 +2381,14 @@ function restart() {
     n.mesh.material.color.setHex(0xf0b429);
   }
   clearTools();
+  clearPickups();
   for (const b of [...buildings]) destroyBuilding(b, false);
+  parts = 0;
+  for (const k of Object.keys(upg)) upg[k] = 0;
+  upgOpen = false;
+  renderUpgrade();
   stage = 1;
-  stageCollected = 0;
+  stageT = 0;
   victory = false;
   growthSpawned = 0;
   playerStunned = false;
@@ -2214,6 +2574,43 @@ function updateAlly(dt) {
   allyVis.group.rotation.y = Math.atan2(ally.faceX, ally.faceZ) + Math.PI;
 }
 
+// ---- 업그레이드 패널 (U) ----
+const upgEl = document.getElementById('upgrade');
+let upgOpen = false;
+
+function buyUpgrade(k) {
+  const u = UPGRADES[k];
+  if (!u) return;
+  if (!hasWorkshop()) { flashMsg('공방이 있어야 개조할 수 있습니다', '#e05050'); return; }
+  const lv = upg[u.key];
+  if (lv >= P.upgrade.maxLevel) { flashMsg('이미 최대 레벨입니다', '#e05050'); return; }
+  const cost = upgCost(lv);
+  if (parts < cost) { flashMsg(`부품이 부족합니다 (${cost} 필요)`, '#e05050'); return; }
+  parts -= cost;
+  upg[u.key] = lv + 1;
+  flashMsg(`${u.label} Lv.${lv + 1}!`, '#8fd6ff');
+  renderUpgrade();
+}
+
+function renderUpgrade() {
+  if (!upgOpen) { upgEl.style.display = 'none'; return; }
+  upgEl.style.display = 'block';
+  const ws = hasWorkshop();
+  upgEl.innerHTML =
+    `<div class="uhead">개조 (U 닫기) · 부품 ${parts}` +
+    (ws ? '' : ' · <span class="warn">공방 필요</span>') + '</div>' +
+    UPGRADES.map((u, k) => {
+      const lv = upg[u.key];
+      const max = lv >= P.upgrade.maxLevel;
+      const cost = upgCost(lv);
+      const can = ws && !max && parts >= cost;
+      return `<div class="urow${can ? '' : ' dim'}">` +
+        `<b>${k + 1}</b> ${u.label} <span class="lv">Lv.${lv}/${P.upgrade.maxLevel}</span>` +
+        `<span class="cost">${max ? 'MAX' : `부품 ${cost}`}</span>` +
+        `<span class="eff">${u.unit()}</span></div>`;
+    }).join('');
+}
+
 const hotbarEl = document.getElementById('hotbar');
 function updateHotbar() {
   hotbarEl.innerHTML = BUILD_SLOTS.map((sl, k) => {
@@ -2257,11 +2654,11 @@ function updateHUD() {
     (waiting
       ? `적 ${enemies.length}마리 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
       : `적 ${enemies.length}마리: ${enemyModeSummary()}\n`) +
-    `스테이지 ${stage}/${STAGES.length} — 수확 ${stageCollected.toFixed(0)}/${stageGoal()}` +
-    (victory ? ' · 클리어!' : '') + '\n' +
-    `치즈: ${resources.toFixed(1)} · 창고 ${depotCount()}개` +
-    (storedTotal > 0.5 ? ` (저장 ${storedTotal.toFixed(0)}${collecting ? ' ⛏ 수확 중!' : ' — 가서 E)'}` : '') +
-    (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(T)') + '\n' +
+    `[${MAPS[mapIndex].name}] 스테이지 ${stage}/${STAGES.length}` +
+    (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
+    `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개` +
+    (minedCount ? ` (${minedCount}곳 채굴 중)` : '') +
+    (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') + '\n' +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
     (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : '동행 중'}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
@@ -2272,10 +2669,8 @@ function updateHUD() {
 // ============================================================
 // 초기화 & 루프
 // ============================================================
-for (const [i, j] of BEDROCK_LAYOUT) addObstacle(i, j, true);
-refreshClearance();          // clearAll 먼저 — refreshReach가 이걸 읽는다
-setEnemyCount(P.enemy.count);
-restart();                   // 동료·스테이지·핫바까지 한 번에 초기 상태로
+rebuildWorld(mapIndex);      // 지형·광맥·바닥·스폰 생성 + clearance
+restart();                   // 동료·스테이지·업그레이드까지 초기 상태로
 updateHotbar();
 
 window.addEventListener('resize', () => {
@@ -2305,6 +2700,7 @@ function tick(dt) {
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
       for (const e of enemies) {
         if (!alive) break;
+        if (e.repelT > 0) continue;   // 쫓겨난 적은 못 잡는다
         const er2 = enemyR(e);
         if (grace <= 0 && !playerStunned &&
             Math.hypot(player.x - e.x, player.z - e.z) < P.player.radius + er2 - 0.02) {
@@ -2323,10 +2719,12 @@ function tick(dt) {
         e.vis.group.position.set(e.x, 0, e.z);
       }
     }
+    updateStageTimer(dt);
     updateBuildings(dt);
     updateNodes(dt);
     updateCheeseBits(dt);
     updateDecoys(dt);
+    updatePickups(dt);
     updateWallPops(dt);
   }
   updateFx(dt);
@@ -2362,17 +2760,19 @@ window.__game = {
   setEnemyCount, spawnBuildFx, placeTrap, placeDecoy, traps, decoys,
   buildings, placeBuilding, destroyBuilding, STAGES,
   get stage() { return stage; },
-  get stageCollected() { return stageCollected; },
+  get stageT() { return stageT; },
   get victory() { return victory; },
-  set stageCollected(v) { stageCollected = v; },
-  advanceStage, stageGoal, hasWorkshop, depotCount,
+  set stageT(v) { stageT = v; },
+  advanceStage, stageDur, hasWorkshop, depotCount,
+  pickups, spawnPickup, upg, UPGRADES, buyUpgrade, repelEnemy,
+  get parts() { return parts; }, set parts(v) { parts = v; },
+  MAPS, get mapIndex() { return mapIndex; }, setMap,
   ally, updateAlly, caught, gameOver,
   get playerStunned() { return playerStunned; },
   set playerStunned(v) { playerStunned = v; },
   get buildSlot() { return buildSlot; },
   set buildSlot(v) { buildSlot = v; },
-  get storedTotal() { return storedTotal; },
-  get collecting() { return collecting; },
+  get minedCount() { return minedCount; },
   enemyR, unlockedTypes,
   get fxCount() { return fx.length; },
   get cheeseBitCount() { return cheeseBits.length; },
