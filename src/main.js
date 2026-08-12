@@ -20,7 +20,11 @@ const P = {
     flankRadius: 5.5,      // 목표 둘레 이 반경의 지점을 노리고 접근한다
     probeTurn: 1.1,        // 막혔을 때 접근각을 돌리는 크기(라디안)
     probeHold: 2.5,        // 새 접근각을 유지하는 시간(초)
-    drift: 0.35,           // 평상시 접근각이 흐르는 속도(라디안/초)
+    drift: 0.55,           // 포위 링 전체가 목표 둘레를 도는 속도(라디안/초)
+    // 벽에 붙은 목표를 한쪽에서 밀지 말고 **둘러싸고 돌게** 하는 값들 (D49)
+    circleTurn: 0.9,       // 막혀 있는 동안 제 슬롯에서 더 밀어붙이는 속도(라디안/초)
+    crowdAvoid: 0.45,      // 이미 그 햄스터에 붙은 적 1마리 = 거리 몇 m 상당인가 (×10m)
+    targetHold: 3.0,       // 한 번 정한 목표를 유지하는 시간(초) — 갈팡질팡 방지
     giveUpProbes: 3,       // 이만큼 시도해도 막히면 포기하고 서성인다
     prowlTime: 4.0,        // 서성이는 시간 — 플레이어가 확장을 시도할 틈
     attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
@@ -152,8 +156,12 @@ const BUILD_SLOTS = [
   { key: 'guard', label: '방어병', size: 1, cost: () => P.guard.cost },
   { key: 'remove', label: '철거', size: 1, cost: () => P.wall.removeCost },
 ];
-let buildSlot = 0;
+// -1 = 아무것도 안 들고 있음 (기본값).
+// 숫자키로 들고, ESC로 내려놓는다 — 손에 뭔가 들려 있는 상태가 "예외"여야
+// 좌클릭이 실수로 벽을 흘리지 않는다.
+let buildSlot = -1;
 let prevWantBuild = false;
+const heldSlot = () => (buildSlot >= 0 ? BUILD_SLOTS[buildSlot] : null);
 
 // ---- 업그레이드 ----
 // 부품(밖에서 주운 것)으로만 산다. P는 그대로 두고 유효값 계산에서 더한다
@@ -852,6 +860,8 @@ const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 const typeMaxHp = (type) => P[type].hp + threatLevel() * P.threat.hpGain;
 const enemyMaxHp = (e) => typeMaxHp(e.type);
 
+let enemySeq = 0;   // 적 고유 번호 (포위 링 슬롯 배정용 — 죽어도 번호가 겹치지 않게)
+
 function makeEnemy(type, n) {
   const p = enemySpawnPos(n);
   const vis = makeCat(type);
@@ -870,9 +880,14 @@ function makeEnemy(type, n) {
     prevX: p.x, prevZ: p.z,
     dirX: 0, dirZ: 1,
     hp: typeMaxHp(type),
-    approachA: n * 2.399963,  // 접근 각도 — 막히면 돌려서 다른 방향으로 시도
+    id: enemySeq++,           // 포위 링 슬롯을 안정적으로 나누기 위한 고유 번호
+    approachA: n * 2.399963,  // 접근 각도 = 링 슬롯 + probeOff
+    probeOff: 0,              // 제 슬롯에서 벗어난 정도 — 막히면 커지고 풀리면 돌아온다
+    orbitDir: n % 2 ? 1 : -1, // 막혔을 때 훑어보는 방향 (좌우로 갈라진다)
+    allyBias: 0.7 + Math.random() * 0.6,  // 1보다 작으면 동료를, 크면 나를 더 노린다
+    chaseTarget: null,        // 지금 노리는 햄스터 (무리를 갈라놓는 계산에 쓴다)
     probeT: 0,                // 현재 접근각을 유지할 남은 시간
-    probes: 0, prowlT: 0, prowlX: 0, prowlZ: 0, preferAlly: false,
+    probes: 0, prowlT: 0, prowlX: 0, prowlZ: 0,
     atkT: 0, windup: 0, lungeT: 0, fuseT: 0,
     hitFlash: 0,
     vis, bar: makeBar(0xe0483c, 1.3),
@@ -2088,6 +2103,50 @@ function chaseTargets() {
   return out;
 }
 
+// 노릴 햄스터 고르기 (D49) — "가장 가까운 하나"로 전원이 몰리지 않게 두 가지를 섞는다.
+//  1) 적마다 고유한 편향(allyBias) — 같은 자리에서도 서로 다른 쪽을 본다
+//  2) 이미 그쪽을 노리는 적이 많으면 덜 매력적 (crowdAvoid) — 무리가 갈라진다
+// 멀티에서 플레이어가 4명이 되면 이 함수의 후보 목록만 늘어나면 된다.
+function pickChaseTarget(enemy) {
+  const ts = chaseTargets();
+  if (!ts.length) return null;
+  // 한 번 정한 목표는 잠깐 유지한다 — 매 재계산마다 흔들리면 제자리에서 갈팡질팡한다
+  if (enemy.chaseTarget && ts.includes(enemy.chaseTarget) && survival < (enemy.targetUntil || 0))
+    return enemy.chaseTarget;
+  const score = (t) => {
+    let s = Math.hypot(t.x - enemy.x, t.z - enemy.z);
+    s *= t === player ? 2 - enemy.allyBias : enemy.allyBias;
+    let crowd = 0;
+    for (const o of enemies) if (o !== enemy && o.chaseTarget === t) crowd++;
+    // 붐빔은 거리로 환산해 **더한다**. 곱셈이면 코앞(거리≈0)에서 효과가 사라져
+    // 결국 전원이 한 명에게 달라붙는다 — 그게 바로 "한쪽에 몰림"의 원인이었다.
+    return s + crowd * P.enemy.crowdAvoid * 10;
+  };
+  let best = null, bs = Infinity;
+  for (const t of ts) { const s = score(t); if (s < bs) { bs = s; best = t; } }
+  // 진동 방지는 위의 targetHold가 맡는다. 여기서 여유 마진까지 두면
+  // 점수가 엇비슷한 구간(= 갈라져야 할 바로 그 구간)에서 아무도 안 갈라진다.
+  enemy.targetUntil = survival + P.enemy.targetHold;
+  return best;
+}
+
+// 포위 링 (D49) — 같은 목표를 노리는 적들에게 **둘레의 균등한 자리**를 배정한다.
+// id 순으로 줄 세워 2π/n 간격의 슬롯을 주고, 링 전체를 ringPhase 속도로 돌린다.
+//   → 목표를 중심으로 뱅글뱅글 도는 포위진이 된다.
+// 서로 밀쳐내는 방식(각도 반발)은 값이 요동쳐서 제자리에서 떠는 것처럼 보였다.
+// 슬롯 배정은 결정적이라 흔들리지 않고, 막힌 방향은 뒤의 후보 훑기가 처리한다.
+// probeOff는 각자의 흔들림 — 막히면 커져서 제 슬롯 옆을 훑고, 풀리면 슬롯으로 돌아온다.
+let ringPhase = 0;
+
+function ringAngleFor(enemy, target) {
+  const peers = [];
+  for (const o of enemies) if (o === enemy || o.chaseTarget === target) peers.push(o);
+  peers.sort((a, b) => a.id - b.id);
+  const k = Math.max(0, peers.indexOf(enemy));
+  const n = Math.max(1, peers.length);
+  return ringPhase + (Math.PI * 2 * k) / n + (enemy.probeOff || 0);
+}
+
 function planEnemyPath(enemy) {
   const er = enemyR(enemy);
   const passAll = (i) => canPass(clearAll, i, er);
@@ -2129,42 +2188,67 @@ function planEnemyPath(enemy) {
     enemy.aiMode = '서성임';
     return;
   }
+  let chased = null;
   if (gx === null) {
-    const ts = chaseTargets();
-    if (!ts.length) { enemy.path = []; enemy.aiMode = '배회'; return; }
-    let tBest = ts[0], tD = Infinity;
-    for (const t of ts) {
-      let dd = Math.hypot(t.x - enemy.x, t.z - enemy.z);
-      // 한 번 포기한 뒤에는 다른 햄스터 쪽을 더 매력적으로 본다
-      if (enemy.preferAlly && t === ally) dd *= 0.55;
-      if (!enemy.preferAlly && t === player) dd *= 0.85;
-      if (dd < tD) { tD = dd; tBest = t; }
-    }
-    tD = Math.hypot(tBest.x - enemy.x, tBest.z - enemy.z);
+    const tBest = pickChaseTarget(enemy);
+    if (!tBest) { enemy.path = []; enemy.aiMode = '배회'; enemy.chaseTarget = null; return; }
+    chased = tBest;
+    enemy.chaseTarget = tBest;
+    enemy.approachA = ringAngleFor(enemy, tBest);
+    const tD = Math.hypot(tBest.x - enemy.x, tBest.z - enemy.z);
     // 직진만 하지 않는다 — 목표 둘레의 "접근 지점"을 노린다 (D28).
     // 각 적이 서로 다른 각도(approachA)를 갖고, 반경은 거리에 비례해 줄어든다.
     // → 멀리서는 서로 다른 방향으로 벌어져 오다가 가까워지며 조여든다(나선형).
-    //   막히면 각도를 크게 돌려 다른 방향에서 다시 시도한다.
-    if (tD < 1.5) {
-      gx = tBest.x; gz = tBest.z;                 // 코앞이면 직진
+    // 접근 반경은 0으로 줄어들지 않는다 (D49).
+    // 예전에는 1.5m 안으로 들어오면 전원이 **플레이어의 정확히 같은 좌표**를 노려서
+    // 한 점에 뭉쳤다. 최소한 제 몸 반지름만큼 떨어진 둘레 지점을 노리게 두면
+    // 공격 사거리(er+hr+0.6) 안에는 여전히 들어오면서 몸은 둘러싸는 모양이 된다.
+    const rMin = er * 0.95;
+    if (tD < rMin * 0.7) {
+      gx = tBest.x; gz = tBest.z;                 // 이미 몸이 겹칠 만큼 붙었으면 직진
     } else {
-      const r = Math.min(P.enemy.flankRadius, tD * 0.55);
-      const ax = clamp(tBest.x + Math.cos(enemy.approachA) * r, -HALF + 1, HALF - 1);
-      const az = clamp(tBest.z + Math.sin(enemy.approachA) * r, -HALF + 1, HALF - 1);
-      // 접근 지점이 내 몸집으로 설 수 없는 자리면 그냥 목표 직행
-      if (canPass(clearAll, worldToNav(ax, az), er)) { gx = ax; gz = az; }
-      else { gx = tBest.x; gz = tBest.z; }
+      // 접근 지점 후보를 접근각에서 좌우로 훑는다 (D49).
+      // 한 각도가 막혔다고 바로 "목표 직행"으로 무너지면 전원이 같은 지점으로 몰려
+      // 벽 한쪽 면에 정체된다. 설 수 있는 각을 찾을 때까지 둘레를 훑는 게 핵심이다.
+      const r = Math.max(rMin, Math.min(P.enemy.flankRadius, tD * 0.55));
+      const dir = enemy.orbitDir;
+      for (const off of [0, 0.45, 0.95, 1.5, 2.1, Math.PI]) {
+        for (const sgn of off === 0 ? [1] : [dir, -dir]) {
+          const a = enemy.approachA + sgn * off;
+          const ax = clamp(tBest.x + Math.cos(a) * r, -HALF + 1, HALF - 1);
+          const az = clamp(tBest.z + Math.sin(a) * r, -HALF + 1, HALF - 1);
+          const idx = worldToNav(ax, az);
+          if (!canPass(clearAll, idx, er)) continue;
+          if (enemyReach && !enemyReach[idx]) continue;   // 도달 못 하는 구역이면 무의미
+          gx = ax; gz = az;
+          break;
+        }
+        if (gx !== null) break;
+      }
+      if (gx === null) { gx = tBest.x; gz = tBest.z; }
     }
   }
   enemy.goalX = gx; enemy.goalZ = gz;
   const goal = worldToNav(gx, gz);
 
   // ---- 직행 경로 ----
-  const res = astar(start, goal, passAll, () => 0);
+  let res = astar(start, goal, passAll, () => 0);
   if (res.found || res.closestWorld < 1.3 + (raiding ? enemyR(enemy) : 0)) {
     enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = raiding ? '습격' : '추격';
     return;
+  }
+  // 접근 지점까지는 못 가도 목표 본체까지는 갈 수 있는 경우가 있다.
+  // 여기서 안 되짚으면 멀쩡히 쫓을 수 있는데도 '돌파/습격'으로 새 버린다.
+  if (chased && (gx !== chased.x || gz !== chased.z)) {
+    const direct = astar(start, worldToNav(chased.x, chased.z), passAll, () => 0);
+    if (direct.found || direct.closestWorld < 1.3) {
+      enemy.goalX = chased.x; enemy.goalZ = chased.z;
+      enemy.path = direct.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      enemy.aiMode = '추격';
+      return;
+    }
+    res = direct.closestWorld < res.closestWorld ? direct : res;
   }
 
   // ---- 돌파 경로: 가로막는 아군 구조물을 부수며 뚫고 온다 ----
@@ -2329,8 +2413,12 @@ function updateEnemy(enemy, dt) {
   // 체력 아주 느린 자연 회복 (찔끔찔끔 누적으로 죽지 않게 — 처치엔 집중 화력이 필요)
   enemy.hp = Math.min(enemy.hp + enemyMaxHp(enemy) * 0.02 * dt, enemyMaxHp(enemy));
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt;
+  // 접근각 = 포위 링 슬롯(planEnemyPath에서 배정) + probeOff.
+  // 평상시엔 probeOff가 0으로 잦아들어 제 슬롯을 지키고,
+  // 막혀 있는 동안에는 커져서 슬롯 옆을 훑는다 = 벽 앞에서 밀지 않고 돌아본다.
   if (enemy.probeT > 0) enemy.probeT -= dt;
-  else enemy.approachA += P.enemy.drift * dt;
+  else enemy.probeOff *= Math.max(0, 1 - dt * 0.8);
+  if (enemy.stallT > 0.15) enemy.probeOff += enemy.orbitDir * P.enemy.circleTurn * dt;
   if (enemy.prowlT > 0) {
     enemy.prowlT -= dt;
     if (enemy.prowlT <= 0) enemy.repathT = 0;   // 서성임 끝 → 다시 추격
@@ -2399,8 +2487,10 @@ function updateEnemy(enemy, dt) {
   // 막혔다 → 접근각을 크게 돌려 "다른 방향에서 다시" 시도한다.
   // 벽에 부딪힌 채 같은 자리를 파는 대신 옆구리를 노리는 움직임이 여기서 나온다.
   if (enemy.stallT > 0.45 && enemy.probeT <= 0) {
-    const dir = Math.random() < 0.5 ? 1 : -1;
-    enemy.approachA += dir * (P.enemy.probeTurn * (0.7 + Math.random() * 0.8));
+    // 도는 방향을 유지한 채 크게 튼다 — 좌우로 흔들리면 제자리에서 떠는 것처럼 보인다.
+    // 가끔은 반대로 돌아 반대편 옆구리도 훑는다.
+    if (Math.random() < 0.25) enemy.orbitDir *= -1;
+    enemy.probeOff += enemy.orbitDir * (P.enemy.probeTurn * (0.7 + Math.random() * 0.8));
     enemy.probeT = P.enemy.probeHold;
     enemy.repathT = 0;
     enemy.stallT = 0;
@@ -2412,7 +2502,8 @@ function updateEnemy(enemy, dt) {
       enemy.prowlCount = (enemy.prowlCount || 0) + 1;
       enemy.prowlX = enemy.x + (Math.random() - 0.5) * 10;
       enemy.prowlZ = enemy.z + (Math.random() - 0.5) * 10;
-      enemy.preferAlly = !enemy.preferAlly;   // 다음엔 다른 햄스터를 노려본다
+      enemy.allyBias = 2 - enemy.allyBias;    // 다음엔 다른 햄스터를 노려본다
+      enemy.chaseTarget = null;
     }
   }
   if (enemy.aiMode === '추격' && enemy.stallT > 0.4) enemy.repathT = 0;
@@ -2542,8 +2633,10 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
+  // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
   if (e.code === 'Escape') {
     if (buildJob) cancelBuild(true);
+    else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (playerOrder) clearMineOrder('채굴 명령 취소');
     else if (selectedWorkers.size) selectedWorkers.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
@@ -2554,7 +2647,8 @@ window.addEventListener('keydown', (e) => {
   for (let k = 0; k < 9; k++) {
     if (e.code === 'Digit' + (k + 1)) {
       if (upgOpen) buyUpgrade(k);
-      else if (k < BUILD_SLOTS.length) { buildSlot = k; updateHotbar(); }
+      // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
+      else if (k < BUILD_SLOTS.length) { buildSlot = buildSlot === k ? -1 : k; updateHotbar(); }
       break;
     }
   }
@@ -3009,7 +3103,14 @@ function updatePlayer(dt) {
       hasTile = true;
     }
   }
-  const slot = BUILD_SLOTS[buildSlot];
+  const slot = heldSlot();
+  // 아무것도 안 들고 있으면 고스트도 없고 좌클릭도 아무 일을 하지 않는다
+  if (!slot) {
+    ghostCell = { i: gi, j: gj, valid: false };
+    ghost.visible = false;
+    updateMinePrompt();
+    return;
+  }
   const w = cellToWorld(gi, gj);
   const affordable = resources >= slot.cost();
   let valid = false;
@@ -3288,7 +3389,10 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'flankRadius', 0, 14, 0.5).name('접근 반경');
   f.add(P.enemy, 'probeTurn', 0.2, 3, 0.1).name('막혔을 때 각도 전환');
   f.add(P.enemy, 'probeHold', 0.5, 8, 0.5).name('새 각도 유지(초)');
-  f.add(P.enemy, 'drift', 0, 2, 0.05).name('평상시 각도 흐름');
+  f.add(P.enemy, 'drift', 0, 2, 0.05).name('포위 링 도는 속도');
+  f.add(P.enemy, 'circleTurn', 0, 5, 0.1).name('막혔을 때 훑는 속도');
+  f.add(P.enemy, 'crowdAvoid', 0, 2, 0.05).name('붐비는 목표 피하기(×10m)');
+  f.add(P.enemy, 'targetHold', 0, 10, 0.5).name('목표 유지 시간(초)');
 }
 {
   const f = gui.addFolder('픽업 (밖에 나갈 이유)');
@@ -3438,7 +3542,7 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 1~6 건설 선택 → 클릭/Space 설치 (6=철거) · U: 개조 (공방 옆에서)\n' +
+  'WASD 이동 · 기본은 빈손 — 1~7로 지을 것을 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '한 방에 죽지 않는다. 공격을 맞아 체력이 다 깎여야 잡힌다 (예비동작 때 피할 것)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
@@ -3527,6 +3631,7 @@ function restart() {
   clearWorkers();
   playerOrder = null;
   orderPath = [];
+  buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   buildJob = null;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
@@ -3720,7 +3825,8 @@ function updateHotbar() {
     const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
     const costTxt = cost > 0 ? `${cost}치즈` : '무료';
     return `<div class="${cls}"><b>${k + 1}</b>${sl.label}<br>${costTxt}</div>`;
-  }).join('');
+  }).join('') +
+  `<div class="slot hand${buildSlot < 0 ? ' sel' : ''}"><b>ESC</b>${buildSlot < 0 ? '빈손' : '내려놓기'}<br>—</div>`;
 }
 
 function flashMsg(text, color = '#6ee07a') {
@@ -4003,6 +4109,7 @@ function tick(dt) {
     updateAlly(dt);
     updateRescue();
     if (enemyActive()) {
+      ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
       updateSpawns();   // 스테이지 외 추가 증원 (옵션)
       for (const e of enemies) {
         e.vis.setOpacity(1);
