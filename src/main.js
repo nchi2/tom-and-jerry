@@ -74,6 +74,14 @@ const P = {
     perPile: 3,         // 치즈더미 하나에 붙을 수 있는 일꾼 수
     max: 12,
   },
+  // 채굴 명령 (원작 프로브 조작) — 더미에 명령을 걸면 알아서 왕복한다.
+  //  플레이어: 가까이 가면 뜨는 E, 또는 더미 우클릭. **직접 움직이면 즉시 취소**
+  //  일꾼: 드래그 상자 선택(Shift 또는 일꾼 위에서 시작) → 더미 우클릭
+  command: {
+    promptRange: 4.5,   // 이 거리 안에 더미가 있으면 머리 위에 'E' 안내가 뜬다
+    pickRange: 1.8,     // 우클릭이 더미/유닛을 집는 허용 반경
+    dragMin: 7,         // 상자 선택으로 인정하는 최소 드래그(픽셀)
+  },
   workshop: { cost: 15, hp: 100 },                               // 공방 — 업그레이드는 이 옆에서
   tower: { cost: 35, hp: 110, range: 7.0, dmg: 30, reload: 1.0 }, // 경비탑 — 원작 포토캐논. 던진다
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
@@ -1201,6 +1209,18 @@ function nearestDepot(x, z, owner = 'p') {
   return best;
 }
 
+// 가장 가까운 (아직 남아 있는) 치즈더미
+function nearestPile(x, z, maxD = Infinity) {
+  let best = null, bd = maxD;
+  for (const n of nodes) {
+    if (n.amount <= 0) continue;
+    const w = cellToWorld(n.i, n.j);
+    const d = Math.hypot(w.x - x, w.z - z);
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best;
+}
+
 // 치즈를 나르는 존재들 (플레이어 + 동료 + 일꾼)
 const workers = [];
 const carriers = () => [player, ...(ally.active ? [ally] : []), ...workers];
@@ -1244,6 +1264,126 @@ function doCarryWork(c, dt, load, owner = 'p') {
   return null;
 }
 
+// ---- 채굴 명령 (플레이어) ----
+// E 또는 치즈더미 우클릭 → 더미↔창고를 알아서 왕복한다.
+// **WASD로 움직이는 순간 취소**돼 자유 이동으로 돌아온다.
+// 실제 채굴/하역은 doCarryWork가 그대로 하고, 여기는 발만 대신 움직여 준다.
+// 즉 "맡겨두고 다른 걸 하다가, 위험하면 직접 개입해 빼낸다"가 조작의 뼈대다.
+let playerOrder = null;    // { pile }
+let orderPath = [];
+let orderRepathT = 0;
+
+function setMineOrder(pile) {
+  if (!pile || pile.amount <= 0) { flashMsg('캘 수 있는 치즈더미가 아닙니다', '#e05050'); return; }
+  playerOrder = { pile };
+  orderPath = []; orderRepathT = 0;
+  flashMsg('자동 채굴 시작 — 움직이면 취소', '#f0c040');
+}
+
+function clearMineOrder(msg) {
+  if (!playerOrder) return;
+  playerOrder = null;
+  orderPath = [];
+  if (msg) flashMsg(msg, '#9aa3b2');
+}
+
+function toggleMineOrder() {
+  if (playerOrder) { clearMineOrder('채굴 명령 취소'); return; }
+  const n = nearestPile(player.x, player.z, P.command.promptRange);
+  if (!n) { flashMsg('가까운 곳에 치즈더미가 없습니다', '#e05050'); return; }
+  setMineOrder(n);
+}
+
+// 명령 수행 — 볼주머니가 비었으면 더미로, 찼으면 창고로 걸어간다
+function updateMineOrder(dt) {
+  const dep = nearestDepot(player.x, player.z, 'p');
+  let gx, gz, stopAt;
+  if (player.carry > 0) {
+    if (!dep) { clearMineOrder('부릴 창고가 없다 — 명령 종료'); return; }
+    gx = dep.cx; gz = dep.cz; stopAt = P.depot.dropRange * 0.7;
+  } else {
+    const pile = playerOrder.pile;
+    if (!nodes.includes(pile) || pile.amount <= 0) {
+      clearMineOrder('치즈더미가 바닥났다 — 명령 종료');
+      return;
+    }
+    const w = cellToWorld(pile.i, pile.j);
+    gx = w.x; gz = w.z; stopAt = P.carry.range * 0.7;
+  }
+  if (Math.hypot(gx - player.x, gz - player.z) <= stopAt) { orderPath.length = 0; return; }
+
+  orderRepathT -= dt;
+  if (orderRepathT <= 0 || !orderPath.length) {
+    orderRepathT = 0.45;
+    const pass = (i) => canPass(clearAll, i, P.player.radius);
+    const res = astar(nearestPassableNav(player.x, player.z, pass), worldToNav(gx, gz), pass, () => 0);
+    orderPath = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+  }
+  while (orderPath.length && Math.hypot(player.x - orderPath[0].x, player.z - orderPath[0].z) < navRes * 0.9)
+    orderPath.shift();
+  const tx = orderPath.length ? orderPath[0].x : gx;
+  const tz = orderPath.length ? orderPath[0].z : gz;
+  let dx = tx - player.x, dz = tz - player.z;
+  const dl = Math.hypot(dx, dz);
+  if (dl > 0.03) {
+    dx /= dl; dz /= dl;
+    player.x += dx * effPlayerSpeed() * dt;
+    player.z += dz * effPlayerSpeed() * dt;
+    player.faceX = dx; player.faceZ = dz;
+  }
+}
+
+// ---- 'E' 안내 빌보드 ----
+// 치즈더미에 다가가면 그 더미 위에 뜬다. "여기서 뭘 할 수 있는지"를
+// HUD가 아니라 대상 위에서 알려줘야 처음 보는 사람도 바로 안다.
+function roundRectPath(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function makeKeyPrompt() {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 72;
+  const g = cv.getContext('2d');
+  g.fillStyle = 'rgba(16,20,30,0.85)';
+  roundRectPath(g, 3, 3, 250, 66, 14); g.fill();
+  g.strokeStyle = '#f0c040'; g.lineWidth = 3;
+  roundRectPath(g, 3, 3, 250, 66, 14); g.stroke();
+  g.fillStyle = '#f0c040';
+  roundRectPath(g, 18, 15, 42, 42, 8); g.fill();
+  g.fillStyle = '#14181f';
+  g.font = 'bold 28px Menlo, monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('E', 39, 37);
+  g.fillStyle = '#f4e7c0';
+  g.font = 'bold 25px system-ui, sans-serif';
+  g.textAlign = 'left';
+  g.fillText('채굴 시작', 74, 38);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false, depthWrite: false,
+  }));
+  spr.scale.set(2.5, 0.7, 1);
+  spr.renderOrder = 1002;
+  spr.visible = false;
+  scene.add(spr);
+  return spr;
+}
+const minePrompt = makeKeyPrompt();
+
+function updateMinePrompt() {
+  const show = alive && !playerStunned && !playerOrder && !buildJob;
+  const n = show ? nearestPile(player.x, player.z, P.command.promptRange) : null;
+  minePrompt.visible = !!n;
+  if (!n) return;
+  const w = cellToWorld(n.i, n.j);
+  minePrompt.position.set(w.x, 2.1 + Math.sin(performance.now() * 0.004) * 0.09, w.z);
+}
+
 // ---- 일꾼 햄스터 ----
 // 치즈더미 ↔ 창고를 자동으로 왕복한다. 한 더미에 붙을 수 있는 수가 제한돼 있어서
 // 더 벌려면 새 더미를 확보해야 한다 = 영역 확장 압박 (원작 구조).
@@ -1271,19 +1411,90 @@ function hireWorker(owner = 'p') {
   spend(owner, P.worker.cost);
   const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
   vis.group.scale.setScalar(P.worker.radius);
+  const ring = new THREE.Mesh(
+    selRingGeo,
+    new THREE.MeshBasicMaterial({ color: 0xf0c040, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  ring.scale.setScalar(0.85);
+  ring.renderOrder = 996;
+  ring.visible = false;
+  scene.add(ring);
   const w = {
     x: dep.cx + (Math.random() - 0.5) * 2, z: dep.cz + 1.6 + Math.random(),
     faceX: 0, faceZ: 1, carry: 0, pile: null, job: null, owner,
-    path: [], repathT: 0, vis, depot: dep, workBar: makeBar(0xf0c040, 0.9),
+    // forced = 플레이어가 직접 지정한 더미 (자동 재배치가 덮어쓰지 않는다)
+    // moveGoal = 이동 명령 목적지 / idle = 명령을 끝내고 대기 중 (스스로 일하지 않음)
+    forced: false, moveGoal: null, idle: false,
+    path: [], repathT: 0, vis, ring, depot: dep, workBar: makeBar(0xf0c040, 0.9),
   };
   workers.push(w);
   spawnBuildFx(w.x, w.z);
   return w;
 }
 
+function disposeWorker(w) {
+  scene.remove(w.vis.group);
+  scene.remove(w.ring);
+  w.ring.material.dispose();
+  disposeBar(w.workBar);
+  selectedWorkers.delete(w);
+}
+
 function clearWorkers() {
-  for (const w of workers) { scene.remove(w.vis.group); disposeBar(w.workBar); }
+  for (const w of workers) disposeWorker(w);
   workers.length = 0;
+  selectedWorkers.clear();
+}
+
+// ---- 일꾼 선택 & 명령 (스타 방식) ----
+// 드래그 상자로 여러 명을 잡고, 우클릭 한 번으로 더미를 찍어 일을 시킨다.
+// 한 더미의 정원(P.worker.perPile)은 명령으로도 못 넘는다 — D36의 확장 압박이
+// 조작 편의로 무너지면 안 되기 때문이다.
+const selectedWorkers = new Set();
+
+function workerAtWorld(x, z, maxD = 1.0) {
+  let best = null, bd = maxD;
+  for (const w of workers) {
+    if (w.owner !== 'p') continue;
+    const d = Math.hypot(w.x - x, w.z - z);
+    if (d < bd) { bd = d; best = w; }
+  }
+  return best;
+}
+
+const liveSelection = () => [...selectedWorkers].filter((w) => workers.includes(w));
+
+function commandWorkersToPile(pile) {
+  const pw = cellToWorld(pile.i, pile.j);
+  const dep = nearestDepot(pw.x, pw.z, 'p');   // "가까운 치즈창고"로 나른다
+  let sent = 0, full = 0;
+  for (const w of liveSelection()) {
+    if (w.pile !== pile && pileCrowd(pile) >= P.worker.perPile) { full++; continue; }
+    w.pile = pile;
+    w.forced = true;
+    w.idle = false;
+    w.moveGoal = null;
+    if (dep) w.depot = dep;
+    w.path.length = 0; w.repathT = 0;
+    sent++;
+  }
+  if (full) flashMsg(`${full}명은 못 붙는다 — 한 더미에 ${P.worker.perPile}명까지`, '#e05050');
+  else if (sent) flashMsg(`일꾼 ${sent}명 채굴 시작`, '#f0c040');
+  if (sent && !dep) flashMsg('내 치즈 창고가 없다 — 캐도 부릴 곳이 없다', '#e05050');
+}
+
+function commandWorkersMove(x, z) {
+  const list = liveSelection();
+  // 여러 명이면 황금각으로 흩어 목표를 준다 (한 점에 겹쳐 서지 않게)
+  list.forEach((w, k) => {
+    const a = k * 2.399963, r = k === 0 ? 0 : 0.55 * Math.sqrt(k);
+    w.moveGoal = { x: x + Math.cos(a) * r, z: z + Math.sin(a) * r };
+    w.idle = false; w.forced = false;
+    w.path.length = 0; w.repathT = 0;
+  });
+  if (list.length) flashMsg(`일꾼 ${list.length}명 이동 (도착하면 대기)`, '#9fe8a0');
 }
 
 // 일꾼이 붙을 치즈더미 고르기 — 자리가 남은 것 중 창고에서 가까운 순
@@ -1311,26 +1522,36 @@ function updateWorkers(dt) {
       if (Math.hypot(w.x - e.x, w.z - e.z) < P.worker.radius + enemyR(e) - 0.02) { dead = true; break; }
     if (dead) {
       spawnBuildFx(w.x, w.z);
-      scene.remove(w.vis.group);
-      disposeBar(w.workBar);
+      disposeWorker(w);
       workers.splice(workers.indexOf(w), 1);
       flashMsg('일꾼이 잡혔다!', '#ff6b6b');
       continue;
     }
 
-    const did = doCarryWork(w, dt, P.carry.workerLoad, w.owner);
+    // 이동 명령이 걸려 있으면 일보다 우선한다 (위험할 때 빼낼 수 있어야 한다)
+    if (w.moveGoal && Math.hypot(w.moveGoal.x - w.x, w.moveGoal.z - w.z) < 0.6) {
+      w.moveGoal = null; w.idle = true; w.path.length = 0;
+    }
+    const commanded = !!w.moveGoal || w.idle;
+
+    const did = commanded ? null : doCarryWork(w, dt, P.carry.workerLoad, w.owner);
     w.job = did;
 
-    // 목표: 볼주머니가 찼으면 창고로, 아니면 치즈더미로
+    // 목표: 명령이 있으면 그쪽, 없으면 볼주머니가 찼을 때 창고 / 비었을 때 치즈더미
     let gx, gz;
-    if (w.carry > 0 || (w.pile && w.pile.amount <= 0)) {
+    if (w.moveGoal) {
+      gx = w.moveGoal.x; gz = w.moveGoal.z;
+    } else if (w.idle) {
+      gx = w.x; gz = w.z;
+    } else if (w.carry > 0 || (w.pile && w.pile.amount <= 0)) {
       const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z, w.owner);
       if (!dep) continue;
       w.depot = dep;
       gx = dep.cx; gz = dep.cz;
-      if (w.pile && w.pile.amount <= 0) w.pile = null;
+      if (w.pile && w.pile.amount <= 0) { w.pile = null; w.forced = false; }
     } else {
-      if (!w.pile || w.pile.amount <= 0 || pileCrowd(w.pile) > P.worker.perPile) w.pile = pickPile(w);
+      if (w.pile && w.pile.amount <= 0) { w.pile = null; w.forced = false; }
+      if (!w.pile || (!w.forced && pileCrowd(w.pile) > P.worker.perPile)) w.pile = pickPile(w);
       if (!w.pile) {
         const dep = nearestDepot(w.x, w.z, w.owner);
         if (!dep) continue;
@@ -1343,7 +1564,7 @@ function updateWorkers(dt) {
 
     // 이동 (목표에 충분히 붙었으면 멈춘다)
     const d = Math.hypot(gx - w.x, gz - w.z);
-    const stopAt = did === 'drop' || did === 'mine' ? 0.1 : 1.5;
+    const stopAt = w.moveGoal ? 0.35 : (did === 'drop' || did === 'mine' ? 0.1 : 1.5);
     if (d > stopAt) {
       w.repathT -= dt;
       if (w.repathT <= 0 || !w.path.length) {
@@ -1367,6 +1588,8 @@ function updateWorkers(dt) {
     }
     w.vis.group.position.set(w.x, 0, w.z);
     w.vis.group.rotation.y = Math.atan2(w.faceX, w.faceZ) + Math.PI;
+    w.ring.position.set(w.x, 0.06, w.z);
+    w.ring.visible = selectedWorkers.has(w);
     setBar(w.workBar, (w.mineT || 0) / effMineTime(), w.x, barY(w.vis), w.z, did === 'mine');
     // 볼주머니가 찰수록 통통해진다
     const f = w.carry / P.carry.workerLoad;
@@ -2319,7 +2542,13 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
-  if (e.code === 'Escape') { if (buildJob) cancelBuild(true); else if (upgOpen) { upgOpen = false; renderUpgrade(); } }
+  if (e.code === 'Escape') {
+    if (buildJob) cancelBuild(true);
+    else if (playerOrder) clearMineOrder('채굴 명령 취소');
+    else if (selectedWorkers.size) selectedWorkers.clear();
+    else if (upgOpen) { upgOpen = false; renderUpgrade(); }
+  }
+  if (e.code === 'KeyE' && alive) toggleMineOrder();
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
   // 숫자키 = 업그레이드 패널이 열려 있으면 구매, 아니면 건설 슬롯 선택
   for (let k = 0; k < 9; k++) {
@@ -2337,23 +2566,129 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 let mouseDown = false;
-window.addEventListener('mousedown', (e) => { if (e.button === 0 && e.target === renderer.domElement) mouseDown = true; });
-window.addEventListener('mouseup', () => (mouseDown = false));
+
+// ---- 상자 선택 ----
+// 좌클릭은 건설이라 그대로 두고, **Shift를 누른 채 드래그**하거나
+// **일꾼 위에서 드래그를 시작**할 때만 선택 상자가 된다.
+// (드래그 중에는 건설이 일어나지 않는다 — 벽을 흘리다가 선택이 되면 안 되므로)
+let selDrag = null;   // { x0, y0, x1, y1, add, moved }
+const selBoxEl = document.getElementById('selbox');
+const _projV = new THREE.Vector3();
+
+function worldToScreen(x, y, z) {
+  _projV.set(x, y, z).project(activeCam());
+  if (_projV.z > 1) return null;           // 카메라 뒤
+  return { x: (_projV.x * 0.5 + 0.5) * innerWidth, y: (-_projV.y * 0.5 + 0.5) * innerHeight };
+}
+
+function drawSelBox() {
+  if (!selDrag) return;
+  const x = Math.min(selDrag.x0, selDrag.x1), y = Math.min(selDrag.y0, selDrag.y1);
+  selBoxEl.style.left = x + 'px';
+  selBoxEl.style.top = y + 'px';
+  selBoxEl.style.width = Math.abs(selDrag.x1 - selDrag.x0) + 'px';
+  selBoxEl.style.height = Math.abs(selDrag.y1 - selDrag.y0) + 'px';
+}
+
+function beginSelectDrag(e) {
+  if (!alive) return false;
+  const hit = pointerGround(e);
+  const onWorker = hit && workerAtWorld(hit.x, hit.z, P.command.pickRange);
+  if (!e.shiftKey && !onWorker) return false;
+  // 드래그를 시작한 일꾼은 항상 포함한다 — 머리(빌보드 기준점)가 상자 위쪽
+  // 모서리 밖으로 삐져나가 "잡은 놈이 안 잡히는" 일이 없게
+  selDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY,
+              add: e.shiftKey, moved: false, seed: onWorker || null };
+  selBoxEl.style.display = 'block';
+  drawSelBox();
+  return true;
+}
+
+function finishSelectDrag(e) {
+  const d = selDrag;
+  selDrag = null;
+  selBoxEl.style.display = 'none';
+  if (d.moved) {
+    const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1);
+    const y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
+    if (!d.add) selectedWorkers.clear();
+    if (d.seed && workers.includes(d.seed)) selectedWorkers.add(d.seed);
+    // 발밑과 머리 둘 중 하나만 상자에 들어와도 잡는다 (관대하게)
+    const inBox = (s) => s && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1;
+    for (const w of workers) {
+      if (w.owner !== 'p') continue;
+      if (inBox(worldToScreen(w.x, 0, w.z)) || inBox(worldToScreen(w.x, 0.9, w.z)))
+        selectedWorkers.add(w);
+    }
+  } else {
+    const hit = pointerGround(e);
+    const w = hit && workerAtWorld(hit.x, hit.z, P.command.pickRange);
+    if (w) {
+      if (d.add && selectedWorkers.has(w)) selectedWorkers.delete(w);
+      else { if (!d.add) selectedWorkers.clear(); selectedWorkers.add(w); }
+    } else if (!d.add) selectedWorkers.clear();
+  }
+  if (selectedWorkers.size) {
+    selectedGuard = null;
+    flashMsg(`일꾼 ${selectedWorkers.size}명 선택 — 치즈더미를 우클릭`, '#9fe8a0');
+  }
+}
+
+window.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || e.target !== renderer.domElement) return;
+  if (beginSelectDrag(e)) return;     // 선택 드래그 중에는 건설하지 않는다
+  mouseDown = true;
+});
+window.addEventListener('mousemove', (e) => {
+  if (!selDrag) return;
+  selDrag.x1 = e.clientX; selDrag.y1 = e.clientY;
+  if (Math.hypot(selDrag.x1 - selDrag.x0, selDrag.y1 - selDrag.y0) > P.command.dragMin) selDrag.moved = true;
+  drawSelBox();
+});
+window.addEventListener('mouseup', (e) => {
+  mouseDown = false;
+  if (selDrag && e.button === 0) finishSelectDrag(e);
+});
 window.addEventListener('contextmenu', (e) => {
   if (e.target === renderer.domElement) e.preventDefault();
 });
-// 우클릭 = 방어병 명령 (좌클릭은 건설이라 충돌을 피함)
+// 우클릭 = 명령 (좌클릭은 건설이라 충돌을 피함)
+//  유닛 위 → 선택 / 치즈더미 → 채굴 명령 / 빈 땅 → 이동 명령
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 2 || e.target !== renderer.domElement || !alive) return;
   const hit = pointerGround(e);
   if (!hit) return;
+
+  // 1) 유닛 위 → 그 하나만 선택
+  const w = workerAtWorld(hit.x, hit.z, P.command.pickRange);
+  if (w) {
+    selectedWorkers.clear(); selectedWorkers.add(w);
+    selectedGuard = null;
+    flashMsg('일꾼 선택 — 치즈더미를 우클릭하면 일 시작', '#9fe8a0');
+    return;
+  }
   const g = guardAtWorld(hit.x, hit.z);
-  if (g) { selectedGuard = g; flashMsg('방어병 선택 — 우클릭으로 이동 명령', '#9fe8a0'); return; }
+  if (g) {
+    selectedGuard = g; selectedWorkers.clear();
+    flashMsg('방어병 선택 — 우클릭으로 이동 명령', '#9fe8a0');
+    return;
+  }
+
+  // 2) 치즈더미 → 일꾼이 선택돼 있으면 일꾼에게, 아니면 내가 간다
+  const pile = nearestPile(hit.x, hit.z, P.command.pickRange);
+  if (pile) {
+    if (selectedWorkers.size) commandWorkersToPile(pile);
+    else setMineOrder(pile);
+    return;
+  }
+
+  // 3) 빈 땅 → 이동 명령
+  const c = worldToCell(hit.x, hit.z);
+  if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
+  const cw = cellToWorld(c.i, c.j);
+  if (selectedWorkers.size) { commandWorkersMove(cw.x, cw.z); return; }
   if (selectedGuard) {
-    const c = worldToCell(hit.x, hit.z);
-    if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
-    const w = cellToWorld(c.i, c.j);
-    selectedGuard.gx = w.x; selectedGuard.gz = w.z;
+    selectedGuard.gx = cw.x; selectedGuard.gz = cw.z;
     selectedGuard.repathT = 0;
     selectedGuard.path.length = 0;
   }
@@ -2588,11 +2923,13 @@ function updateWallPops(dt) {
 function updatePlayer(dt) {
   // ---- 기절: 조작 불능, 누워서 동료를 기다린다 ----
   if (playerStunned) {
+    clearMineOrder();
     playerVis.group.position.set(player.x, 0.25, player.z);
     playerVis.group.rotation.x = -Math.PI / 2;
     playerVis.mats?.forEach?.(() => {});
     playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
     ghost.visible = false;
+    minePrompt.visible = false;
     return;
   }
   playerVis.group.rotation.x = 0;
@@ -2614,10 +2951,14 @@ function updatePlayer(dt) {
     mz = b.fz * f + b.rz * r;
     const ml = Math.hypot(mx, mz);
     if (ml > 1e-4) {
+      // 직접 움직이면 채굴 명령은 즉시 풀린다 — 개입이 항상 우선이다
+      if (playerOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
       mx /= ml; mz /= ml;
       player.x += mx * effPlayerSpeed() * dt;
       player.z += mz * effPlayerSpeed() * dt;
       player.faceX = mx; player.faceZ = mz;
+    } else if (playerOrder) {
+      updateMineOrder(dt);
     }
   }
   collideWithObstacles(player, P.player.radius);
@@ -2741,6 +3082,8 @@ function updatePlayer(dt) {
     else if (slot.key === 'guard') placeGuard(gi, gj);
     else if (slot.key === 'worker') hireWorker('p');
   }
+
+  updateMinePrompt();
 }
 
 // ---- 건물 건설 (시간 소요 · 무방비) ----
@@ -2912,6 +3255,16 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.threat, 'speedCap', 3, 14, 0.1).name('적 속도 상한');
   f.add(P.threat, 'killsPerSurge', 1, 30, 1).name('N킬마다 우루루');
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
+}
+{
+  const f = gui.addFolder('채굴 명령 (E · 우클릭 · 드래그)');
+  f.add(P.command, 'promptRange', 1, 12, 0.5).name("'E' 안내가 뜨는 거리");
+  f.add(P.command, 'pickRange', 0.5, 5, 0.1).name('우클릭 집는 반경');
+  f.add(P.command, 'dragMin', 2, 40, 1).name('상자 선택 최소 드래그(px)');
+  f.add(P.worker, 'perPile', 1, 8, 1).name('한 더미당 일꾼 수');
+  f.add(P.worker, 'max', 1, 30, 1).name('일꾼 최대');
+  f.add(P.worker, 'speed', 1, 12, 0.1).name('일꾼 이동 속도');
+  f.add(P.worker, 'cost', 5, 120, 1).name('일꾼 비용');
 }
 {
   const f = gui.addFolder('방어병 (우클릭 명령)');
@@ -3088,6 +3441,8 @@ helpEl.textContent =
   'WASD 이동 · 1~6 건설 선택 → 클릭/Space 설치 (6=철거) · U: 개조 (공방 옆에서)\n' +
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '한 방에 죽지 않는다. 공격을 맞아 체력이 다 깎여야 잡힌다 (예비동작 때 피할 것)\n' +
+  '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
+  '일꾼: Shift+드래그(또는 일꾼 위에서 드래그)로 다중 선택 → 더미 우클릭 = 채굴 / 빈 땅 우클릭 = 이동\n' +
   '많이 잡으면 무리가 몰려온다 — 절제도 실력 · 우클릭: 방어병 이동 명령 · C 카메라 · R 재시작';
 
 let alive = true;
@@ -3170,6 +3525,8 @@ function restart() {
   clearPickups();
   clearGuards();
   clearWorkers();
+  playerOrder = null;
+  orderPath = [];
   buildJob = null;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
@@ -3597,8 +3954,11 @@ function updateHUD() {
     `[${MAPS[mapIndex].name}] 스테이지 ${stage}/${STAGES.length}` +
     (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
     `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개 · 일꾼 ${workers.length}` +
+    (workers.filter((w) => w.idle).length ? ` (대기 ${workers.filter((w) => w.idle).length})` : '') +
+    (selectedWorkers.size ? ` · 선택 ${selectedWorkers.size}` : '') +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
+    (playerOrder ? ' 🔁자동채굴(움직이면 취소)' : '') +
     (playerJob === 'mine' ? ' ⛏채굴' : playerJob === 'drop' ? ' 📦하역' : '') +
     (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') +
     (guards.length ? ` · 방어병 ${guards.length}` : '') +
@@ -3715,6 +4075,11 @@ window.__game = {
   get enemyReach() { return enemyReach; },
   nodes, ghost, mouseNDC, CAM_MODES, enemies,
   setEnemyCount, spawnBuildFx, hireWorker, workers, doCarryWork, nearestDepot,
+  // 채굴 명령 (E · 우클릭 · 드래그 선택)
+  nearestPile, setMineOrder, clearMineOrder, toggleMineOrder,
+  selectedWorkers, workerAtWorld, commandWorkersToPile, commandWorkersMove, worldToScreen,
+  get playerOrder() { return playerOrder; },
+  get minePromptVisible() { return minePrompt.visible; },
   get playerJob() { return playerJob; },
   get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
   get buildJob() { return buildJob; },

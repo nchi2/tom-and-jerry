@@ -64,6 +64,11 @@
     #upgrade .urow .cost { margin-left: auto; color: #8fd6ff; }
     #upgrade .urow .eff { color: #6ee07a; min-width: 56px; text-align: right; }
     #upgrade .urow.dim { opacity: 0.45; }
+    #selbox {
+      position: fixed; z-index: 14; display: none; pointer-events: none;
+      border: 1px solid #6ee07a; background: rgba(110, 224, 122, 0.14);
+      border-radius: 2px;
+    }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
       text-align: center; pointer-events: none;
@@ -77,6 +82,7 @@
   <div id="hud"></div>
   <div id="help"></div>
   <div id="flash"></div>
+  <div id="selbox"></div>
   <div id="hotbar"></div>
   <div id="upgrade"></div>
   <div id="overlay" class="hidden">
