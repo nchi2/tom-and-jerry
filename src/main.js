@@ -8,7 +8,12 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 const P = {
   // 한 방에 죽지 않는다 — 공격을 맞아 체력이 다 깎여야 잡힌다 (원작 프로브가
   // 울트라 두 방을 버티던 것). 죽음이 "한순간의 실수"가 아니라 "누적된 실수"가 된다.
-  player: { speed: 6.0, radius: 0.35, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1 },
+  player: { speed: 6.0, radius: 0.35, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1,
+            // 이 거리 안에 고양이가 있으면 가장 가까운 은신처를 바닥에 표시한다 (D55-C)
+            safeMarkRange: 12,
+            // 은신처로 인정하려면 적 도달 영역에서 이만큼 떨어져 있어야 한다(m).
+            // 대략 공격 사거리(hr+attackRange)만큼 — 벽 옆 한 칸이 은신처로 잡히면 안 된다
+            safeMargin: 1.2 },
   enemy: {
     count: 3,              // 시작 마릿수 (전부 순찰묘)
     attackRange: 0.6, repath: 0.35,
@@ -25,6 +30,12 @@ const P = {
     circleTurn: 0.9,       // 막혀 있는 동안 제 슬롯에서 더 밀어붙이는 속도(라디안/초)
     crowdAvoid: 0.45,      // 이미 그 햄스터에 붙은 적 1마리 = 거리 몇 m 상당인가 (×10m)
     targetHold: 3.0,       // 한 번 정한 목표를 유지하는 시간(초) — 갈팡질팡 방지
+    // ---- 지능 (D55) ----
+    campTime: 7.0,         // 닿을 길이 없을 때 틈 앞에 자리 잡고 기다리는 시간(초). 0=끔
+    memoryTime: 8.0,       // "마지막으로 닿았던 자리"를 기억하는 시간(초)
+    leadTime: 0.45,        // 목표의 이동 방향 앞을 노리는 정도(초). 0=현재 위치만
+    cutoffShare: 0.34,     // 무리 중 이 비율은 목표가 아니라 **은신처로 가는 길**을 막는다
+    cutoffLead: 2.2,       // 차단조가 목표보다 얼마나 앞(은신처 쪽)을 잡는가(m)
     giveUpProbes: 3,       // 이만큼 시도해도 막히면 포기하고 서성인다
     prowlTime: 4.0,        // 서성이는 시간 — 플레이어가 확장을 시도할 틈
     attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
@@ -53,6 +64,9 @@ const P = {
     fleeDist: 5.0,         // 이 거리 안에 적이 오면 도망이 우선
     startWalls: 12,        // 시작 벽 예산 (동료 전용 지갑)
     buildCd: 0.35,         // 벽 하나 놓는 간격
+    // 구조 판단 (D55-C): 내가 닿는 시간이 고양이보다 이만큼 늦어도 시도한다(초).
+    // 음수로 두면 더 신중해지고, 크게 두면 예전처럼 무모하게 뛰어든다.
+    rescueMargin: 1.2,
   },
   // ---- 적 3종 ----
   // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
@@ -1048,6 +1062,8 @@ let playerJob = null; // 'mine' | 'drop' | null
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
 //  → 노드가 이 영역 밖이면 "확보됨"
 let enemyReach = null;
+let safeField = null;   // 은신처 칸 (enemyReach를 safeMargin만큼 부풀린 여집합)
+let safeGen = 0;        // 필드 세대 — 벽이 바뀌거나 재시작하면 오르고, 캐시는 이걸로 무효화한다
 function refreshReach() {
   if (!clearAll) return;  // clearance 필드가 아직 없으면 건너뜀 (초기화 순서 보호)
   // 반지름이 다르면 지나갈 수 있는 칸도 다르다.
@@ -1076,6 +1092,72 @@ function refreshReach() {
     for (let k = 0; k < vis.length; k++) if (seen[k]) vis[k] = 1;
   }
   enemyReach = vis;
+
+  // ---- 은신처 필드 (D54) ----
+  // enemyReach만으로는 부족하다. 그건 "고양이 **몸 중심**이 올 수 있는 칸"이라,
+  // 벽에 딱 붙은 자리도 도달 불가로 잡힌다 — 하지만 거기는 손이 닿아서 안전하지 않다.
+  // 그래서 도달 가능 영역을 safeMargin만큼 **부풀린 뒤** 그 밖에 남는 칸만 은신처로 친다.
+  // (= 공격 사거리만큼 떨어진 진짜 주머니. 3x3 링 안쪽은 남고, 벽 옆 한 칸은 걸러진다)
+  const k = Math.max(1, Math.round(P.player.safeMargin / navRes));
+  const safe = new Uint8Array(NAV * NAV);
+  for (let z = 0; z < NAV; z++) {
+    for (let x = 0; x < NAV; x++) {
+      const idx = z * NAV + x;
+      if (vis[idx]) continue;
+      let ok = true;
+      for (let dz = -k; dz <= k && ok; dz++) {
+        const nz = z + dz;
+        if (nz < 0 || nz >= NAV) continue;
+        for (let dx = -k; dx <= k; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= NAV) continue;
+          if (vis[nz * NAV + nx]) { ok = false; break; }
+        }
+      }
+      if (ok) safe[idx] = 1;
+    }
+  }
+  safeField = safe;
+  safeGen++;      // 은신처 필드가 바뀌었다 → 캐시 무효화
+}
+
+// ---- 은신처 판별 (D54) ----
+// **은신처는 표시가 아니라 계산이다.**
+// enemyReach = 지금 살아 있는 적들이 반지름별로 갈 수 있는 칸의 합집합.
+// 그 여집합 중 햄스터가 설 수 있는 칸이 곧 은신처다.
+//  · 동료가 지은 3x3 은신처, 내가 1칸 틈으로 막아둔 구역, 지형 주머니가 전부 자동 포함
+//  · 벽을 세우거나 자폭묘가 부수면 즉시 갱신된다
+//  · **날쌘묘가 등장하면 은신처 집합이 저절로 줄어든다** (D14가 AI에게도 적용된다)
+// 코어 규칙에서 파생되므로, 규칙을 바꾸면 AI의 판단도 같이 바뀐다.
+let safeCache = { t: -99, gen: -1, x: 0, z: 0, r: 0, cell: null };
+
+function nearestSafeSpot(x, z, r = P.ally.radius) {
+  if (!safeField || !clearAll) return null;
+  // 짧게 캐시한다 — 프레임마다 전체 BFS를 돌릴 이유가 없다
+  // 캐시 무효화 조건이 셋이다. 시간(0.4초)만으로 재면
+  //  · 재시작 시 survival이 0으로 돌아가 이전 판 캐시가 통과하고
+  //  · 벽을 세워 은신처가 새로 생겨도 낡은 답(주로 null)이 계속 나온다. 둘 다 실제로 났다.
+  if (safeCache.gen === safeGen && Math.abs(survival - safeCache.t) < 0.4 && safeCache.r === r
+      && Math.hypot(x - safeCache.x, z - safeCache.z) < 1.5) return safeCache.cell;
+  const pass = (i) => canPass(clearAll, i, r);
+  const start = nearestPassableNav(x, z, pass);
+  const seen = new Uint8Array(NAV * NAV);
+  const q = [start];
+  seen[start] = 1;
+  let head = 0, found = null;
+  while (head < q.length && head < 9000) {
+    const cur = q[head++];
+    if (safeField[cur]) { found = cur; break; }
+    const cx = cur % NAV, cz = (cur / NAV) | 0;
+    const push = (n) => { if (!seen[n] && pass(n)) { seen[n] = 1; q.push(n); } };
+    if (cx > 0) push(cur - 1);
+    if (cx < NAV - 1) push(cur + 1);
+    if (cz > 0) push(cur - NAV);
+    if (cz < NAV - 1) push(cur + NAV);
+  }
+  const cell = found === null ? null : navToWorld(found);
+  safeCache = { t: survival, gen: safeGen, x, z, r, cell };
+  return cell;
 }
 
 // ---- 채굴 연출 ----
@@ -1478,6 +1560,45 @@ function makeKeyPrompt() {
   return spr;
 }
 const minePrompt = makeKeyPrompt();
+
+// ---- 은신처 표시 (D55-C) ----
+// 쫓기는 중일 때만, 가장 가까운 "고양이가 못 들어오는 칸"을 바닥에 표시한다.
+// 동료가 은신처를 지어놔도 플레이어가 그 존재를 모르면 아무 의미가 없었다.
+// 이 표시는 코어 규칙(틈이 좁아 못 지나간다)의 결과를 눈으로 보여주는 장치이기도 하다.
+const safeMark = (() => {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.55, 0.8, 24),
+    new THREE.MeshBasicMaterial({ color: 0x6ee07a, transparent: true, opacity: 0.75,
+                                  depthTest: false, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.07;
+  ring.renderOrder = 997;
+  g.add(ring);
+  const pin = new THREE.Mesh(
+    new THREE.ConeGeometry(0.3, 0.8, 4),
+    new THREE.MeshBasicMaterial({ color: 0x6ee07a, transparent: true, opacity: 0.85, depthTest: false })
+  );
+  pin.rotation.x = Math.PI;
+  pin.position.y = 1.9;
+  pin.renderOrder = 997;
+  g.add(pin);
+  g.visible = false;
+  scene.add(g);
+  return g;
+})();
+
+function updateSafeMark() {
+  let near = Infinity;
+  for (const e of enemies) near = Math.min(near, Math.hypot(e.x - player.x, e.z - player.z));
+  const chased = alive && !playerStunned && enemyActive() && near < P.player.safeMarkRange;
+  const spot = chased ? nearestSafeSpot(player.x, player.z, P.player.radius) : null;
+  safeMark.visible = !!spot;
+  if (!spot) return;
+  safeMark.position.set(spot.x, 0, spot.z);
+  safeMark.children[1].position.y = 1.9 + Math.sin(performance.now() * 0.005) * 0.15;
+}
 
 function updateMinePrompt() {
   const show = alive && !playerStunned && !playerOrder && !buildJob;
@@ -2234,6 +2355,42 @@ function chaseTargets() {
   return out;
 }
 
+// 햄스터의 이동 속도를 추정해 둔다 (리드 조준용). 매 프레임 한 번.
+// 좌표 차분을 지수평활해서 순간적인 흔들림에 적이 휘둘리지 않게 한다.
+function trackTargetVelocity(dt) {
+  if (dt <= 0) return;
+  for (const t of [player, ally]) {
+    if (t.pvx === undefined) { t.pvx = t.x; t.pvz = t.z; t.vx = 0; t.vz = 0; }
+    const nx = (t.x - t.pvx) / dt, nz = (t.z - t.pvz) / dt;
+    const a = Math.min(1, dt * 6);
+    t.vx += (nx - t.vx) * a;
+    t.vz += (nz - t.vz) * a;
+    t.pvx = t.x; t.pvz = t.z;
+  }
+}
+
+// 리드 조준 — 목표의 "지금"이 아니라 "곧 있을 자리"를 노린다 (D55-B).
+// leadTime이 0이면 예전과 같다. 너무 키우면 도망 자체가 불가능해지므로 슬라이더로 조절.
+function aimPoint(t) {
+  const lt = P.enemy.leadTime;
+  if (!lt) return { x: t.x, z: t.z };
+  return {
+    x: clamp(t.x + (t.vx || 0) * lt, -HALF + 1, HALF - 1),
+    z: clamp(t.z + (t.vz || 0) * lt, -HALF + 1, HALF - 1),
+  };
+}
+
+// 이 적이 차단조인가 — 링 슬롯 번호로 결정해 무리마다 일정 비율이 배정된다
+function isCutoff(enemy, target) {
+  if (P.enemy.cutoffShare <= 0) return false;
+  const peers = [];
+  for (const o of enemies) if (o === enemy || o.chaseTarget === target) peers.push(o);
+  if (peers.length < 3) return false;   // 둘뿐이면 둘 다 쫓는 게 낫다
+  peers.sort((a, b) => a.id - b.id);
+  const k = peers.indexOf(enemy);
+  return k / peers.length < P.enemy.cutoffShare;
+}
+
 // 노릴 햄스터 고르기 (D49) — "가장 가까운 하나"로 전원이 몰리지 않게 두 가지를 섞는다.
 //  1) 적마다 고유한 편향(allyBias) — 같은 자리에서도 서로 다른 쪽을 본다
 //  2) 이미 그쪽을 노리는 적이 많으면 덜 매력적 (crowdAvoid) — 무리가 갈라진다
@@ -2369,6 +2526,35 @@ function planEnemyPath(enemy) {
     chased = tBest;
     enemy.chaseTarget = tBest;
     enemy.approachA = ringAngleFor(enemy, tBest);
+
+    // ---- 차단조: 목표가 아니라 **목표의 퇴로**를 막는다 (D55-B) ----
+    // 도망칠 곳 = 가장 가까운 은신처(적이 못 들어가는 칸). 그 사이를 미리 끊는다.
+    // 이게 성립하려면 은신처 판별이 코어 규칙에서 나와야 한다 → nearestSafeSpot.
+    if (isCutoff(enemy, tBest)) {
+      const safe = nearestSafeSpot(tBest.x, tBest.z, P.player.radius);
+      if (safe) {
+        let dx = safe.x - tBest.x, dz = safe.z - tBest.z;
+        const dl = Math.hypot(dx, dz);
+        if (dl > 1.5) {
+          const f = Math.min(1, (dl - 0.5) / dl) * Math.min(1, P.enemy.cutoffLead / dl);
+          const cx = clamp(tBest.x + dx * f, -HALF + 1, HALF - 1);
+          const cz = clamp(tBest.z + dz * f, -HALF + 1, HALF - 1);
+          const cIdx = worldToNav(cx, cz);
+          if (canPass(clearAll, cIdx, er) && (!enemyReach || enemyReach[cIdx])) {
+            enemy.goalX = cx; enemy.goalZ = cz;
+            const cr = astar(start, cIdx, passAll, () => 0);
+            if (cr.found) {
+              enemy.path = cr.path.map((idx) => ({ ...navToWorld(idx), idx }));
+              enemy.aiMode = '차단';
+              enemy.lostX = tBest.x; enemy.lostZ = tBest.z; enemy.lostT = survival;
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    const aim = aimPoint(tBest);
     const tD = Math.hypot(tBest.x - enemy.x, tBest.z - enemy.z);
     // 직진만 하지 않는다 — 목표 둘레의 "접근 지점"을 노린다 (D28).
     // 각 적이 서로 다른 각도(approachA)를 갖고, 반경은 거리에 비례해 줄어든다.
@@ -2381,6 +2567,7 @@ function planEnemyPath(enemy) {
     if (tD < rMin * 0.7) {
       gx = tBest.x; gz = tBest.z;                 // 이미 몸이 겹칠 만큼 붙었으면 직진
     } else {
+      // 링의 중심은 목표의 **곧 있을 자리**(리드 조준)다
       // 접근 지점 후보를 접근각에서 좌우로 훑는다 (D49).
       // 한 각도가 막혔다고 바로 "목표 직행"으로 무너지면 전원이 같은 지점으로 몰려
       // 벽 한쪽 면에 정체된다. 설 수 있는 각을 찾을 때까지 둘레를 훑는 게 핵심이다.
@@ -2389,8 +2576,8 @@ function planEnemyPath(enemy) {
       for (const off of [0, 0.45, 0.95, 1.5, 2.1, Math.PI]) {
         for (const sgn of off === 0 ? [1] : [dir, -dir]) {
           const a = enemy.approachA + sgn * off;
-          const ax = clamp(tBest.x + Math.cos(a) * r, -HALF + 1, HALF - 1);
-          const az = clamp(tBest.z + Math.sin(a) * r, -HALF + 1, HALF - 1);
+          const ax = clamp(aim.x + Math.cos(a) * r, -HALF + 1, HALF - 1);
+          const az = clamp(aim.z + Math.sin(a) * r, -HALF + 1, HALF - 1);
           const idx = worldToNav(ax, az);
           if (!canPass(clearAll, idx, er)) continue;
           if (enemyReach && !enemyReach[idx]) continue;   // 도달 못 하는 구역이면 무의미
@@ -2399,7 +2586,7 @@ function planEnemyPath(enemy) {
         }
         if (gx !== null) break;
       }
-      if (gx === null) { gx = tBest.x; gz = tBest.z; }
+      if (gx === null) { gx = aim.x; gz = aim.z; }
     }
   }
   enemy.goalX = gx; enemy.goalZ = gz;
@@ -2408,6 +2595,9 @@ function planEnemyPath(enemy) {
   // ---- 직행 경로 ----
   let res = astar(start, goal, passAll, () => 0);
   if (res.found || res.closestWorld < 1.3 + (raiding ? enemyR(enemy) : 0)) {
+    // 닿을 수 있었던 마지막 자리를 기억해 둔다 (나중에 길이 끊기면 여기로 온다)
+    if (chased) { enemy.lostX = chased.x; enemy.lostZ = chased.z; enemy.lostT = survival; }
+    enemy.campT = 0;
     enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = raiding ? '습격' : '추격';
     return;
@@ -2417,6 +2607,8 @@ function planEnemyPath(enemy) {
   if (chased && (gx !== chased.x || gz !== chased.z)) {
     const direct = astar(start, worldToNav(chased.x, chased.z), passAll, () => 0);
     if (direct.found || direct.closestWorld < 1.3) {
+      enemy.lostX = chased.x; enemy.lostZ = chased.z; enemy.lostT = survival;
+      enemy.campT = 0;
       enemy.goalX = chased.x; enemy.goalZ = chased.z;
       enemy.path = direct.path.map((idx) => ({ ...navToWorld(idx), idx }));
       enemy.aiMode = '추격';
@@ -2457,6 +2649,38 @@ function planEnemyPath(enemy) {
     enemy.goalX = raidBest.cx; enemy.goalZ = raidBest.cz;
     return;
   }
+  // ---- 잠복: 틈 앞에 자리 잡고 기다린다 (D55-A) ----
+  // 여기까지 왔다 = 목표에 닿는 길이 없다. 예전에는 무작위로 배회했는데,
+  // 그건 "포기했다"로 보였다. 대신 **내가 갈 수 있는 곳 중 목표에 가장 가까운 지점**
+  // (= 대개 그 좁은 틈의 바로 앞)에 자리를 잡는다.
+  // 플레이어는 결국 채굴하러 나와야 하므로, 기다리는 게 실제로 합리적인 행동이다.
+  if (chased && P.enemy.campTime > 0) {
+    const endIdx = res.path.length ? res.path[res.path.length - 1] : start;
+    const camp = navToWorld(endIdx);
+    // 목표를 등지고 멀어지는 자리면 잠복할 이유가 없다
+    const dCamp = Math.hypot(camp.x - chased.x, camp.z - chased.z);
+    const dSelf = Math.hypot(enemy.x - chased.x, enemy.z - chased.z);
+    if (dCamp < dSelf + 1.0) {
+      if (!(enemy.campT > 0)) enemy.campT = P.enemy.campTime;
+      enemy.goalX = camp.x; enemy.goalZ = camp.z;
+      enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      enemy.aiMode = '잠복';
+      return;
+    }
+  }
+
+  // ---- 마지막으로 닿았던 자리 수색 (D55-A) ----
+  // 잠복도 못 하면, 최근에 목표에 닿을 수 있었던 지점으로 가서 훑는다.
+  if (enemy.lostX !== undefined && survival - enemy.lostT < P.enemy.memoryTime) {
+    const lr = astar(start, worldToNav(enemy.lostX, enemy.lostZ), passAll, () => 0);
+    if (lr.found) {
+      enemy.goalX = enemy.lostX; enemy.goalZ = enemy.lostZ;
+      enemy.path = lr.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      enemy.aiMode = '수색';
+      return;
+    }
+  }
+
   enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   enemy.aiMode = '배회';
 }
@@ -2598,6 +2822,11 @@ function updateEnemy(enemy, dt) {
     enemy.patrolA += P.patrol.turn * dt;
     if (enemy.homeRing) enemy.homeRing.position.set(enemy.x, 0.05, enemy.z);
   }
+  // 잠복 시간이 다 되면 포기하고 서성인다 — 영원히 문 앞을 지키지는 않는다
+  if (enemy.campT > 0) {
+    enemy.campT -= dt;
+    if (enemy.campT <= 0) { enemy.prowlT = P.enemy.prowlTime; enemy.repathT = 0; }
+  }
   if (enemy.probeT > 0) enemy.probeT -= dt;
   else enemy.probeOff *= Math.max(0, 1 - dt * 0.8);
   if (enemy.stallT > 0.15) enemy.probeOff += enemy.orbitDir * P.enemy.circleTurn * dt;
@@ -2668,7 +2897,8 @@ function updateEnemy(enemy, dt) {
   //  - 순찰묘/날쌘묘는 벽은 절대 건드리지 않는다 (건물만 공격 가능)
   // 막혔다 → 접근각을 크게 돌려 "다른 방향에서 다시" 시도한다.
   // 벽에 부딪힌 채 같은 자리를 파는 대신 옆구리를 노리는 움직임이 여기서 나온다.
-  if (enemy.stallT > 0.45 && enemy.probeT <= 0) {
+  // 잠복 중에는 "막혔다" 판정을 하지 않는다 — 일부러 멈춰 서 있는 것이다
+  if (enemy.stallT > 0.45 && enemy.probeT <= 0 && enemy.aiMode !== '잠복') {
     // 도는 방향을 유지한 채 크게 튼다 — 좌우로 흔들리면 제자리에서 떠는 것처럼 보인다.
     // 가끔은 반대로 돌아 반대편 옆구리도 훑는다.
     if (Math.random() < 0.25) enemy.orbitDir *= -1;
@@ -3201,6 +3431,7 @@ function updatePlayer(dt) {
     playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
     ghost.visible = false;
     minePrompt.visible = false;
+    safeMark.visible = false;
     return;
   }
   playerVis.group.rotation.x = 0;
@@ -3286,6 +3517,7 @@ function updatePlayer(dt) {
     ghostCell = { i: gi, j: gj, valid: false };
     ghost.visible = false;
     updateMinePrompt();
+    updateSafeMark();
     return;
   }
   const w = cellToWorld(gi, gj);
@@ -3362,6 +3594,7 @@ function updatePlayer(dt) {
   }
 
   updateMinePrompt();
+  updateSafeMark();
 }
 
 // ---- 건물 건설 (시간 소요 · 무방비) ----
@@ -3595,6 +3828,17 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'targetHold', 0, 10, 0.5).name('목표 유지 시간(초)');
 }
 {
+  const f = gui.addFolder('적 지능 (기억 · 잠복 · 예측 · 차단)');
+  f.add(P.enemy, 'campTime', 0, 30, 0.5).name('틈 앞 잠복 시간(0=끔)');
+  f.add(P.enemy, 'memoryTime', 0, 30, 0.5).name('마지막 목격 기억(초)');
+  f.add(P.enemy, 'leadTime', 0, 1.5, 0.05).name('리드 조준(0=현재 위치)');
+  f.add(P.enemy, 'cutoffShare', 0, 0.8, 0.02).name('차단조 비율');
+  f.add(P.enemy, 'cutoffLead', 0, 8, 0.2).name('차단 지점 앞당김(m)');
+  f.add(P.ally, 'rescueMargin', -3, 6, 0.1).name('동료 구조 과감함(초)');
+  f.add(P.player, 'safeMarkRange', 0, 30, 1).name('은신처 표시가 뜨는 거리');
+  f.add(P.player, 'safeMargin', 0.2, 4, 0.1).name('은신처 인정 여유(m)').onChange(refreshReach);
+}
+{
   const f = gui.addFolder('픽업 (밖에 나갈 이유)');
   f.add(P.pickup, 'interval', 3, 40, 1).name('생성 주기(초)');
   f.add(P.pickup, 'maxOnMap', 1, 12, 1).name('동시 최대 개수');
@@ -3747,7 +3991,8 @@ helpEl.textContent =
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
   '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
-  '파란 링 = 순찰조. 발각되면 쫓아오지만 시간이 지나면 제 초소로 돌아간다 · C 카메라 · R 재시작';
+  '파란 링 = 순찰조 (발각돼도 잠깐만 쫓는다) · 초록 표시 = 고양이가 못 들어오는 은신처\n' +
+  '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
 
 let alive = true;
 let paused = false;
@@ -4121,26 +4366,56 @@ function updateAlly(dt) {
 
   let gx, gz, urgent = false;
   if (playerStunned) {
-    ally.mode = '구조';
+    // ---- 구조 판단 (D55-C) ----
+    // 무작정 뛰어들면 같이 잡혀 전멸이다. 내가 먼저 닿을 수 있는지 어림한다:
+    // 내 도착 시간 vs 가장 가까운 고양이가 기절한 나에게 닿는 시간.
+    const dMe = Math.hypot(player.x - ally.x, player.z - ally.z);
+    let catT = Infinity;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - player.x, e.z - player.z) - enemyR(e);
+      catT = Math.min(catT, d / Math.max(enemySpeedOf(e), 0.1));
+    }
+    const myT = dMe / Math.max(P.ally.speed, 0.1);
     urgent = true;
-    gx = player.x; gz = player.z;
-    if (eBest && eD < P.ally.fleeDist * 0.9) {
-      const ax = ally.x - eBest.x, az = ally.z - eBest.z;
-      const l = Math.hypot(ax, az) || 1;
-      gx = clamp(ally.x + (ax / l) * 5 + (player.x - ally.x) * 0.25, -HALF + 1, HALF - 1);
-      gz = clamp(ally.z + (az / l) * 5 + (player.z - ally.z) * 0.25, -HALF + 1, HALF - 1);
+    if (myT < catT + P.ally.rescueMargin || dMe < 3) {
+      ally.mode = '구조';
+      gx = player.x; gz = player.z;
+    } else {
+      // 지금 가면 같이 죽는다 → 근처에서 어슬렁거려 **고양이를 나에게 끌어온다**
+      ally.mode = '유인';
+      const bx = player.x - ally.x, bz = player.z - ally.z;
+      const bl = Math.hypot(bx, bz) || 1;
+      const away = eBest ? Math.atan2(ally.x - eBest.x, ally.z - eBest.z) : 0;
+      gx = clamp(player.x - (bx / bl) * 9 + Math.sin(away) * 3, -HALF + 1, HALF - 1);
+      gz = clamp(player.z - (bz / bl) * 9 + Math.cos(away) * 3, -HALF + 1, HALF - 1);
     }
   } else if (eBest && eD < P.ally.fleeDist) {
     ally.mode = '도망';
     urgent = true;
-    // 은신처가 완성돼 있으면 거기로 도망친다 (1칸 틈이라 고양이는 못 따라온다)
+    // ---- 은신처로 도망 (D55-C) ----
+    // 예전에는 "가장 가까운 적의 반대 방향"으로만 밀어냈다 → 벽 구석에 몰려 죽었다.
+    // 지금은 **고양이가 도달할 수 없는 칸**(enemyReach의 여집합)을 찾아 그리로 뛴다.
+    // 내가 지은 은신처든, 플레이어가 1칸 틈으로 막아둔 구역이든 상관없다 —
+    // 코어 규칙에서 자동으로 나오는 정의라서 따로 표시할 필요가 없다.
+    const safe = nearestSafeSpot(ally.x, ally.z, P.ally.radius);
     const done = ally.shelter && !shelterTodo();
-    if (done) {
+    if (safe) {
+      gx = safe.x; gz = safe.z;
+      ally.mode = '은신처로';
+    } else if (done) {
       const w = cellToWorld(ally.shelter.i, ally.shelter.j);
       gx = w.x; gz = w.z;
       ally.mode = '은신처로';
     } else {
-      const ax = ally.x - eBest.x, az = ally.z - eBest.z;
+      // 갈 데가 없으면 최소한 **적들의 반대쪽**으로 (한 마리가 아니라 전체 합)
+      let ax = 0, az = 0;
+      for (const e of enemies) {
+        const dx = ally.x - e.x, dz = ally.z - e.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 14 || d < 0.01) continue;
+        const w = 1 / (d * d);
+        ax += (dx / d) * w; az += (dz / d) * w;
+      }
       const l = Math.hypot(ax, az) || 1;
       gx = clamp(ally.x + (ax / l) * 7, -HALF + 1, HALF - 1);
       gz = clamp(ally.z + (az / l) * 7, -HALF + 1, HALF - 1);
@@ -4318,6 +4593,7 @@ function tick(dt) {
     }
     updateAlly(dt);
     updateRescue();
+    trackTargetVelocity(dt);   // 리드 조준용 속도 추정 (적이 앞을 노린다)
     if (enemyActive()) {
       ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
       updateSpawns();   // 스테이지 외 추가 증원 (옵션)
@@ -4393,11 +4669,15 @@ window.__game = {
   nodes, ghost, mouseNDC, CAM_MODES, enemies,
   setEnemyCount, spawnBuildFx, hireWorker, workers, doCarryWork, nearestDepot,
   // 채굴 명령 (E · 우클릭 · 드래그 선택)
-  nearestPile, setMineOrder, clearMineOrder, toggleMineOrder,
+  nearestPile, setMineOrder, clearMineOrder, toggleMineOrder, nearestSafeSpot, aimPoint, isCutoff,
+  refreshReach, get safeField() { return safeField; }, get safeGen() { return safeGen; },
+  worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
   selWorkers, selGuards, GUARD_TYPES,
   get playerOrder() { return playerOrder; },
   get minePromptVisible() { return minePrompt.visible; },
+  get safeMarkVisible() { return safeMark.visible; },
+  get safeMarkPos() { return { x: safeMark.position.x, z: safeMark.position.z }; },
   get playerJob() { return playerJob; },
   get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
   get buildJob() { return buildJob; },
