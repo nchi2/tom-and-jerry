@@ -26,10 +26,14 @@ const P = {
     attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
     attackCooldown: 1.3,   // 공격 간격
   },
+  // 동료는 경제 활동을 하지 않는다. 벽으로 은신처를 만들어 살아남고,
+  // 내가 기절하면 구하러 온다. 그게 전부다 (멀티 구출 루프의 시험용).
   ally: {
     enabled: 1,            // 1=AI 동료 햄스터 (재시작부터). 0=솔로: 잡히면 즉시 전멸
     speed: 6.0, radius: 0.35,
-    fleeDist: 4.5,         // 이 거리 안에 적이 오면 도망이 우선
+    fleeDist: 5.0,         // 이 거리 안에 적이 오면 도망이 우선
+    startWalls: 12,        // 시작 벽 예산 (동료 전용 지갑)
+    buildCd: 0.35,         // 벽 하나 놓는 간격
   },
   // ---- 적 3종 ----
   // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
@@ -279,7 +283,7 @@ function buildGround(floorColor, gridColor) {
 const obstacles = new Map();
 const wallGeo = new THREE.BoxGeometry(1, 1, 1);
 
-function addObstacle(i, j, bedrock, building = false) {
+function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   const key = cellKey(i, j);
   if (obstacles.has(key)) return null;
   const mat = new THREE.MeshStandardMaterial({
@@ -300,6 +304,7 @@ function addObstacle(i, j, bedrock, building = false) {
   const ob = {
     i, j,
     hp: Infinity, maxHp: Infinity,   // 벽은 무적 (자폭묘 폭발로만 사라진다)
+    owner,
     bedrock, building, mesh,
   };
   obstacles.set(key, ob);
@@ -806,7 +811,7 @@ const ally = {
   stunned: false,
   path: [], repathT: 0,
   goalX: 0, goalZ: 0,
-  carry: 0, mode: '대기', buildCd: 0,
+  carry: 0, mode: '대기', buildCd: 0, shelter: null,
 };
 
 let PLAYER_SPAWN = cellToWorld(28, 28);
@@ -2880,7 +2885,8 @@ const gui = new GUI({ title: '튜닝' });
   const f = gui.addFolder('동료 (AI 햄스터)');
   f.add(P.ally, 'enabled', 0, 1, 1).name('사용 (재시작부터, 0=솔로)');
   f.add(P.ally, 'speed', 2, 12, 0.1).name('이동 속도');
-  f.add(P.ally, 'fleeDist', 1, 10, 0.1).name('도망 시작 거리');
+  f.add(P.ally, 'fleeDist', 1, 12, 0.1).name('도망 시작 거리');
+  f.add(P.ally, 'startWalls', 0, 40, 1).name('동료 벽 예산 (재시작부터)');
 }
 {
   const f = gui.addFolder('건물 (2번 창고 · 3번 공방)');
@@ -3165,7 +3171,9 @@ function restart() {
   clearGuards();
   clearWorkers();
   buildJob = null;
-  allyRes = 0;
+  allyRes = P.ally.startWalls * P.wall.cost;
+  ally.shelter = null;
+  ally.buildCd = 0;
   player.carry = 0;
   ally.carry = 0;
   killCount = 0;
@@ -3252,8 +3260,9 @@ function caught(who) {
   // 플레이어가 잡혔을 때만 — 동료는 지은 게 없다.
   if (who === player && P.player.wipeOnCatch) {
     let lost = 0;
-    for (const ob of [...obstacles.values()]) if (!ob.bedrock && !ob.bldgRef) { removeObstacle(ob); lost++; }
-    for (const b of [...buildings]) destroyBuilding(b, false);
+    for (const ob of [...obstacles.values()])
+      if (!ob.bedrock && !ob.bldgRef && ob.owner !== 'a') { removeObstacle(ob); lost++; }
+    for (const b of [...buildings]) if (b.owner !== 'a') destroyBuilding(b, false);
     clearGuards();
     clearWorkers();
     player.carry = 0;
@@ -3365,10 +3374,52 @@ function flashMsg(text, color = '#6ee07a') {
 }
 
 
-// ---- 동료 AI (자율) ----
-//  추종하지 않는다. 스스로 치즈를 캐서 창고에 나르고, 적이 오면 도망치고,
-//  플레이어가 기절하면 구조하러 온다. 구조가 끝나면 다시 자기 일로 돌아간다.
+// ---- 동료 AI (생존 특화) ----
+//  경제 활동 없음. 우선순위:
+//   1. 내가 기절 → 구조 (카이팅으로 틈을 만든 뒤 접근)
+//   2. 적이 가까움 → 도망 (회피 조향)
+//   3. 그 외 → 자기 은신처를 벽으로 만든다
+//  은신처는 3x3 링에서 한 칸을 비운 형태 — 1칸 틈이라 고양이는 못 들어오고
+//  햄스터만 드나든다. 코어 규칙을 AI가 스스로 이용하는 모습이 보인다.
 let allyGrace = 0;
+
+const ALLY_RING = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+
+// 은신처 자리 고르기 — 적 스폰과 내 스폰에서 떨어진, 3x3이 비는 곳
+function pickShelter() {
+  let best = null, bestScore = -Infinity;
+  for (let t = 0; t < 220; t++) {
+    const i = 3 + Math.floor(Math.random() * (CELLS - 6));
+    const j = 3 + Math.floor(Math.random() * (CELLS - 6));
+    let ok = true;
+    for (let dj = -1; dj <= 1 && ok; dj++)
+      for (let di = -1; di <= 1; di++)
+        if (obstacles.has(cellKey(i + di, j + dj)) || nodeAt(i + di, j + dj)) { ok = false; break; }
+    if (!ok) continue;
+    const w = cellToWorld(i, j);
+    const dEnemy = Math.hypot(w.x - ENEMY_SPAWN.x, w.z - ENEMY_SPAWN.z);
+    const dAlly = Math.hypot(w.x - ally.x, w.z - ally.z);
+    const dPlayer = Math.hypot(w.x - PLAYER_SPAWN.x, w.z - PLAYER_SPAWN.z);
+    // 적에게서 멀고, 지금 위치에서 가깝고, 내 본진과는 겹치지 않는 곳
+    const score = dEnemy * 1.0 - dAlly * 1.4 + Math.min(dPlayer, 14) * 0.6;
+    if (score > bestScore) { bestScore = score; best = { i, j }; }
+  }
+  return best;
+}
+
+// 은신처 링에서 아직 안 지은 칸 (마지막 한 칸은 출입구로 남긴다)
+function shelterTodo() {
+  if (!ally.shelter) return null;
+  const { i, j } = ally.shelter;
+  const missing = [];
+  for (const [di, dj] of ALLY_RING) {
+    const ci = i + di, cj = j + dj;
+    if (!obstacles.has(cellKey(ci, cj))) missing.push([ci, cj]);
+  }
+  // 1칸은 출입구 — 남은 게 1개면 완성으로 본다
+  return missing.length <= 1 ? null : missing;
+}
+
 function updateAlly(dt) {
   if (!ally.active) {
     allyVis.group.visible = false;
@@ -3398,13 +3449,11 @@ function updateAlly(dt) {
     if (dd < eD) { eD = dd; eBest = e; }
   }
 
-  // ---- 목표 결정 (우선순위: 구조 > 도망 > 자기 일) ----
   let gx, gz, urgent = false;
   if (playerStunned) {
     ally.mode = '구조';
     urgent = true;
     gx = player.x; gz = player.z;
-    // 적이 붙어 있으면 카이팅으로 틈을 만든 뒤 접근
     if (eBest && eD < P.ally.fleeDist * 0.9) {
       const ax = ally.x - eBest.x, az = ally.z - eBest.z;
       const l = Math.hypot(ax, az) || 1;
@@ -3414,114 +3463,102 @@ function updateAlly(dt) {
   } else if (eBest && eD < P.ally.fleeDist) {
     ally.mode = '도망';
     urgent = true;
-    const ax = ally.x - eBest.x, az = ally.z - eBest.z;
-    const l = Math.hypot(ax, az) || 1;
-    gx = clamp(ally.x + (ax / l) * 7, -HALF + 1, HALF - 1);
-    gz = clamp(ally.z + (az / l) * 7, -HALF + 1, HALF - 1);
-  } else {
-    // 자기 일: 볼주머니가 찼으면 창고로, 아니면 치즈더미로
-    const job = doCarryWork(ally, dt, P.carry.workerLoad, 'a');
-    ally.mode = job === 'mine' ? '채굴' : job === 'drop' ? '하역' : '이동';
-    let dep = nearestDepot(ally.x, ally.z, 'a');
-    // 자기 창고가 없으면 직접 짓는다 (동료는 즉시 — AI에겐 건설 의식이 없다)
-    if (!dep) { allyTryBuildDepot(); dep = nearestDepot(ally.x, ally.z, 'a'); }
-    // 여유가 되면 자기 일꾼을 고용한다
-    else if (allyRes >= P.worker.cost && Math.hypot(dep.cx - ally.x, dep.cz - ally.z) < 4) hireWorker('a');
-    if (ally.carry > 0 && dep) {
-      gx = dep.cx; gz = dep.cz;
+    // 은신처가 완성돼 있으면 거기로 도망친다 (1칸 틈이라 고양이는 못 따라온다)
+    const done = ally.shelter && !shelterTodo();
+    if (done) {
+      const w = cellToWorld(ally.shelter.i, ally.shelter.j);
+      gx = w.x; gz = w.z;
+      ally.mode = '은신처로';
     } else {
-      // 사람이 덜 붙은 더미를 고른다
-      let best = null, bd = Infinity;
-      for (const n of nodes) {
-        if (n.amount <= 0) continue;
-        const nw = cellToWorld(n.i, n.j);
-        const d = Math.hypot(nw.x - ally.x, nw.z - ally.z) + pileCrowd(n) * 6;
-        if (d < bd) { bd = d; best = n; }
-      }
-      if (best) { const nw = cellToWorld(best.i, best.j); gx = nw.x; gz = nw.z; }
-      else if (dep) { gx = dep.cx; gz = dep.cz; }
-      else { gx = ally.x; gz = ally.z; }
+      const ax = ally.x - eBest.x, az = ally.z - eBest.z;
+      const l = Math.hypot(ax, az) || 1;
+      gx = clamp(ally.x + (ax / l) * 7, -HALF + 1, HALF - 1);
+      gz = clamp(ally.z + (az / l) * 7, -HALF + 1, HALF - 1);
     }
-    if (job) { // 일하는 중이면 그 자리에 선다
-      allyVis.group.position.set(ally.x, 0, ally.z);
-      allyVis.group.rotation.y = Math.atan2(ally.faceX, ally.faceZ) + Math.PI;
-      const f = (ally.carry || 0) / P.carry.workerLoad;
-      allyVis.group.scale.setScalar(P.ally.radius * (1 + f * 0.18));
-      updateAllyBars(job === 'mine');
-      return;
+  } else {
+    // 은신처 만들기
+    if (!ally.shelter) ally.shelter = pickShelter();
+    const todo = shelterTodo();
+    if (!todo) {
+      ally.mode = ally.shelter ? '대기' : '탐색';
+      if (ally.shelter) {
+        const w = cellToWorld(ally.shelter.i, ally.shelter.j);
+        gx = w.x; gz = w.z;
+      } else { gx = ally.x; gz = ally.z; }
+    } else {
+      ally.mode = '벽 건설';
+      // 가장 가까운 미완성 칸 옆으로 가서 짓는다
+      let tgt = todo[0], td = Infinity;
+      for (const c of todo) {
+        const w = cellToWorld(c[0], c[1]);
+        const d = Math.hypot(w.x - ally.x, w.z - ally.z);
+        if (d < td) { td = d; tgt = c; }
+      }
+      const tw = cellToWorld(tgt[0], tgt[1]);
+      gx = tw.x; gz = tw.z;
+      // 사거리 안이고 돈이 있으면 한 칸 세운다
+      if (td <= P.wall.range && ally.buildCd <= 0 && allyRes >= P.wall.cost) {
+        const ob = addObstacle(tgt[0], tgt[1], false, false, 'a');
+        if (ob) {
+          allyRes -= P.wall.cost;
+          ally.buildCd = P.ally.buildCd;
+          ob.mesh.scale.y = 0.02;
+          ob.mesh.position.y = 0.01;
+          ob.mesh.material.color.setHex(0x7f93c8);   // 동료 벽은 살짝 파랗게
+          popping.push({ ob, t: 0 });
+          spawnBuildFx(tw.x, tw.z);
+          refreshClearance();
+          repathAll();
+        }
+      }
     }
   }
+  ally.goalX = gx; ally.goalZ = gz;
 
   // ---- 이동 ----
-  ally.repathT -= dt;
-  if (ally.repathT <= 0 || !ally.path.length) {
-    ally.repathT = urgent ? 0.25 : 0.5;
-    const r = P.ally.radius;
-    const pass = (i) => canPass(clearAll, i, r);
-    const res = astar(nearestPassableNav(ally.x, ally.z, pass), worldToNav(gx, gz), pass, () => 0);
-    ally.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
-  }
-  while (ally.path.length && Math.hypot(ally.x - ally.path[0].x, ally.z - ally.path[0].z) < navRes * 0.9)
-    ally.path.shift();
-  const tx = ally.path.length ? ally.path[0].x : gx;
-  const tz = ally.path.length ? ally.path[0].z : gz;
-  let dx = tx - ally.x, dz = tz - ally.z;
-  const dl = Math.hypot(dx, dz);
-  if (dl > 0.05) {
-    dx /= dl; dz /= dl;
-    // 회피 조향 — 가까운 적을 밀어내는 벡터를 섞는다
-    let rx = 0, rz = 0;
-    for (const e of enemies) {
-      const ex = ally.x - e.x, ez = ally.z - e.z;
-      const ed = Math.hypot(ex, ez);
-      const danger = enemyR(e) + 2.6;
-      if (ed < danger && ed > 1e-3) {
-        const wgt = (danger - ed) / danger;
-        rx += (ex / ed) * wgt * 1.6;
-        rz += (ez / ed) * wgt * 1.6;
-      }
+  const dGoal = Math.hypot(gx - ally.x, gz - ally.z);
+  const stopAt = ally.mode === '벽 건설' ? Math.max(P.wall.range - 0.6, 1.0) : 0.6;
+  if (dGoal > stopAt) {
+    ally.repathT -= dt;
+    if (ally.repathT <= 0 || !ally.path.length) {
+      ally.repathT = urgent ? 0.25 : 0.5;
+      const pass = (i) => canPass(clearAll, i, P.ally.radius);
+      const res = astar(nearestPassableNav(ally.x, ally.z, pass), worldToNav(gx, gz), pass, () => 0);
+      ally.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
     }
-    dx += rx; dz += rz;
-    const l2 = Math.hypot(dx, dz) || 1;
-    dx /= l2; dz /= l2;
-    ally.x += dx * P.ally.speed * dt;
-    ally.z += dz * P.ally.speed * dt;
-    ally.faceX = dx; ally.faceZ = dz;
+    while (ally.path.length && Math.hypot(ally.x - ally.path[0].x, ally.z - ally.path[0].z) < navRes * 0.9)
+      ally.path.shift();
+    const tx = ally.path.length ? ally.path[0].x : gx;
+    const tz = ally.path.length ? ally.path[0].z : gz;
+    let dx = tx - ally.x, dz = tz - ally.z;
+    const dl = Math.hypot(dx, dz);
+    if (dl > 0.05) {
+      dx /= dl; dz /= dl;
+      // 회피 조향
+      let rx = 0, rz = 0;
+      for (const e of enemies) {
+        const ex = ally.x - e.x, ez = ally.z - e.z;
+        const ed = Math.hypot(ex, ez);
+        const danger = enemyR(e) + 2.6;
+        if (ed < danger && ed > 1e-3) {
+          const wgt = (danger - ed) / danger;
+          rx += (ex / ed) * wgt * 1.6;
+          rz += (ez / ed) * wgt * 1.6;
+        }
+      }
+      dx += rx; dz += rz;
+      const l2 = Math.hypot(dx, dz) || 1;
+      dx /= l2; dz /= l2;
+      ally.x += dx * P.ally.speed * dt;
+      ally.z += dz * P.ally.speed * dt;
+      ally.faceX = dx; ally.faceZ = dz;
+    }
+    collideWithObstacles(ally, P.ally.radius);
   }
-  collideWithObstacles(ally, P.ally.radius);
   allyVis.group.position.set(ally.x, 0, ally.z);
   allyVis.group.rotation.y = Math.atan2(ally.faceX, ally.faceZ) + Math.PI;
-  const f = (ally.carry || 0) / P.carry.workerLoad;
-  allyVis.group.scale.setScalar(P.ally.radius * (1 + f * 0.18));
+  allyVis.group.scale.setScalar(P.ally.radius);
   updateAllyBars(false);
-}
-
-// 동료가 자기 치즈더미 근처 빈 자리를 찾아 창고를 세운다
-function allyTryBuildDepot() {
-  if (ally.buildCd > 0) return;
-  ally.buildCd = 2.0;
-  let target = null, bd = Infinity;
-  for (const n of nodes) {
-    if (n.amount <= 0) continue;
-    const w = cellToWorld(n.i, n.j);
-    const d = Math.hypot(w.x - ally.x, w.z - ally.z);
-    if (d < bd) { bd = d; target = n; }
-  }
-  if (!target) return;
-  // 더미에서 minPileDist 바깥, 동료 근처의 빈 2x2를 찾는다
-  for (let r = Math.ceil(P.depot.minPileDist); r <= 9; r++)
-    for (let k = 0; k < 12; k++) {
-      const a = (k / 12) * Math.PI * 2;
-      const i = target.i + Math.round(Math.cos(a) * r);
-      const j = target.j + Math.round(Math.sin(a) * r);
-      const savedX = player.x, savedZ = player.z;
-      player.x = ally.x; player.z = ally.z;          // 사거리 판정을 동료 기준으로
-      const err = buildingPlacement(i, j, 'depot');
-      player.x = savedX; player.z = savedZ;
-      if (err) continue;
-      const b = placeBuilding('depot', i, j, 'a');
-      if (b) { flashMsg('동료가 자기 창고를 지었다', '#5fa8ff'); return; }
-    }
 }
 
 function updateAllyBars(mining) {
@@ -3681,7 +3718,7 @@ window.__game = {
   get playerJob() { return playerJob; },
   get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
   get buildJob() { return buildJob; },
-  startBuild, cancelBuild, allyTryBuildDepot,
+  startBuild, cancelBuild, pickShelter, shelterTodo,
   buildings, placeBuilding, destroyBuilding, STAGES,
   get stage() { return stage; },
   get stageT() { return stageT; },
