@@ -41,10 +41,11 @@ const P = {
   // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
   // reward = 처치 시 주는 치즈.
   // dmg = 플레이어/동료에게 한 방에 주는 피해
-  chaser: { radius: 1.35, speed: 5.0, bldgDps: 24, hp: 260, reward: 18, dmg: 34 },
-  runner: { radius: 0.85, speed: 6.8, bldgDps: 16, hp: 150, reward: 12, dmg: 20 },
+  chaser: { radius: 1.35, speed: 5.0, bldgDps: 24, hp: 1300, reward: 18, dmg: 34 },
+  runner: { radius: 0.85, speed: 6.8, bldgDps: 16, hp: 750, reward: 12, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
-  bomber: { radius: 1.5, speed: 4.6, bldgDps: 40, hp: 200, reward: 30, dmg: 45,
+  // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
+  bomber: { radius: 1.5, speed: 2.6, bldgDps: 40, hp: 1000, reward: 30, dmg: 45,
             blastRadius: 1.7, fuse: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
@@ -55,7 +56,7 @@ const P = {
   // 건물은 약하다 — 적이 오래 붙들려 있지 않고 금방 정리하고 플레이어에게 온다
   // 치즈 창고 — 치즈를 부리는 곳. 더미에서 일정 거리 떨어뜨려야 지어진다
   // (붙여 지으면 채굴 사거리와 하역 사거리가 겹쳐 '나르는 행위'가 사라진다)
-  depot: { cost: 0, hp: 130, dropRange: 2.8, minPileDist: 5.5 },
+  depot: { cost: 0, hp: 130, dropRange: 2.8, minPileDist: 4.0 },
   // 볼주머니 채굴 (원작 프로브) — 치즈더미에서 캐서 창고까지 날라야 잔고가 된다
   // 스타크래프트 프로브와 같은 리듬: 더미에 붙어 한 짐을 캐고(시간 소요),
   // 창고까지 걸어가서 한 번에 부린다. 왕복 자체가 게임의 박자다.
@@ -71,6 +72,9 @@ const P = {
   },
   workshop: { cost: 15, hp: 100 },                               // 공방 — 업그레이드는 이 옆에서
   tower: { cost: 35, hp: 110, range: 7.0, dmg: 30, reload: 1.0 }, // 경비탑 — 원작 포토캐논. 던진다
+  // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
+  // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
+  build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0 },
   // 방어병 — 타일에 배치하고 우클릭으로 재배치 명령. 벽 너머로 던진다.
   // 적과 닿으면 즉시 쓰러진다(햄스터니까) → 벽 뒤에 세우는 게 정석
   guard: { cost: 25, range: 7.0, dmg: 26, reload: 1.1, speed: 5.2, radius: 0.35 },
@@ -78,7 +82,7 @@ const P = {
     startWalls: 10, wallCost: 5,
     // 치즈더미는 유한하고 다시 차지 않는다. 바닥나면 새 더미를 확보하러 나가야 한다
     // = 영역 확장 압박 (01 문서의 "공간 욕심 vs 벽 길이")
-    nodeAmount: 520,
+    nodeAmount: 900,
   },
   // 부품 — 밖에 흩어진 픽업으로만 얻는다. 업그레이드 전용 화폐.
   pickup: {
@@ -100,7 +104,7 @@ const P = {
     towerStep: 9,               // 경비탑 화력
   },
   threat: {
-    interval: 30, speedGain: 0.15, dpsGain: 6, everyLevels: 0, hpGain: 25,
+    interval: 30, speedGain: 0.15, dpsGain: 6, everyLevels: 0, hpGain: 120,
     // 속도는 상한을 둔다 — 적이 플레이어보다 빨라지면 술래잡기가 아니게 된다
     speedCap: 7.2,
     // 원작의 탐욕 페널티: 일정 수를 잡으면 그때 우루루 쏟아진다
@@ -366,8 +370,12 @@ const MAPS = [
                             [28, 28], [30, 8], [8, 30], [48, 30], [30, 48]])
         t.put(i, j);
     },
+    // [i, j] 또는 [i, j, 배율]. 멀리 있을수록 뭉쳐 있고 매장량이 크다
     nodes: [[11, 19], [26, 10], [45, 19], [26, 31], [44, 35],
-            [12, 33], [38, 45], [15, 45]],
+            [12, 33], [38, 45], [15, 45],
+            // 원거리 군집 — 스폰에서 가장 먼 두 귀퉁이
+            [6, 49, 1.8], [8, 51, 1.8], [5, 46, 1.8],
+            [50, 50, 1.8], [48, 47, 1.8], [51, 46, 1.8]],
   },
   {
     name: '협곡',
@@ -390,7 +398,10 @@ const MAPS = [
       t.hLine(21, 26, 40);
     },
     nodes: [[14, 24], [23, 33], [32, 21], [41, 33],
-            [14, 38], [32, 44], [50, 24], [50, 40]],
+            [14, 38], [32, 44], [50, 24], [50, 40],
+            // 협곡 남쪽 끝 — 능선을 전부 지나야 닿는 곳
+            [6, 50, 1.8], [9, 48, 1.8], [5, 46, 1.8],
+            [50, 50, 1.8], [47, 48, 1.8], [51, 45, 1.8]],
   },
   {
     name: '폐허',
@@ -417,7 +428,10 @@ const MAPS = [
         t.put(i, j);
     },
     nodes: [[13, 20], [27, 16], [42, 21], [24, 27],
-            [46, 50], [16, 30], [33, 44], [50, 34]],
+            [46, 50], [16, 30], [33, 44], [50, 34],
+            // 폐허 남서 / 북동 끝
+            [6, 47, 1.8], [8, 50, 1.8], [5, 44, 1.8],
+            [50, 8, 1.8], [48, 5, 1.8], [51, 11, 1.8]],
   },
 ];
 let mapIndex = 0;
@@ -792,7 +806,7 @@ const ally = {
   stunned: false,
   path: [], repathT: 0,
   goalX: 0, goalZ: 0,
-  carry: 0, mode: '대기',
+  carry: 0, mode: '대기', buildCd: 0,
 };
 
 let PLAYER_SPAWN = cellToWorld(28, 28);
@@ -908,6 +922,10 @@ const nodes = [];   // rebuildWorld에서 채운다
 const nodeAt = (i, j) => nodes.find((n) => n.i === i && n.j === j);
 let minedCount = 0; // 지금 채굴 중인 광맥 수 (HUD용)
 let killCount = 0;  // 처치한 적 수 (HUD용)
+let allyRes = 0;    // 동료의 치즈 — 지갑도 창고도 따로다
+const purse = (o) => (o === 'a' ? allyRes : resources);
+const spend = (o, v) => { if (o === 'a') allyRes -= v; else resources -= v; };
+const earn = (o, v) => { if (o === 'a') allyRes += v; else resources += v; };
 let playerJob = null; // 'mine' | 'drop' | null
 
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
@@ -1011,13 +1029,16 @@ const BLDG_INFO = {
   workshop: { label: '공방', body: 0x4f8f8a, roof: 0x2c524e },
   tower: { label: '경비탑', body: 0x7a6ea8, roof: 0x40386b },
 };
+// 소유자 구분은 지붕(포인트)에만 준다 — 건물 전체 색은 종류를 나타내야 하므로
+const OWNER_COLOR = { p: 0xffc94d, a: 0x5fa8ff };
+const OWNER_LABEL = { p: '내', a: '동료' };
 
 function buildingAt(i, j) {
   const ob = obstacles.get(cellKey(i, j));
   return ob && ob.bldgRef ? ob.bldgRef : null;
 }
 
-function makeBuildingMesh(kind) {
+function makeBuildingMesh(kind, owner) {
   const info = BLDG_INFO[kind];
   const g = new THREE.Group();
   const body = new THREE.Mesh(
@@ -1027,8 +1048,22 @@ function makeBuildingMesh(kind) {
   body.position.y = 0.5;
   const roof = new THREE.Mesh(
     new THREE.BoxGeometry(2.05, 0.28, 2.05),
-    new THREE.MeshStandardMaterial({ color: info.roof, roughness: 0.9 })
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(info.roof).lerp(new THREE.Color(OWNER_COLOR[owner] || 0xffffff), 0.55),
+      roughness: 0.9,
+    })
   );
+  // 소유자 깃대 — 멀리서도 누구 건물인지 보이게
+  const flag = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.9, 0.16),
+    new THREE.MeshStandardMaterial({
+      color: OWNER_COLOR[owner] || 0xffffff,
+      emissive: new THREE.Color(OWNER_COLOR[owner] || 0xffffff), emissiveIntensity: 0.45,
+    })
+  );
+  flag.position.set(0.78, 1.7, 0.78);
+  flag.castShadow = true;
+  g.add(flag);
   roof.position.y = 1.14;
   body.castShadow = roof.castShadow = true;
   body.receiveShadow = true;
@@ -1082,18 +1117,22 @@ function buildingPlacement(i, j, kind) {
   return null;
 }
 
-function placeBuilding(kind, i, j) {
+function placeBuilding(kind, i, j, owner = 'p') {
   const cost = P[kind].cost;
-  if (resources < cost) { flashMsg(`치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050'); return null; }
+  if (purse(owner) < cost) {
+    if (owner === 'p') flashMsg(`치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050');
+    return null;
+  }
   const err = buildingPlacement(i, j, kind);
   if (err) { flashMsg(err, '#e05050'); return null; }
-  resources -= cost;
+  spend(owner, cost);
   const cx = cellToWorld(i, j).x + CS / 2, cz = cellToWorld(i, j).z + CS / 2;
-  const mesh = makeBuildingMesh(kind);
+  const mesh = makeBuildingMesh(kind, owner);
   mesh.position.set(cx, 0, cz);
   scene.add(mesh);
-  const b = { kind, i, j, cells: [], hp: P[kind].hp, maxHp: P[kind].hp, store: 0, mesh, cx, cz, bitT: 0,
-              bar: makeBar(0x5fd07a, 1.6) };
+  const b = { kind, i, j, owner, cells: [], hp: P[kind].hp, maxHp: P[kind].hp, store: 0, mesh, cx, cz, bitT: 0,
+              underBuild: false,
+              bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6) };
   for (const [ci, cj] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
     const key = cellKey(ci, cj);
     obstacles.set(key, { i: ci, j: cj, bedrock: false, bldgRef: b, mesh: null });
@@ -1147,10 +1186,10 @@ function updateBuildings(dt) {
 }
 
 // 가장 가까운 창고
-function nearestDepot(x, z) {
+function nearestDepot(x, z, owner = 'p') {
   let best = null, bd = Infinity;
   for (const b of buildings) {
-    if (b.kind !== 'depot') continue;
+    if (b.kind !== 'depot' || b.owner !== owner || b.underBuild) continue;
     const d = Math.hypot(b.cx - x, b.cz - z);
     if (d < bd) { bd = d; best = b; }
   }
@@ -1164,14 +1203,14 @@ const carriers = () => [player, ...(ally.active ? [ally] : []), ...workers];
 // 볼주머니 채굴 (스타 프로브 리듬)
 //  더미 옆에서 mineTime 동안 캐서 한 짐(load)을 담고 → 창고까지 날라 한 번에 부린다.
 //  반환: 'mine' | 'drop' | null
-function doCarryWork(c, dt, load) {
+function doCarryWork(c, dt, load, owner = 'p') {
   c.carry = c.carry || 0;
   c.mineT = c.mineT || 0;
 
   // 1) 하역 — 창고 옆이면 한 번에 부린다
-  const dep = nearestDepot(c.x, c.z);
+  const dep = nearestDepot(c.x, c.z, owner);
   if (dep && c.carry > 0 && Math.hypot(dep.cx - c.x, dep.cz - c.z) <= P.depot.dropRange) {
-    resources += c.carry;
+    earn(owner, c.carry);
     for (let k = 0; k < 3; k++) spawnCheeseBit(c.x, c.z, { x: dep.cx, z: dep.cz });
     c.carry = 0;
     c.mineT = 0;
@@ -1209,17 +1248,27 @@ function pileCrowd(n) {
   return c;
 }
 
-function hireWorker() {
-  if (workers.length >= P.worker.max) { flashMsg('일꾼이 너무 많습니다', '#e05050'); return null; }
-  if (resources < P.worker.cost) { flashMsg(`치즈가 부족합니다 (일꾼 ${P.worker.cost})`, '#e05050'); return null; }
-  const dep = nearestDepot(player.x, player.z);
-  if (!dep) { flashMsg('치즈 창고가 있어야 일꾼을 고용합니다', '#e05050'); return null; }
-  resources -= P.worker.cost;
-  const vis = makeCarrierVis(0xd9c48a);
+function hireWorker(owner = 'p') {
+  if (workers.filter((w) => w.owner === owner).length >= P.worker.max) {
+    if (owner === 'p') flashMsg('일꾼이 너무 많습니다', '#e05050');
+    return null;
+  }
+  if (purse(owner) < P.worker.cost) {
+    if (owner === 'p') flashMsg(`치즈가 부족합니다 (일꾼 ${P.worker.cost})`, '#e05050');
+    return null;
+  }
+  const home = owner === 'a' ? ally : player;
+  const dep = nearestDepot(home.x, home.z, owner);
+  if (!dep) {
+    if (owner === 'p') flashMsg('내 치즈 창고가 있어야 일꾼을 고용합니다', '#e05050');
+    return null;
+  }
+  spend(owner, P.worker.cost);
+  const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
   vis.group.scale.setScalar(P.worker.radius);
   const w = {
     x: dep.cx + (Math.random() - 0.5) * 2, z: dep.cz + 1.6 + Math.random(),
-    faceX: 0, faceZ: 1, carry: 0, pile: null, job: null,
+    faceX: 0, faceZ: 1, carry: 0, pile: null, job: null, owner,
     path: [], repathT: 0, vis, depot: dep, workBar: makeBar(0xf0c040, 0.9),
   };
   workers.push(w);
@@ -1235,7 +1284,7 @@ function clearWorkers() {
 // 일꾼이 붙을 치즈더미 고르기 — 자리가 남은 것 중 창고에서 가까운 순
 function pickPile(w) {
   let best = null, bd = Infinity;
-  const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z);
+  const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z, w.owner);
   if (!dep) return null;
   w.depot = dep;
   for (const n of nodes) {
@@ -1264,13 +1313,13 @@ function updateWorkers(dt) {
       continue;
     }
 
-    const did = doCarryWork(w, dt, P.carry.workerLoad);
+    const did = doCarryWork(w, dt, P.carry.workerLoad, w.owner);
     w.job = did;
 
     // 목표: 볼주머니가 찼으면 창고로, 아니면 치즈더미로
     let gx, gz;
     if (w.carry > 0 || (w.pile && w.pile.amount <= 0)) {
-      const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z);
+      const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z, w.owner);
       if (!dep) continue;
       w.depot = dep;
       gx = dep.cx; gz = dep.cz;
@@ -1278,7 +1327,7 @@ function updateWorkers(dt) {
     } else {
       if (!w.pile || w.pile.amount <= 0 || pileCrowd(w.pile) > P.worker.perPile) w.pile = pickPile(w);
       if (!w.pile) {
-        const dep = nearestDepot(w.x, w.z);
+        const dep = nearestDepot(w.x, w.z, w.owner);
         if (!dep) continue;
         gx = dep.cx; gz = dep.cz;
       } else {
@@ -1410,7 +1459,7 @@ function damageEnemy(e, dmg) {
 function updateNodes(dt) {
   for (const n of nodes) {
     const g = n.mesh;
-    const frac = Math.max(n.amount, 0) / P.res.nodeAmount;
+    const frac = Math.max(n.amount, 0) / (P.res.nodeAmount * (n.mul || 1));
     const keep = Math.max(1, Math.ceil(frac * g.children.length));
     g.children.forEach((c, k) => { c.visible = n.amount > 0 && k < keep; });
     const mat = g.userData.mat;
@@ -2265,6 +2314,7 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
+  if (e.code === 'Escape') { if (buildJob) cancelBuild(true); else if (upgOpen) { upgOpen = false; renderUpgrade(); } }
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
   // 숫자키 = 업그레이드 패널이 열려 있으면 구매, 아니면 건설 슬롯 선택
   for (let k = 0; k < 9; k++) {
@@ -2547,8 +2597,10 @@ function updatePlayer(dt) {
   const buildPressed = wantBuild && !prevWantBuild; // 눌리는 순간 (연사 방지용)
   prevWantBuild = wantBuild;
 
-  // ---- 이동 (건설이 즉시라 이동을 막는 구간이 없다) ----
-  {
+  updateBuild(dt);
+
+  // ---- 이동 (건물을 짓는 동안은 묶인다 = 무방비) ----
+  if (!buildJob) {
     const b = moveBasis();
     let mx = 0, mz = 0;
     const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
@@ -2594,8 +2646,11 @@ function updatePlayer(dt) {
     setBar(playerBar, playerHp / P.player.hp, player.x, y, player.z,
            !playerStunned && playerHp < P.player.hp - 0.5);
     const mining = playerJob === 'mine';
-    setBar(playerWorkBar, (player.mineT || 0) / effMineTime(),
-           player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z, mining);
+    const building = !!buildJob;
+    setBar(playerWorkBar,
+           building ? buildJob.t / buildJob.dur : (player.mineT || 0) / effMineTime(),
+           player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z,
+           mining || building);
   }
 
   // ---- 건설 고스트: 마우스가 가리키는 타일 + 선택 슬롯의 발자국 ----
@@ -2676,11 +2731,66 @@ function updatePlayer(dt) {
       buildCooldown = P.wall.cooldown;
     }
   } else if (buildPressed && hasTile) {
-    if (slot.key === 'depot') placeBuilding('depot', gi, gj);
-    else if (slot.key === 'workshop') placeBuilding('workshop', gi, gj);
-    else if (slot.key === 'tower') placeBuilding('tower', gi, gj);
+    if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower')
+      startBuild(slot.key, gi, gj);
     else if (slot.key === 'guard') placeGuard(gi, gj);
-    else if (slot.key === 'worker') hireWorker();
+    else if (slot.key === 'worker') hireWorker('p');
+  }
+}
+
+// ---- 건물 건설 (시간 소요 · 무방비) ----
+// 짓는 동안 플레이어는 그 자리에 묶인다. ESC로 중단하면 펑 터지고 자원을 돌려받는다.
+let buildJob = null;   // { b, t, dur, cost }
+
+function buildTimeOf(kind) {
+  return kind === 'depot' ? P.build.depotTime
+    : kind === 'workshop' ? P.build.workshopTime : P.build.towerTime;
+}
+
+function startBuild(kind, i, j) {
+  if (buildJob) return;
+  const b = placeBuilding(kind, i, j, 'p');
+  if (!b) return;
+  b.underBuild = true;
+  // 짓는 중에는 반투명 + 낮게 시작
+  b.mesh.traverse((o) => {
+    if (!o.material) return;
+    o.material = o.material.clone();
+    o.material.transparent = true;
+    o.material.opacity = 0.45;
+  });
+  b.mesh.scale.y = 0.25;
+  buildJob = { b, t: 0, dur: buildTimeOf(kind), cost: P[kind].cost };
+  flashMsg(`${BLDG_INFO[kind].label} 건설 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
+}
+
+function cancelBuild(refund = true) {
+  if (!buildJob) return;
+  const { b, cost } = buildJob;
+  buildJob = null;
+  if (buildings.includes(b)) {
+    spawnBuildFx(b.cx, b.cz);
+    spawnBuildFx(b.cx, b.cz);
+    destroyBuilding(b, false);
+  }
+  if (refund) resources += cost;
+  flashMsg('건설 취소', '#ffb347');
+}
+
+function updateBuild(dt) {
+  if (!buildJob) return;
+  const { b, dur } = buildJob;
+  if (!buildings.includes(b)) { buildJob = null; return; }   // 적이 부숨
+  buildJob.t += dt;
+  const f = Math.min(buildJob.t / dur, 1);
+  b.mesh.scale.y = 0.25 + 0.75 * f;
+  if (f >= 1) {
+    b.underBuild = false;
+    b.mesh.traverse((o) => { if (o.material) { o.material.transparent = false; o.material.opacity = 1; } });
+    b.mesh.scale.y = 1;
+    spawnBuildFx(b.cx, b.cz);
+    flashMsg(`${BLDG_INFO[b.kind].label} 완성`, '#6ee07a');
+    buildJob = null;
   }
 }
 
@@ -2782,6 +2892,9 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.carry, 'playerLoad', 2, 60, 1).name('플레이어 한 짐');
   f.add(P.carry, 'workerLoad', 2, 60, 1).name('일꾼 한 짐');
   f.add(P.carry, 'range', 1, 6, 0.1).name('채굴 접근 거리');
+  f.add(P.build, 'depotTime', 0.5, 12, 0.5).name('창고 건설 시간(초)');
+  f.add(P.build, 'workshopTime', 0.5, 12, 0.5).name('공방 건설 시간(초)');
+  f.add(P.build, 'towerTime', 0.5, 12, 0.5).name('경비탑 건설 시간(초)');
   f.add(P.workshop, 'cost', 5, 60, 1).name('공방 비용');
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
   f.add(P.tower, 'cost', 5, 120, 5).name('경비탑 비용');
@@ -2789,7 +2902,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.tower, 'range', 2, 16, 0.5).name('경비탑 사거리');
   f.add(P.tower, 'dmg', 2, 120, 1).name('경비탑 투척 피해');
   f.add(P.tower, 'reload', 0.2, 4, 0.1).name('경비탑 투척 간격');
-  f.add(P.threat, 'hpGain', 0, 120, 5).name('적 체력 증가/레벨');
+  f.add(P.threat, 'hpGain', 0, 400, 10).name('적 체력 증가/레벨');
   f.add(P.threat, 'speedCap', 3, 14, 0.1).name('적 속도 상한');
   f.add(P.threat, 'killsPerSurge', 1, 30, 1).name('N킬마다 우루루');
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
@@ -2804,11 +2917,11 @@ const gui = new GUI({ title: '튜닝' });
 }
 {
   const f = gui.addFolder('적 체력 / 보상');
-  f.add(P.chaser, 'hp', 30, 900, 10).name('순찰묘 체력');
+  f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
   f.add(P.chaser, 'reward', 0, 100, 1).name('순찰묘 처치 보상');
-  f.add(P.runner, 'hp', 30, 900, 10).name('날쌘묘 체력');
+  f.add(P.runner, 'hp', 100, 4000, 50).name('날쌘묘 체력');
   f.add(P.runner, 'reward', 0, 100, 1).name('날쌘묘 처치 보상');
-  f.add(P.bomber, 'hp', 30, 900, 10).name('자폭묘 체력');
+  f.add(P.bomber, 'hp', 100, 4000, 50).name('자폭묘 체력');
   f.add(P.bomber, 'reward', 0, 100, 1).name('자폭묘 처치 보상');
 }
 {
@@ -2967,7 +3080,7 @@ const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
   'WASD 이동 · 1~6 건설 선택 → 클릭/Space 설치 (6=철거) · U: 개조 (공방 옆에서)\n' +
-  '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다. 벽을 잘 두르는 게 전부\n' +
+  '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '한 방에 죽지 않는다. 공격을 맞아 체력이 다 깎여야 잡힌다 (예비동작 때 피할 것)\n' +
   '많이 잡으면 무리가 몰려온다 — 절제도 실력 · 우클릭: 방어병 이동 명령 · C 카메라 · R 재시작';
 
@@ -3013,12 +3126,13 @@ function rebuildWorld(idx) {
   for (const [i, j] of t.cells) addObstacle(i, j, true);
 
   // 광맥
-  for (const [i, j] of M.nodes) {
+  for (const [i, j, mul] of M.nodes) {
     const w = cellToWorld(i, j);
     const mesh = makeCheesePile();
     mesh.position.set(w.x, 0, w.z);
+    mesh.scale.setScalar(mul ? 1.25 : 1);   // 군집 더미는 눈에 띄게 크게
     scene.add(mesh);
-    nodes.push({ i, j, amount: P.res.nodeAmount, mesh });
+    nodes.push({ i, j, mul: mul || 1, amount: P.res.nodeAmount * (mul || 1), mesh });
   }
 
   PLAYER_SPAWN = cellToWorld(M.playerSpawn[0], M.playerSpawn[1]);
@@ -3044,12 +3158,14 @@ function restart() {
   for (const n of nodes) n.bitT = 0;
   resources = startResources();
   for (const n of nodes) {
-    n.amount = P.res.nodeAmount;
+    n.amount = P.res.nodeAmount * (n.mul || 1);
     n.mesh.userData.mat.color.setHex(0xf0b429);
   }
   clearPickups();
   clearGuards();
   clearWorkers();
+  buildJob = null;
+  allyRes = 0;
   player.carry = 0;
   ally.carry = 0;
   killCount = 0;
@@ -3119,6 +3235,7 @@ function hurtHamster(who, dmg) {
 //  모두 기절하면 전멸 = 게임 오버. 동료가 없으면 한 번 잡히면 바로 전멸.
 function caught(who) {
   caughtCount++;
+  if (who === player) cancelBuild(true);
   spawnBuildFx(who.x, who.z); // 잡힌 자리에서 펑
   who.x = ENEMY_SPAWN.x;
   who.z = ENEMY_SPAWN.z + (who === ally ? 1.2 : 0);
@@ -3261,6 +3378,7 @@ function updateAlly(dt) {
   }
   allyVis.group.visible = true;
   if (allyGrace > 0) allyGrace -= dt;
+  if (ally.buildCd > 0) ally.buildCd -= dt;
 
   if (ally.stunned) {
     setBar(allyBar, 0, 0, 0, 0, false);
@@ -3302,9 +3420,13 @@ function updateAlly(dt) {
     gz = clamp(ally.z + (az / l) * 7, -HALF + 1, HALF - 1);
   } else {
     // 자기 일: 볼주머니가 찼으면 창고로, 아니면 치즈더미로
-    const job = doCarryWork(ally, dt, P.carry.workerLoad);
+    const job = doCarryWork(ally, dt, P.carry.workerLoad, 'a');
     ally.mode = job === 'mine' ? '채굴' : job === 'drop' ? '하역' : '이동';
-    const dep = nearestDepot(ally.x, ally.z);
+    let dep = nearestDepot(ally.x, ally.z, 'a');
+    // 자기 창고가 없으면 직접 짓는다 (동료는 즉시 — AI에겐 건설 의식이 없다)
+    if (!dep) { allyTryBuildDepot(); dep = nearestDepot(ally.x, ally.z, 'a'); }
+    // 여유가 되면 자기 일꾼을 고용한다
+    else if (allyRes >= P.worker.cost && Math.hypot(dep.cx - ally.x, dep.cz - ally.z) < 4) hireWorker('a');
     if (ally.carry > 0 && dep) {
       gx = dep.cx; gz = dep.cz;
     } else {
@@ -3374,6 +3496,34 @@ function updateAlly(dt) {
   updateAllyBars(false);
 }
 
+// 동료가 자기 치즈더미 근처 빈 자리를 찾아 창고를 세운다
+function allyTryBuildDepot() {
+  if (ally.buildCd > 0) return;
+  ally.buildCd = 2.0;
+  let target = null, bd = Infinity;
+  for (const n of nodes) {
+    if (n.amount <= 0) continue;
+    const w = cellToWorld(n.i, n.j);
+    const d = Math.hypot(w.x - ally.x, w.z - ally.z);
+    if (d < bd) { bd = d; target = n; }
+  }
+  if (!target) return;
+  // 더미에서 minPileDist 바깥, 동료 근처의 빈 2x2를 찾는다
+  for (let r = Math.ceil(P.depot.minPileDist); r <= 9; r++)
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      const i = target.i + Math.round(Math.cos(a) * r);
+      const j = target.j + Math.round(Math.sin(a) * r);
+      const savedX = player.x, savedZ = player.z;
+      player.x = ally.x; player.z = ally.z;          // 사거리 판정을 동료 기준으로
+      const err = buildingPlacement(i, j, 'depot');
+      player.x = savedX; player.z = savedZ;
+      if (err) continue;
+      const b = placeBuilding('depot', i, j, 'a');
+      if (b) { flashMsg('동료가 자기 창고를 지었다', '#5fa8ff'); return; }
+    }
+}
+
 function updateAllyBars(mining) {
   const y = barY(allyVis);
   setBar(allyBar, allyHp / P.player.hp, ally.x, y, ally.z,
@@ -3411,13 +3561,14 @@ function updateHUD() {
     (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
     `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개 · 일꾼 ${workers.length}` +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
+    (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
     (playerJob === 'mine' ? ' ⛏채굴' : playerJob === 'drop' ? ' 📦하역' : '') +
     (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') +
     (guards.length ? ` · 방어병 ${guards.length}` : '') +
     (killCount ? ` · 처치 ${killCount}` : '') + '\n' +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
     `체력: ${'█'.repeat(Math.max(0, Math.round(playerHp / P.player.hp * 10)))}${'░'.repeat(10 - Math.max(0, Math.round(playerHp / P.player.hp * 10)))} ${Math.ceil(playerHp)}/${P.player.hp}\n` +
-    (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : `${ally.mode} (체력 ${Math.ceil(allyHp)})`}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
+    (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : `${ally.mode} · 치즈 ${Math.round(allyRes)}`}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
     (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
     (paused ? '\n⏸ 일시정지 (P)' : '');
@@ -3479,7 +3630,7 @@ function tick(dt) {
       allyHp = Math.min(allyHp + P.player.regen * 0.6 * dt, P.player.hp);
     if (camShake > 0) camShake -= dt * 2;
     updateStageTimer(dt);
-    playerJob = playerStunned ? null : doCarryWork(player, dt, P.carry.playerLoad);
+    playerJob = playerStunned ? null : doCarryWork(player, dt, P.carry.playerLoad, 'p');
     updateWorkers(dt);
     updateGuards(dt);
     updateProjectiles(dt);
@@ -3528,6 +3679,9 @@ window.__game = {
   nodes, ghost, mouseNDC, CAM_MODES, enemies,
   setEnemyCount, spawnBuildFx, hireWorker, workers, doCarryWork, nearestDepot,
   get playerJob() { return playerJob; },
+  get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
+  get buildJob() { return buildJob; },
+  startBuild, cancelBuild, allyTryBuildDepot,
   buildings, placeBuilding, destroyBuilding, STAGES,
   get stage() { return stage; },
   get stageT() { return stageT; },
