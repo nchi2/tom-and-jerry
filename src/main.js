@@ -30,6 +30,21 @@ const P = {
     attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
     attackCooldown: 1.3,   // 공격 간격
   },
+  // 순찰조 (D52) — 웨이브와 별개로 **맵에 상주하는** 고양이.
+  // 제 초소 둘레를 돌다가 햄스터를 발견하면 쫓고, 시간이 지나면 초소로 돌아간다.
+  // 목적은 "빈 땅이 안전하지 않게" 만드는 것 — 새 더미 확보와 구출 원정을 방해한다.
+  // 초소는 맵 전역에 흩어야 한다. 한 구역에 몰리면 나머지 절반이 무주공산이 된다.
+  patrol: {
+    count: 3,           // 순찰조 마릿수 (재시작부터)
+    radius: 7.0,        // 초소 둘레를 도는 반경
+    turn: 0.30,         // 도는 속도(라디안/초)
+    sight: 11.0,        // 햄스터를 발견하는 거리
+    chaseTime: 9.0,     // 발견 후 쫓는 시간(초) — 지나면 초소로 복귀
+    leash: 22.0,        // 초소에서 이만큼 벗어나면 무조건 복귀 (시간만으로는 못 끊는다)
+    leashCool: 4.0,     // 줄이 끊긴 뒤 다시 발각되지 않는 시간(초)
+    postSpread: 0.62,   // 초소를 맵 반지름의 몇 배 위치에 둘지
+    minFromSpawn: 16,   // 내 시작 지점에서 최소 이만큼 떨어뜨린다
+  },
   // 동료는 경제 활동을 하지 않는다. 벽으로 은신처를 만들어 살아남고,
   // 내가 기절하면 구하러 온다. 그게 전부다 (멀티 구출 루프의 시험용).
   ally: {
@@ -68,8 +83,11 @@ const P = {
   // 볼주머니 채굴 (원작 프로브) — 치즈더미에서 캐서 창고까지 날라야 잔고가 된다
   // 스타크래프트 프로브와 같은 리듬: 더미에 붙어 한 짐을 캐고(시간 소요),
   // 창고까지 걸어가서 한 번에 부린다. 왕복 자체가 게임의 박자다.
+  // 한 짐은 **작다**. 한 번 왕복해서 벽 하나를 뽑던 시절엔 채굴이 너무 싸서
+  // 왕복이 의미를 잃었다 (2026-08-13, 기존의 20% 수준으로 너프).
+  // 대신 더미 매장량을 3배로 늘려 "더미가 금방 마른다"는 부작용을 막았다.
   carry: {
-    playerLoad: 14, workerLoad: 10,
+    playerLoad: 3, workerLoad: 2,
     mineTime: 1.6,      // 한 짐을 캐는 데 걸리는 시간(초)
     range: 2.2,         // 치즈더미에 붙어야 하는 거리
   },
@@ -83,7 +101,8 @@ const P = {
   //  일꾼: 드래그 상자 선택(Shift 또는 일꾼 위에서 시작) → 더미 우클릭
   command: {
     promptRange: 4.5,   // 이 거리 안에 더미가 있으면 머리 위에 'E' 안내가 뜬다
-    pickRange: 1.8,     // 우클릭이 더미/유닛을 집는 허용 반경
+    pickRange: 1.8,     // 우클릭이 치즈더미를 집는 허용 반경(m)
+    pickPx: 46,         // 유닛을 집는 허용 반경(화면 픽셀) — 카메라 각도와 무관하게
     dragMin: 7,         // 상자 선택으로 인정하는 최소 드래그(픽셀)
   },
   workshop: { cost: 15, hp: 100 },                               // 공방 — 업그레이드는 이 옆에서
@@ -91,14 +110,21 @@ const P = {
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0 },
-  // 방어병 — 타일에 배치하고 우클릭으로 재배치 명령. 벽 너머로 던진다.
-  // 적과 닿으면 즉시 쓰러진다(햄스터니까) → 벽 뒤에 세우는 게 정석
-  guard: { cost: 25, range: 7.0, dmg: 26, reload: 1.1, speed: 5.2, radius: 0.35 },
+  // 방어병 3종 (D51) — 타일에 배치하고 우클릭으로 재배치 명령.
+  //  사수  : D29 그대로. 체력 0 = 적과 닿으면 즉사. 벽 뒤에 세워야만 쓸모가 있다
+  //  근접병: 체력이 있어 붙어서 버틴다. 사거리가 짧아 몸으로 막는 역할
+  //  정예병: 체력이 높아 잘 안 죽는다. 비싸다 — 벽 없이 버티는 값이다
+  guard: {
+    archerCost: 25, archerRange: 7.0, archerDmg: 26, archerReload: 1.1,
+    meleeCost: 30, meleeHp: 90, meleeRange: 0.9, meleeDmg: 34, meleeReload: 0.9,
+    eliteCost: 60, eliteHp: 260, eliteRange: 6.0, eliteDmg: 30, eliteReload: 1.0,
+    speed: 5.2, radius: 0.35,
+  },
   res: {
     startWalls: 10, wallCost: 5,
     // 치즈더미는 유한하고 다시 차지 않는다. 바닥나면 새 더미를 확보하러 나가야 한다
     // = 영역 확장 압박 (01 문서의 "공간 욕심 vs 벽 길이")
-    nodeAmount: 900,
+    nodeAmount: 2700,
   },
   // 부품 — 밖에 흩어진 픽업으로만 얻는다. 업그레이드 전용 화폐.
   pickup: {
@@ -153,9 +179,27 @@ const BUILD_SLOTS = [
   { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
   { key: 'tower', label: '경비탑', size: 2, cost: () => P.tower.cost },
   { key: 'worker', label: '일꾼 고용', size: 1, cost: () => P.worker.cost },
-  { key: 'guard', label: '방어병', size: 1, cost: () => P.guard.cost },
+  { key: 'archer', label: '사수', size: 1, cost: () => P.guard.archerCost },
+  { key: 'melee', label: '근접병', size: 1, cost: () => P.guard.meleeCost },
+  { key: 'elite', label: '정예병', size: 1, cost: () => P.guard.eliteCost },
   { key: 'remove', label: '철거', size: 1, cost: () => P.wall.removeCost },
 ];
+
+// 방어병 병종 (D51) — 값은 전부 P.guard에서 읽는다 (튜닝 슬라이더와 세팅 스냅샷 때문)
+const GUARD_TYPES = {
+  archer: { label: '사수', body: 0x5f7f3f, helm: 0x44502f, radius: () => P.guard.radius,
+            cost: () => P.guard.archerCost, hp: () => 0, melee: false,
+            range: () => P.guard.archerRange, dmg: () => P.guard.archerDmg,
+            reload: () => P.guard.archerReload },
+  melee:  { label: '근접병', body: 0x8a5a2b, helm: 0x5c3a18, radius: () => P.guard.radius * 1.15,
+            cost: () => P.guard.meleeCost, hp: () => P.guard.meleeHp, melee: true,
+            range: () => P.guard.meleeRange, dmg: () => P.guard.meleeDmg,
+            reload: () => P.guard.meleeReload },
+  elite:  { label: '정예병', body: 0x5a6f9f, helm: 0x3c4260, radius: () => P.guard.radius * 1.35,
+            cost: () => P.guard.eliteCost, hp: () => P.guard.eliteHp, melee: false,
+            range: () => P.guard.eliteRange, dmg: () => P.guard.eliteDmg,
+            reload: () => P.guard.eliteReload },
+};
 // -1 = 아무것도 안 들고 있음 (기본값).
 // 숫자키로 들고, ESC로 내려놓는다 — 손에 뭔가 들려 있는 상태가 "예외"여야
 // 좌클릭이 실수로 벽을 흘리지 않는다.
@@ -794,7 +838,9 @@ function applyModel(vis, key, tint, tintAmt) {
 function swapVis(vis, template, tint, tintAmt = 0.22) {
   if (vis.modelled) return;
   vis.modelled = true;
-  for (const c of [...vis.group.children]) c.visible = false;
+  // userData.keep = 모델을 갈아끼워도 남기는 장식 (투구·어깨 갑주 등).
+  // GLB 로딩이 비동기라, 이걸 안 지키면 **맨 처음 만든 유닛만** 장식이 사라진다.
+  for (const c of [...vis.group.children]) if (!c.userData.keep) c.visible = false;
   const clone = template.clone(true);
   const mats = [];
   clone.traverse((o) => {
@@ -894,12 +940,55 @@ function makeEnemy(type, n) {
   };
 }
 
+// ---- 순찰조 (D52) ----
+// 초소를 맵 전역에 황금각으로 흩는다. 내 시작 지점 근처는 피하고,
+// 못 서는 자리면 중심 쪽으로 당겨가며 설 수 있는 곳을 찾는다.
+function patrolPost(k) {
+  const base = k * 2.399963 + 0.7;
+  for (let t = 0; t < 12; t++) {
+    const a = base + t * 0.5;
+    const r = HALF * P.patrol.postSpread * (1 - t * 0.05);
+    const x = clamp(Math.cos(a) * r, -HALF + 5, HALF - 5);
+    const z = clamp(Math.sin(a) * r, -HALF + 5, HALF - 5);
+    if (Math.hypot(x - PLAYER_SPAWN.x, z - PLAYER_SPAWN.z) < P.patrol.minFromSpawn) continue;
+    if (clearAll && !canPass(clearAll, worldToNav(x, z), P.chaser.radius)) continue;
+    return { x, z };
+  }
+  return { x: 0, z: 0 };
+}
+
+function spawnPatrols() {
+  for (let k = 0; k < P.patrol.count; k++) {
+    const post = patrolPost(k);
+    const e = makeEnemy('chaser', enemies.length);
+    e.patrol = true;
+    e.homeX = post.x; e.homeZ = post.z;
+    e.patrolA = k * 1.7;
+    e.aggroT = 0;
+    e.leashCd = 0;
+    e.x = post.x; e.z = post.z;
+    // 발밑 파란 링 = 순찰조라는 표시 (어그로를 끌어도 잠깐만 쫓아온다)
+    const ring = new THREE.Mesh(
+      selRingGeo,
+      new THREE.MeshBasicMaterial({ color: 0x6fa8ff, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    ring.scale.setScalar(enemyR(e) * 2.1);
+    scene.add(ring);
+    e.homeRing = ring;
+    enemies.push(e);
+  }
+  refreshReach();
+}
+
 function setEnemyCount(count) {
   while (enemies.length < count) enemies.push(makeEnemy('chaser', enemies.length));
   while (enemies.length > count) {
     const e = enemies.pop();
     scene.remove(e.vis.group);
     disposeBar(e.bar);
+    if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); }
   }
   refreshReach();
 }
@@ -1426,17 +1515,9 @@ function hireWorker(owner = 'p') {
   spend(owner, P.worker.cost);
   const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
   vis.group.scale.setScalar(P.worker.radius);
-  const ring = new THREE.Mesh(
-    selRingGeo,
-    new THREE.MeshBasicMaterial({ color: 0xf0c040, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.06;
-  ring.scale.setScalar(0.85);
-  ring.renderOrder = 996;
-  ring.visible = false;
-  scene.add(ring);
+  const ring = makeSelRing(0xf0c040, 0.85);
   const w = {
+    kind: 'worker',
     x: dep.cx + (Math.random() - 0.5) * 2, z: dep.cz + 1.6 + Math.random(),
     faceX: 0, faceZ: 1, carry: 0, pile: null, job: null, owner,
     // forced = 플레이어가 직접 지정한 더미 (자동 재배치가 덮어쓰지 않는다)
@@ -1454,38 +1535,44 @@ function disposeWorker(w) {
   scene.remove(w.ring);
   w.ring.material.dispose();
   disposeBar(w.workBar);
-  selectedWorkers.delete(w);
+  selectedUnits.delete(w);
 }
 
 function clearWorkers() {
   for (const w of workers) disposeWorker(w);
   workers.length = 0;
-  selectedWorkers.clear();
 }
 
-// ---- 일꾼 선택 & 명령 (스타 방식) ----
-// 드래그 상자로 여러 명을 잡고, 우클릭 한 번으로 더미를 찍어 일을 시킨다.
+// ---- 유닛 선택 & 명령 (스타 방식) ----
+// 일꾼과 방어병을 **하나의 선택 집합**으로 다룬다 (D51).
+// 빈손일 때는 좌클릭/좌드래그가 곧 선택 커서다 — 손에 뭘 들고 있을 때만 건설이다.
 // 한 더미의 정원(P.worker.perPile)은 명령으로도 못 넘는다 — D36의 확장 압박이
 // 조작 편의로 무너지면 안 되기 때문이다.
-const selectedWorkers = new Set();
+const selectedUnits = new Set();
 
-function workerAtWorld(x, z, maxD = 1.0) {
-  let best = null, bd = maxD;
-  for (const w of workers) {
-    if (w.owner !== 'p') continue;
-    const d = Math.hypot(w.x - x, w.z - z);
-    if (d < bd) { bd = d; best = w; }
+const myUnits = () => [...workers.filter((w) => w.owner === 'p'), ...guards];
+const selWorkers = () => [...selectedUnits].filter((u) => u.kind === 'worker' && workers.includes(u));
+const selGuards = () => [...selectedUnits].filter((u) => u.kind === 'guard' && guards.includes(u));
+
+// 유닛 집기는 **화면 좌표**로 한다.
+// 지면 좌표로 재면 카메라가 기울수록 몸통과 발밑이 어긋나 빗나가고,
+// 3인칭 시점에서는 아예 안 잡혔다.
+function unitAtScreen(clientX, clientY, maxPx = P.command.pickPx) {
+  let best = null, bd = maxPx;
+  for (const u of myUnits()) {
+    const s = worldToScreen(u.x, 0.55, u.z);
+    if (!s) continue;
+    const d = Math.hypot(s.x - clientX, s.y - clientY);
+    if (d < bd) { bd = d; best = u; }
   }
   return best;
 }
-
-const liveSelection = () => [...selectedWorkers].filter((w) => workers.includes(w));
 
 function commandWorkersToPile(pile) {
   const pw = cellToWorld(pile.i, pile.j);
   const dep = nearestDepot(pw.x, pw.z, 'p');   // "가까운 치즈창고"로 나른다
   let sent = 0, full = 0;
-  for (const w of liveSelection()) {
+  for (const w of selWorkers()) {
     if (w.pile !== pile && pileCrowd(pile) >= P.worker.perPile) { full++; continue; }
     w.pile = pile;
     w.forced = true;
@@ -1500,16 +1587,19 @@ function commandWorkersToPile(pile) {
   if (sent && !dep) flashMsg('내 치즈 창고가 없다 — 캐도 부릴 곳이 없다', '#e05050');
 }
 
-function commandWorkersMove(x, z) {
-  const list = liveSelection();
+// 선택된 유닛 전부에게 이동 명령 (일꾼 + 방어병)
+function commandUnitsMove(x, z) {
+  const list = [...selectedUnits].filter((u) => myUnits().includes(u));
   // 여러 명이면 황금각으로 흩어 목표를 준다 (한 점에 겹쳐 서지 않게)
-  list.forEach((w, k) => {
-    const a = k * 2.399963, r = k === 0 ? 0 : 0.55 * Math.sqrt(k);
-    w.moveGoal = { x: x + Math.cos(a) * r, z: z + Math.sin(a) * r };
-    w.idle = false; w.forced = false;
-    w.path.length = 0; w.repathT = 0;
+  list.forEach((u, k) => {
+    const a = k * 2.399963, r = k === 0 ? 0 : 0.6 * Math.sqrt(k);
+    const tx = x + Math.cos(a) * r, tz = z + Math.sin(a) * r;
+    if (u.kind === 'guard') { u.gx = tx; u.gz = tz; }
+    else { u.moveGoal = { x: tx, z: tz }; u.idle = false; u.forced = false; }
+    u.path.length = 0; u.repathT = 0;
   });
-  if (list.length) flashMsg(`일꾼 ${list.length}명 이동 (도착하면 대기)`, '#9fe8a0');
+  if (list.length) flashMsg(`${list.length}기 이동`, '#9fe8a0');
+  return list.length;
 }
 
 // 일꾼이 붙을 치즈더미 고르기 — 자리가 남은 것 중 창고에서 가까운 순
@@ -1604,7 +1694,7 @@ function updateWorkers(dt) {
     w.vis.group.position.set(w.x, 0, w.z);
     w.vis.group.rotation.y = Math.atan2(w.faceX, w.faceZ) + Math.PI;
     w.ring.position.set(w.x, 0.06, w.z);
-    w.ring.visible = selectedWorkers.has(w);
+    w.ring.visible = selectedUnits.has(w);
     setBar(w.workBar, (w.mineT || 0) / effMineTime(), w.x, barY(w.vis), w.z, did === 'mine');
     // 볼주머니가 찰수록 통통해진다
     const f = w.carry / P.carry.workerLoad;
@@ -1661,6 +1751,7 @@ function detonate(e) {
 
   scene.remove(e.vis.group);
   disposeBar(e.bar);
+  if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); e.homeRing = null; }
   const idx = enemies.indexOf(e);
   if (idx >= 0) enemies.splice(idx, 1);
   if (broke) { refreshClearance(); repathAll(); }
@@ -1679,6 +1770,7 @@ function damageEnemy(e, dmg) {
   for (let k = 0; k < 3; k++) spawnCheeseBit(e.x, e.z, null);
   scene.remove(e.vis.group);
   disposeBar(e.bar);
+  if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); e.homeRing = null; }
   const idx = enemies.indexOf(e);
   if (idx >= 0) enemies.splice(idx, 1);
   killCount++;
@@ -1743,39 +1835,73 @@ const projMat = new THREE.MeshStandardMaterial({
   emissive: new THREE.Color(0xd8a63a), emissiveIntensity: 0.5,
 });
 const selRingGeo = new THREE.RingGeometry(0.5, 0.62, 20);
-let selectedGuard = null;
 
-function makeGuardVis() {
-  const v = makeHamster(0x6f8f4f);
-  applyModel(v, 'worker', 0x5f7f3f, 0.62);            // 군용 올리브색
+function makeGuardVis(type) {
+  const T = GUARD_TYPES[type];
+  const v = makeHamster(T.body);
+  applyModel(v, 'worker', T.body, 0.62);
   const helm = new THREE.Mesh(
     new THREE.SphereGeometry(0.6, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: 0x44502f, roughness: 0.6 })
+    new THREE.MeshStandardMaterial({ color: T.helm, roughness: 0.6 })
   );
-  helm.position.set(0, 2.55, -0.1);
+  helm.position.set(0, 2.5, -0.1);
   helm.castShadow = true;
+  helm.userData.keep = true;
   v.group.add(helm);
-  v.group.scale.setScalar(P.guard.radius);
+  // 근접병은 등에 짧은 몽둥이, 정예병은 어깨 갑주 — 멀리서도 병종이 읽히게
+  if (type === 'melee') {
+    const club = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 1.5, 6),
+      new THREE.MeshStandardMaterial({ color: 0x6b4a22, roughness: 0.9 })
+    );
+    club.position.set(0.85, 1.5, 0.2);
+    club.rotation.z = -0.5;
+    club.castShadow = true;
+    club.userData.keep = true;
+    v.group.add(club);
+  }
+  if (type === 'elite') {
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(2.1, 0.55, 1.3),
+      new THREE.MeshStandardMaterial({ color: T.helm, roughness: 0.45, metalness: 0.35 })
+    );
+    pad.position.set(0, 1.8, 0);
+    pad.castShadow = true;
+    pad.userData.keep = true;
+    v.group.add(pad);
+  }
+  v.group.scale.setScalar(T.radius());
   return v;
 }
 
-function placeGuard(i, j) {
-  if (resources < P.guard.cost) { flashMsg(`치즈가 부족합니다 (방어병 ${P.guard.cost})`, '#e05050'); return null; }
-  if (obstacles.has(cellKey(i, j)) || nodeAt(i, j)) { flashMsg('그 자리에는 세울 수 없습니다', '#e05050'); return null; }
-  const w = cellToWorld(i, j);
-  if (Math.hypot(player.x - w.x, player.z - w.z) > P.wall.range + 1.0) { flashMsg('너무 멉니다', '#e05050'); return null; }
-  resources -= P.guard.cost;
-  const vis = makeGuardVis();
+function makeSelRing(color, scale = 1) {
   const ring = new THREE.Mesh(
     selRingGeo,
-    new THREE.MeshBasicMaterial({ color: 0x9fe8a0, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide })
   );
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.06;
+  ring.scale.setScalar(scale);
   ring.renderOrder = 996;
   ring.visible = false;
   scene.add(ring);
-  const g = { x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1, vis, ring, path: [], repathT: 0, reload: 0 };
+  return ring;
+}
+
+function placeGuard(i, j, type = 'archer') {
+  const T = GUARD_TYPES[type];
+  if (resources < T.cost()) { flashMsg(`치즈가 부족합니다 (${T.label} ${T.cost()})`, '#e05050'); return null; }
+  if (obstacles.has(cellKey(i, j)) || nodeAt(i, j)) { flashMsg('그 자리에는 세울 수 없습니다', '#e05050'); return null; }
+  const w = cellToWorld(i, j);
+  if (Math.hypot(player.x - w.x, player.z - w.z) > P.wall.range + 1.0) { flashMsg('너무 멉니다', '#e05050'); return null; }
+  resources -= T.cost();
+  const vis = makeGuardVis(type);
+  const maxHp = T.hp();
+  const g = {
+    kind: 'guard', type, x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1,
+    vis, ring: makeSelRing(0x9fe8a0, 1.05), path: [], repathT: 0, reload: 0,
+    hp: maxHp, maxHp, bar: maxHp > 0 ? makeBar(0x5fd07a, 1.0) : null, swing: 0,
+  };
   guards.push(g);
   spawnBuildFx(w.x, w.z);
   return g;
@@ -1785,24 +1911,16 @@ function removeGuard(g, byEnemy) {
   scene.remove(g.vis.group);
   scene.remove(g.ring);
   g.ring.material.dispose();
+  if (g.bar) disposeBar(g.bar);
   const k = guards.indexOf(g);
   if (k >= 0) guards.splice(k, 1);
-  if (selectedGuard === g) selectedGuard = null;
-  if (byEnemy) { spawnBuildFx(g.x, g.z); flashMsg('방어병이 쓰러졌다!', '#ff6b6b'); }
+  selectedUnits.delete(g);
+  if (byEnemy) { spawnBuildFx(g.x, g.z); flashMsg(`${GUARD_TYPES[g.type].label}이(가) 쓰러졌다!`, '#ff6b6b'); }
 }
 
 function clearGuards() {
   for (const g of [...guards]) removeGuard(g, false);
   projectiles.length = 0;
-}
-
-function guardAtWorld(x, z) {
-  let best = null, bd = 1.1;
-  for (const g of guards) {
-    const d = Math.hypot(g.x - x, g.z - z);
-    if (d < bd) { bd = d; best = g; }
-  }
-  return best;
 }
 
 // 던지기 — 포물선이라 벽을 넘어간다 (경비탑·방어병 공용)
@@ -1816,7 +1934,6 @@ function lobProjectile(x, y, z, e, dmg) {
     x0: x, y0: y, z0: z, target: e, dmg,
   });
 }
-const throwAt = (g, e) => lobProjectile(g.x, 0.9, g.z, e, P.guard.dmg);
 
 function updateProjectiles(dt) {
   for (let k = projectiles.length - 1; k >= 0; k--) {
@@ -1841,12 +1958,14 @@ function updateProjectiles(dt) {
 
 function updateGuards(dt) {
   for (const g of [...guards]) {
-    // 적과 접촉 → 즉시 쓰러짐
+    const T = GUARD_TYPES[g.type];
+    const gr = T.radius();
+    // 적과 접촉 — 사수는 즉사(D29 유지), 체력이 있는 병종은 물어뜯긴다
     for (const e of enemies) {
-      if (Math.hypot(g.x - e.x, g.z - e.z) < P.guard.radius + enemyR(e) - 0.02) {
-        removeGuard(g, true);
-        break;
-      }
+      if (Math.hypot(g.x - e.x, g.z - e.z) >= gr + enemyR(e) - 0.02) continue;
+      if (g.maxHp <= 0) { removeGuard(g, true); break; }
+      g.hp -= (typeP(e).bldgDps + threatLevel() * P.threat.dpsGain) * dt;
+      if (g.hp <= 0) { removeGuard(g, true); break; }
     }
     if (!guards.includes(g)) continue;
 
@@ -1856,7 +1975,7 @@ function updateGuards(dt) {
       g.repathT -= dt;
       if (g.repathT <= 0 || !g.path.length) {
         g.repathT = 0.4;
-        const pass = (i) => canPass(clearAll, i, P.guard.radius);
+        const pass = (i) => canPass(clearAll, i, gr);
         const res = astar(nearestPassableNav(g.x, g.z, pass), worldToNav(g.gx, g.gz), pass, () => 0);
         g.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
       }
@@ -1871,27 +1990,39 @@ function updateGuards(dt) {
         g.z += dz * P.guard.speed * dt;
         g.faceX = dx; g.faceZ = dz;
       }
-      collideWithObstacles(g, P.guard.radius);
+      collideWithObstacles(g, gr);
     } else {
       g.path.length = 0;
     }
 
-    // 사거리 안 적에게 투척 (가장 가까운 적)
+    // 사거리 안 가장 가까운 적을 친다 — 사수/정예병은 던지고(벽을 넘음), 근접병은 후려친다.
+    // 거리는 **적의 몸 표면까지**로 잰다. 중심 거리로 재면 반지름 1.35짜리 순찰묘는
+    // 몸이 닿아도 중심이 1.7m 밖이라 근접병이 영원히 못 때린다.
     g.reload -= dt;
-    let tgt = null, bd = P.guard.range;
+    let tgt = null, bd = T.range();
     for (const e of enemies) {
-      const d = Math.hypot(e.x - g.x, e.z - g.z);
+      const d = Math.hypot(e.x - g.x, e.z - g.z) - enemyR(e);
       if (d < bd) { bd = d; tgt = e; }
     }
     if (tgt) {
-      g.faceX = (tgt.x - g.x) / bd; g.faceZ = (tgt.z - g.z) / bd;
-      if (g.reload <= 0) { throwAt(g, tgt); g.reload = P.guard.reload; }
+      const dc = Math.max(Math.hypot(tgt.x - g.x, tgt.z - g.z), 0.001);
+      g.faceX = (tgt.x - g.x) / dc; g.faceZ = (tgt.z - g.z) / dc;
+      if (g.reload <= 0) {
+        if (T.melee) { damageEnemy(tgt, T.dmg()); g.swing = 0.22; }
+        else lobProjectile(g.x, 0.9, g.z, tgt, T.dmg());
+        g.reload = T.reload();
+      }
     }
 
-    g.vis.group.position.set(g.x, 0, g.z);
+    // 근접 휘두르기 모션 (앞으로 움찔)
+    g.swing = Math.max((g.swing || 0) - dt, 0);
+    const lunge = g.swing > 0 ? Math.sin((0.22 - g.swing) / 0.22 * Math.PI) * 0.3 : 0;
+    g.vis.group.position.set(g.x + g.faceX * lunge, 0, g.z + g.faceZ * lunge);
     g.vis.group.rotation.y = Math.atan2(g.faceX, g.faceZ) + Math.PI;
+    g.vis.group.scale.setScalar(gr);
     g.ring.position.set(g.x, 0.06, g.z);
-    g.ring.visible = selectedGuard === g;
+    g.ring.visible = selectedUnits.has(g);
+    if (g.bar) setBar(g.bar, g.hp / g.maxHp, g.x, barY(g.vis), g.z, g.hp < g.maxHp - 0.5);
   }
 }
 
@@ -2188,6 +2319,49 @@ function planEnemyPath(enemy) {
     enemy.aiMode = '서성임';
     return;
   }
+  // ---- 순찰조 (D52) ----
+  // 시야 안에 햄스터가 들어오면 추격 시간이 채워지고, 그동안은 아래의 일반 추격을 탄다.
+  // 시간이 다 되면 제 초소로 돌아가 둘레를 돈다 — "따라오다 포기하고 돌아가는" 그림.
+  if (gx === null && enemy.patrol) {
+    const hd0 = Math.hypot(enemy.homeX - enemy.x, enemy.homeZ - enemy.z);
+    if (hd0 > P.patrol.leash) {
+      // 줄이 끊겼다 — 시간이 남았어도 무조건 복귀한다.
+      // 시간만으로 끊으면, 쫓아가서 따라잡을 때마다 시야에 다시 걸려 영원히 쫓는다.
+      enemy.aggroT = 0;
+      enemy.leashCd = P.patrol.leashCool;
+    } else if (!(enemy.leashCd > 0)) {
+      let sd = P.patrol.sight;
+      for (const t of chaseTargets()) {
+        const d = Math.hypot(t.x - enemy.x, t.z - enemy.z);
+        if (d < sd) { sd = d; enemy.aggroT = P.patrol.chaseTime; }
+      }
+    }
+    if (!(enemy.aggroT > 0)) {
+      const hd = hd0;
+      let px, pz;
+      if (hd > P.patrol.radius * 1.7) {
+        px = enemy.homeX; pz = enemy.homeZ;      // 아직 멀다 → 초소로 복귀
+      } else {
+        for (const off of [0, 0.6, 1.2, 1.9, 2.6, Math.PI]) {
+          for (const sgn of off === 0 ? [1] : [1, -1]) {
+            const a = enemy.patrolA + sgn * off;
+            const cx = clamp(enemy.homeX + Math.cos(a) * P.patrol.radius, -HALF + 1, HALF - 1);
+            const cz = clamp(enemy.homeZ + Math.sin(a) * P.patrol.radius, -HALF + 1, HALF - 1);
+            if (canPass(clearAll, worldToNav(cx, cz), er)) { px = cx; pz = cz; break; }
+          }
+          if (px !== undefined) break;
+        }
+        if (px === undefined) { px = enemy.homeX; pz = enemy.homeZ; }
+      }
+      enemy.chaseTarget = null;
+      enemy.goalX = px; enemy.goalZ = pz;
+      const pr = astar(start, worldToNav(px, pz), passAll, () => 0);
+      enemy.path = pr.path.map((idx) => ({ ...navToWorld(idx), idx }));
+      enemy.aiMode = hd > P.patrol.radius * 1.7 ? '복귀' : '순찰';
+      return;
+    }
+  }
+
   let chased = null;
   if (gx === null) {
     const tBest = pickChaseTarget(enemy);
@@ -2354,7 +2528,8 @@ function cumulativeComposition() {
 function topUpToCurve() {
   const want = cumulativeComposition();
   const have = { chaser: 0, runner: 0, bomber: 0 };
-  for (const e of enemies) have[e.type]++;
+  // 순찰조는 웨이브 구성과 별개다 (죽여도 웨이브가 대신 채워주지 않는다 = 정리한 보람)
+  for (const e of enemies) if (!e.patrol) have[e.type]++;
   let added = 0;
   for (const ty of Object.keys(want))
     while (have[ty] < want[ty]) { enemies.push(makeEnemy(ty, enemies.length)); have[ty]++; added++; }
@@ -2416,6 +2591,13 @@ function updateEnemy(enemy, dt) {
   // 접근각 = 포위 링 슬롯(planEnemyPath에서 배정) + probeOff.
   // 평상시엔 probeOff가 0으로 잦아들어 제 슬롯을 지키고,
   // 막혀 있는 동안에는 커져서 슬롯 옆을 훑는다 = 벽 앞에서 밀지 않고 돌아본다.
+  // 순찰조: 추격 시간이 흐르고, 초소 둘레의 순찰 각도가 돈다
+  if (enemy.patrol) {
+    if (enemy.aggroT > 0) enemy.aggroT -= dt;
+    if (enemy.leashCd > 0) enemy.leashCd -= dt;
+    enemy.patrolA += P.patrol.turn * dt;
+    if (enemy.homeRing) enemy.homeRing.position.set(enemy.x, 0.05, enemy.z);
+  }
   if (enemy.probeT > 0) enemy.probeT -= dt;
   else enemy.probeOff *= Math.max(0, 1 - dt * 0.8);
   if (enemy.stallT > 0.15) enemy.probeOff += enemy.orbitDir * P.enemy.circleTurn * dt;
@@ -2638,7 +2820,7 @@ window.addEventListener('keydown', (e) => {
     if (buildJob) cancelBuild(true);
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (playerOrder) clearMineOrder('채굴 명령 취소');
-    else if (selectedWorkers.size) selectedWorkers.clear();
+    else if (selectedUnits.size) selectedUnits.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
   }
   if (e.code === 'KeyE' && alive) toggleMineOrder();
@@ -2684,18 +2866,29 @@ function drawSelBox() {
   selBoxEl.style.height = Math.abs(selDrag.y1 - selDrag.y0) + 'px';
 }
 
+// 좌드래그가 선택 상자가 되는 조건 (D51):
+//  · **빈손이면 언제나** (빈손 = 선택 커서. 건설할 게 손에 없으니 충돌하지 않는다)
+//  · 손에 뭘 들고 있어도 Shift를 누르거나 유닛 위에서 시작하면 선택
 function beginSelectDrag(e) {
   if (!alive) return false;
-  const hit = pointerGround(e);
-  const onWorker = hit && workerAtWorld(hit.x, hit.z, P.command.pickRange);
-  if (!e.shiftKey && !onWorker) return false;
-  // 드래그를 시작한 일꾼은 항상 포함한다 — 머리(빌보드 기준점)가 상자 위쪽
-  // 모서리 밖으로 삐져나가 "잡은 놈이 안 잡히는" 일이 없게
+  const onUnit = unitAtScreen(e.clientX, e.clientY);
+  if (!e.shiftKey && buildSlot >= 0 && !onUnit) return false;
+  // 드래그를 시작한 유닛은 항상 포함한다 — 기준점이 상자 모서리 밖으로
+  // 삐져나가 "잡은 놈이 안 잡히는" 일이 없게
   selDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY,
-              add: e.shiftKey, moved: false, seed: onWorker || null };
+              add: e.shiftKey, moved: false, seed: onUnit || null };
   selBoxEl.style.display = 'block';
   drawSelBox();
   return true;
+}
+
+function selectionMsg() {
+  const w = selWorkers().length, g = selGuards().length;
+  if (!w && !g) return;
+  const parts = [];
+  if (w) parts.push(`일꾼 ${w}`);
+  if (g) parts.push(`방어병 ${g}`);
+  flashMsg(`${parts.join(' · ')} 선택 — 우클릭으로 명령`, '#9fe8a0');
 }
 
 function finishSelectDrag(e) {
@@ -2705,27 +2898,21 @@ function finishSelectDrag(e) {
   if (d.moved) {
     const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1);
     const y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
-    if (!d.add) selectedWorkers.clear();
-    if (d.seed && workers.includes(d.seed)) selectedWorkers.add(d.seed);
+    if (!d.add) selectedUnits.clear();
+    if (d.seed) selectedUnits.add(d.seed);
     // 발밑과 머리 둘 중 하나만 상자에 들어와도 잡는다 (관대하게)
     const inBox = (s) => s && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1;
-    for (const w of workers) {
-      if (w.owner !== 'p') continue;
-      if (inBox(worldToScreen(w.x, 0, w.z)) || inBox(worldToScreen(w.x, 0.9, w.z)))
-        selectedWorkers.add(w);
-    }
+    for (const u of myUnits())
+      if (inBox(worldToScreen(u.x, 0, u.z)) || inBox(worldToScreen(u.x, 0.9, u.z)))
+        selectedUnits.add(u);
   } else {
-    const hit = pointerGround(e);
-    const w = hit && workerAtWorld(hit.x, hit.z, P.command.pickRange);
-    if (w) {
-      if (d.add && selectedWorkers.has(w)) selectedWorkers.delete(w);
-      else { if (!d.add) selectedWorkers.clear(); selectedWorkers.add(w); }
-    } else if (!d.add) selectedWorkers.clear();
+    const u = unitAtScreen(e.clientX, e.clientY);
+    if (u) {
+      if (d.add && selectedUnits.has(u)) selectedUnits.delete(u);
+      else { if (!d.add) selectedUnits.clear(); selectedUnits.add(u); }
+    } else if (!d.add) selectedUnits.clear();
   }
-  if (selectedWorkers.size) {
-    selectedGuard = null;
-    flashMsg(`일꾼 ${selectedWorkers.size}명 선택 — 치즈더미를 우클릭`, '#9fe8a0');
-  }
+  selectionMsg();
 }
 
 window.addEventListener('mousedown', (e) => {
@@ -2746,46 +2933,36 @@ window.addEventListener('mouseup', (e) => {
 window.addEventListener('contextmenu', (e) => {
   if (e.target === renderer.domElement) e.preventDefault();
 });
-// 우클릭 = 명령 (좌클릭은 건설이라 충돌을 피함)
-//  유닛 위 → 선택 / 치즈더미 → 채굴 명령 / 빈 땅 → 이동 명령
+// 우클릭 = 명령
+//  유닛 위 → 선택 / 치즈더미 → 채굴 명령 / 빈 땅 → 선택한 것 전부 이동
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 2 || e.target !== renderer.domElement || !alive) return;
+
+  // 1) 유닛 위 → 그 하나만 선택 (화면 좌표로 집는다 — 카메라 각도와 무관)
+  const u = unitAtScreen(e.clientX, e.clientY);
+  if (u) {
+    selectedUnits.clear(); selectedUnits.add(u);
+    selectionMsg();
+    return;
+  }
+
   const hit = pointerGround(e);
   if (!hit) return;
-
-  // 1) 유닛 위 → 그 하나만 선택
-  const w = workerAtWorld(hit.x, hit.z, P.command.pickRange);
-  if (w) {
-    selectedWorkers.clear(); selectedWorkers.add(w);
-    selectedGuard = null;
-    flashMsg('일꾼 선택 — 치즈더미를 우클릭하면 일 시작', '#9fe8a0');
-    return;
-  }
-  const g = guardAtWorld(hit.x, hit.z);
-  if (g) {
-    selectedGuard = g; selectedWorkers.clear();
-    flashMsg('방어병 선택 — 우클릭으로 이동 명령', '#9fe8a0');
-    return;
-  }
 
   // 2) 치즈더미 → 일꾼이 선택돼 있으면 일꾼에게, 아니면 내가 간다
   const pile = nearestPile(hit.x, hit.z, P.command.pickRange);
   if (pile) {
-    if (selectedWorkers.size) commandWorkersToPile(pile);
-    else setMineOrder(pile);
+    if (selWorkers().length) commandWorkersToPile(pile);
+    else if (!selGuards().length) setMineOrder(pile);
+    else commandUnitsMove(cellToWorld(pile.i, pile.j).x, cellToWorld(pile.i, pile.j).z);
     return;
   }
 
-  // 3) 빈 땅 → 이동 명령
+  // 3) 빈 땅 → 선택한 유닛 전부 이동
   const c = worldToCell(hit.x, hit.z);
   if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
   const cw = cellToWorld(c.i, c.j);
-  if (selectedWorkers.size) { commandWorkersMove(cw.x, cw.z); return; }
-  if (selectedGuard) {
-    selectedGuard.gx = cw.x; selectedGuard.gz = cw.z;
-    selectedGuard.repathT = 0;
-    selectedGuard.path.length = 0;
-  }
+  commandUnitsMove(cw.x, cw.z);
 });
 
 // 화면 좌표 → 바닥 평면 교점
@@ -3180,7 +3357,7 @@ function updatePlayer(dt) {
   } else if (buildPressed && hasTile) {
     if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower')
       startBuild(slot.key, gi, gj);
-    else if (slot.key === 'guard') placeGuard(gi, gj);
+    else if (GUARD_TYPES[slot.key]) placeGuard(gi, gj, slot.key);
     else if (slot.key === 'worker') hireWorker('p');
   }
 
@@ -3368,12 +3545,35 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.worker, 'cost', 5, 120, 1).name('일꾼 비용');
 }
 {
-  const f = gui.addFolder('방어병 (우클릭 명령)');
-  f.add(P.guard, 'cost', 5, 100, 1).name('비용');
-  f.add(P.guard, 'range', 2, 16, 0.5).name('투척 사거리');
-  f.add(P.guard, 'dmg', 2, 100, 1).name('투척 피해');
-  f.add(P.guard, 'reload', 0.2, 4, 0.1).name('투척 간격(초)');
-  f.add(P.guard, 'speed', 1, 12, 0.1).name('이동 속도');
+  const f = gui.addFolder('방어병 3종 (6 사수 · 7 근접병 · 8 정예병)');
+  f.add(P.guard, 'speed', 1, 12, 0.1).name('공통 이동 속도');
+  f.add(P.guard, 'radius', 0.15, 1, 0.05).name('공통 몸집');
+  f.add(P.guard, 'archerCost', 5, 150, 1).name('사수 비용');
+  f.add(P.guard, 'archerRange', 2, 16, 0.5).name('사수 사거리');
+  f.add(P.guard, 'archerDmg', 2, 120, 1).name('사수 피해');
+  f.add(P.guard, 'archerReload', 0.2, 4, 0.1).name('사수 투척 간격');
+  f.add(P.guard, 'meleeCost', 5, 150, 1).name('근접병 비용');
+  f.add(P.guard, 'meleeHp', 10, 1000, 10).name('근접병 체력');
+  f.add(P.guard, 'meleeRange', 0.3, 5, 0.1).name('근접병 사거리(몸 표면 기준)');
+  f.add(P.guard, 'meleeDmg', 2, 150, 1).name('근접병 피해');
+  f.add(P.guard, 'meleeReload', 0.2, 4, 0.1).name('근접병 공격 간격');
+  f.add(P.guard, 'eliteCost', 5, 250, 5).name('정예병 비용');
+  f.add(P.guard, 'eliteHp', 10, 2000, 10).name('정예병 체력');
+  f.add(P.guard, 'eliteRange', 2, 16, 0.5).name('정예병 사거리');
+  f.add(P.guard, 'eliteDmg', 2, 150, 1).name('정예병 피해');
+  f.add(P.guard, 'eliteReload', 0.2, 4, 0.1).name('정예병 공격 간격');
+}
+{
+  const f = gui.addFolder('순찰조 (맵 상주)');
+  f.add(P.patrol, 'count', 0, 10, 1).name('마릿수 (재시작부터)');
+  f.add(P.patrol, 'radius', 2, 16, 0.5).name('순찰 반경');
+  f.add(P.patrol, 'turn', 0, 1.5, 0.05).name('도는 속도');
+  f.add(P.patrol, 'sight', 3, 25, 0.5).name('발견 거리');
+  f.add(P.patrol, 'chaseTime', 1, 30, 0.5).name('추격 지속(초)');
+  f.add(P.patrol, 'leash', 5, 60, 1).name('초소에서 벗어나는 한계');
+  f.add(P.patrol, 'leashCool', 0, 15, 0.5).name('줄 끊긴 뒤 무시 시간');
+  f.add(P.patrol, 'postSpread', 0.2, 0.95, 0.02).name('초소 흩는 반경 (재시작부터)');
+  f.add(P.patrol, 'minFromSpawn', 0, 40, 1).name('내 시작점과 최소 거리');
 }
 {
   const f = gui.addFolder('적 체력 / 보상');
@@ -3542,12 +3742,12 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 기본은 빈손 — 1~7로 지을 것을 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
+  'WASD 이동 · 기본은 빈손 — 1~9로 지을 것을 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
+  '빈손일 때 좌클릭/드래그 = 유닛 선택 · 우클릭 = 명령 (더미=채굴 / 빈 땅=이동)\n' +
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
-  '한 방에 죽지 않는다. 공격을 맞아 체력이 다 깎여야 잡힌다 (예비동작 때 피할 것)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
-  '일꾼: Shift+드래그(또는 일꾼 위에서 드래그)로 다중 선택 → 더미 우클릭 = 채굴 / 빈 땅 우클릭 = 이동\n' +
-  '많이 잡으면 무리가 몰려온다 — 절제도 실력 · 우클릭: 방어병 이동 명령 · C 카메라 · R 재시작';
+  '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
+  '파란 링 = 순찰조. 발각되면 쫓아오지만 시간이 지나면 제 초소로 돌아간다 · C 카메라 · R 재시작';
 
 let alive = true;
 let paused = false;
@@ -3580,7 +3780,10 @@ function rebuildWorld(idx) {
   obstacles.clear();
   for (const n of nodes) { scene.remove(n.mesh); n.mesh.userData.mat.dispose(); }
   nodes.length = 0;
-  for (const e of enemies) { scene.remove(e.vis.group); disposeBar(e.bar); }
+  for (const e of enemies) {
+    scene.remove(e.vis.group); disposeBar(e.bar);
+    if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); }
+  }
   enemies.length = 0;
 
   buildGround(M.floor, M.gridColor);
@@ -3669,9 +3872,13 @@ function restart() {
   player.x = PLAYER_SPAWN.x; player.z = PLAYER_SPAWN.z;
   player.faceX = 0; player.faceZ = -1;
   // 적 무리 초기화 — 마릿수 슬라이더 변경분도 여기서 반영
-  for (const e of enemies) { scene.remove(e.vis.group); disposeBar(e.bar); }
+  for (const e of enemies) {
+    scene.remove(e.vis.group); disposeBar(e.bar);
+    if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); }
+  }
   enemies.length = 0;
   setEnemyCount(P.enemy.count);
+  spawnPatrols();          // 맵에 상주하는 순찰조 (웨이브와 별개)
   survival = 0;
   caughtCount = 0;
   grace = 0;
@@ -4039,7 +4246,10 @@ function enemyModeSummary() {
   const parts = Object.entries(c).map(([k, v]) => `${TYPE_INFO[k].label} ${v}`);
   const atk = enemies.filter((e) => e.isAttacking).length;
   const prowl = enemies.filter((e) => e.aiMode === '배회').length;
+  const patrol = enemies.filter((e) => e.patrol).length;
+  const onHunt = enemies.filter((e) => e.patrol && e.aggroT > 0).length;
   return parts.join(' · ')
+    + (patrol ? ` · 순찰 ${patrol}${onHunt ? `(${onHunt}마리 추격 중)` : ''}` : '')
     + (prowl ? ` · 막힘 ${prowl}` : '')
     + (atk ? ` · ${atk}마리 벽 부수는 중!` : '');
 }
@@ -4061,7 +4271,7 @@ function updateHUD() {
     (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
     `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개 · 일꾼 ${workers.length}` +
     (workers.filter((w) => w.idle).length ? ` (대기 ${workers.filter((w) => w.idle).length})` : '') +
-    (selectedWorkers.size ? ` · 선택 ${selectedWorkers.size}` : '') +
+    (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
     (playerOrder ? ' 🔁자동채굴(움직이면 취소)' : '') +
@@ -4184,7 +4394,8 @@ window.__game = {
   setEnemyCount, spawnBuildFx, hireWorker, workers, doCarryWork, nearestDepot,
   // 채굴 명령 (E · 우클릭 · 드래그 선택)
   nearestPile, setMineOrder, clearMineOrder, toggleMineOrder,
-  selectedWorkers, workerAtWorld, commandWorkersToPile, commandWorkersMove, worldToScreen,
+  selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
+  selWorkers, selGuards, GUARD_TYPES,
   get playerOrder() { return playerOrder; },
   get minePromptVisible() { return minePrompt.visible; },
   get playerJob() { return playerJob; },
@@ -4204,8 +4415,7 @@ window.__game = {
   set playerHp(v) { playerHp = v; },
   get allyHp() { return allyHp; },
   hurtHamster, detonate, lobProjectile,
-  get selectedGuard() { return selectedGuard; },
-  set selectedGuard(v) { selectedGuard = v; },
+
   get parts() { return parts; }, set parts(v) { parts = v; },
   MAPS, get mapIndex() { return mapIndex; }, setMap,
   ally, updateAlly, caught, gameOver,
