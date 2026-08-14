@@ -93,10 +93,14 @@ const P = {
   //   틈(CS-post) < 0.7 < 관문(√2·CS-post) → post ∈ (CS-0.7, √2·CS-0.7)
   // 원작 파일런의 성질이 여기서 나온다: 벽은 문이 아니라 체(sieve)다.
   // 벽은 **가서·바라보고·잠깐 서서** 짓는다 (D58, 원작 프로브).
-  //  range 1.8 = 이 거리까지 걸어가서 짓는다 (D60: 멀면 알아서 간다)
+  //  range 3.2 = **두 칸(3.0m)까지는 닿는다** (D67). 이 값이 핵심이다:
+  //   내 기둥 하나 너머 칸을 지으려면 기둥 앞에 서서 2.3m를 뻗어야 하는데,
+  //   나브 격자가 0.75m라 그 좁은 띠에 설 칸이 없다 → 길찾기가 **벽을 빙 돌아**
+  //   밖으로 나가는 경로를 냈다 (노출된 채 짓는 그림). 두 칸이면 한 칸 뒤에서 닿는다.
+  //   어디에 설지는 nearestBuildSpot이 고른다 — 가장 적게 움직이는 자리
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
-  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 1.8, post: 0.9,
+  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 3.2, post: 0.9,
           castTime: 0.3 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
@@ -294,8 +298,13 @@ const startResources = () => P.res.start;
 let CELLS = 56;
 const CS = 1.5;
 let HALF = (CELLS * CS) / 2;
-const navRes = CS / 2;
-let NAV = CELLS * 2;
+// 내비 격자 해상도 — 셀당 몇 칸인가 (D68).
+// 2(0.75m)로는 **대각 관문의 통로 폭 0.52m를 표현할 수 없어서**, 길찾기가
+// 은신처 밖으로 나가는 길 자체를 못 찾았다 (기둥 사이로 못 나감).
+// 4(0.375m)면 관문이 확실히 잡히고, 직교 틈(통로 0m)은 여전히 막힌다.
+const NAVPC = 2;
+const navRes = CS / NAVPC;
+let NAV = CELLS * NAVPC;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const cellKey = (i, j) => i + ',' + j;
@@ -571,7 +580,7 @@ let clearHam = null;    // 지형+건물만 막힘 — **햄스터 전용** (기
 // mode: 'all' = 전부 막힘 / 'bed' = 지형만 / 'noBldg' = 지형+벽 (건물은 통과 취급)
 function navBlocked(i, j, mode) {
   if (i <= 0 || j <= 0 || i >= NAV - 1 || j >= NAV - 1) return true; // 외곽 림
-  const ob = obstacles.get(cellKey(i >> 1, j >> 1));
+  const ob = obstacles.get(cellKey((i / NAVPC) | 0, (j / NAVPC) | 0));
   if (!ob) return false;
   if (mode === 'bed') return ob.bedrock;
   if (mode === 'noBldg') return ob.bedrock || !ob.bldgRef;
@@ -1227,12 +1236,19 @@ function nearestSafeSpot(x, z, r = P.ally.radius) {
   while (head < q.length && head < 9000) {
     const cur = q[head++];
     if (safeField[cur]) { found = cur; break; }
+    // **8방향**이어야 한다 (D68). 대각 관문은 대각으로만 지나갈 수 있어서,
+    // 4방향 BFS로는 은신처 밖으로 나가는 길을 못 찾는다 (A*는 원래 8방향이다).
     const cx = cur % NAV, cz = (cur / NAV) | 0;
     const push = (n) => { if (!seen[n] && pass(n)) { seen[n] = 1; q.push(n); } };
-    if (cx > 0) push(cur - 1);
-    if (cx < NAV - 1) push(cur + 1);
-    if (cz > 0) push(cur - NAV);
-    if (cz < NAV - 1) push(cur + NAV);
+    const L = cx > 0, R = cx < NAV - 1, U = cz > 0, D = cz < NAV - 1;
+    if (L) push(cur - 1);
+    if (R) push(cur + 1);
+    if (U) push(cur - NAV);
+    if (D) push(cur + NAV);
+    if (L && U) push(cur - NAV - 1);
+    if (R && U) push(cur - NAV + 1);
+    if (L && D) push(cur + NAV - 1);
+    if (R && D) push(cur + NAV + 1);
   }
   const cell = found === null ? null : navToWorld(found);
   safeCache = { t: survival, gen: safeGen, x, z, r, cell };
@@ -1617,6 +1633,41 @@ function stepToward(gx, gz, stopAt, dt) {
   return false;
 }
 
+// 목표를 지을 수 있는 **가장 가까운 자리**를 찾는다 (D67).
+// 목표 좌표로 곧장 A*를 돌리면 "목표 지점까지 가는 경로"가 나온다. 그래서 벽 줄 너머가
+// 목표일 때 **줄 끝까지 빙 돌아 밖으로 나가** 노출된 채 짓는 그림이 됐다.
+// 실제로 필요한 건 "목표에 손이 닿는 가장 가까운 서 있을 자리"다.
+// 내 위치에서 BFS로 넓혀가며 **사거리 안에 드는 첫 칸**을 고르면,
+// 벽 이쪽 편이면 이쪽 편에서, 은신처 안이면 목표 쪽 틈에서 빼꼼 내밀고 짓게 된다.
+function nearestBuildSpot(tx, tz, r, range) {
+  if (!clearHam) return null;
+  const pass = (i) => canPass(clearHam, i, r);
+  const start = nearestPassableNav(player.x, player.z, pass);
+  const seen = new Uint8Array(NAV * NAV);
+  const q = [start];
+  seen[start] = 1;
+  let head = 0;
+  while (head < q.length && head < 5000) {
+    const cur = q[head++];
+    const w = navToWorld(cur);
+    if (Math.hypot(w.x - tx, w.z - tz) <= range) return w;
+    // **8방향**이어야 한다 (D68). 대각 관문은 대각으로만 지나갈 수 있어서,
+    // 4방향 BFS로는 은신처 밖으로 나가는 길을 못 찾는다 (A*는 원래 8방향이다).
+    const cx = cur % NAV, cz = (cur / NAV) | 0;
+    const push = (n) => { if (!seen[n] && pass(n)) { seen[n] = 1; q.push(n); } };
+    const L = cx > 0, R = cx < NAV - 1, U = cz > 0, D = cz < NAV - 1;
+    if (L) push(cur - 1);
+    if (R) push(cur + 1);
+    if (U) push(cur - NAV);
+    if (D) push(cur + NAV);
+    if (L && U) push(cur - NAV - 1);
+    if (R && U) push(cur - NAV + 1);
+    if (L && D) push(cur + NAV - 1);
+    if (R && D) push(cur + NAV + 1);
+  }
+  return null;
+}
+
 // ---- 벽 명령 (D60) ----
 // 클릭 한 번이면 **거기에 지으러 간다는 명령**이 걸린다. 누르고 있을 필요 없다.
 //  · 사거리 밖이어도 된다 — 걸어가서 짓는다
@@ -1669,7 +1720,20 @@ function updateWallOrder(dt) {
       return;
     }
     // 2) 아직 멀면 걸어간다
-    if (dCen > P.wall.range) { stepToward(w.x, w.z, P.wall.range * 0.9, dt); wallCast = null; return; }
+    if (dCen > P.wall.range) {
+      // 목표가 아니라 **시공 자리**로 간다 (D67). 0.4초마다 다시 고른다.
+      o.spotT = (o.spotT || 0) - dt;
+      if (!o.spot || o.spotT <= 0) {
+        o.spot = nearestBuildSpot(w.x, w.z, P.player.radius, P.wall.range - navRes * 0.5);
+        o.spotT = 0.4;
+      }
+      // 격자에 걸리는 자리를 못 찾으면 목표로 직행한다 (조용히 취소하지 않는다).
+      // 어차피 매 프레임 사거리를 연속값으로 다시 재므로, 가까워지면 거기서 짓는다.
+      if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt);
+      else stepToward(w.x, w.z, P.wall.range - 0.05, dt);
+      wallCast = null;
+      return;
+    }
 
     // 3) 도착 — 그 칸을 보고 잠깐 서서 짓는다 (무방비 구간)
     const fx = w.x - player.x, fz = w.z - player.z;
@@ -1723,7 +1787,17 @@ function updateBuildOrder(dt) {
                clamp(cz + az * (tooClose + 0.3), -HALF + 1, HALF - 1), 0.15, dt);
     return;
   }
-  if (d > P.wall.range + 1.0) { stepToward(cx, cz, P.wall.range + 0.7, dt); return; }
+  const reach = P.wall.range + CS * 0.5;
+  if (d > reach) {
+    o.spotT = (o.spotT || 0) - dt;
+    if (!o.spot || o.spotT <= 0) {
+      o.spot = nearestBuildSpot(cx, cz, P.player.radius, reach - navRes * 0.5);
+      o.spotT = 0.4;
+    }
+    if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt);
+    else stepToward(cx, cz, reach - 0.05, dt);
+    return;
+  }
   if (err) return;   // 사거리엔 왔는데 적이 자리에 있다 — 비킬 때까지 대기
   startBuild(o.kind, o.i, o.j);
   buildOrder = null;
@@ -2935,7 +3009,7 @@ function planEnemyPath(enemy) {
 
   // ---- 돌파 경로: 가로막는 아군 구조물을 부수며 뚫고 온다 ----
   // 파괴묘: 벽+건물 전부 / 순찰묘·날쌘묘: 건물만 (벽은 여전히 절대 못 부숨)
-  const obAt = (idx) => obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
+  const obAt = (idx) => obstacles.get(cellKey(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0));
   const canBreakOb = (ob) =>
     ob && !ob.bedrock && (canBreakWalls(enemy) || !!ob.bldgRef);
   const passBreak = canBreakWalls(enemy)
@@ -3229,7 +3303,7 @@ function updateEnemy(enemy, dt) {
   if (enemy.aiMode === '파괴') {
     for (let k = 0; k < Math.min(enemy.path.length, 6); k++) {
       const idx = enemy.path[k].idx;
-      const ob = obstacles.get(cellKey((idx % NAV) >> 1, ((idx / NAV) | 0) >> 1));
+      const ob = obstacles.get(cellKey(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0));
       if (!ob || ob.bedrock || !ob.bldgRef) continue;  // 벽은 무적, 건물만
       if (distToObstacle(enemy, ob) <= reach) {
         enemy.attackTarget = ob;
@@ -4472,7 +4546,7 @@ function rebuildWorld(idx) {
   mapIndex = idx;
   CELLS = M.size;
   HALF = (CELLS * CS) / 2;
-  NAV = CELLS * 2;
+  NAV = CELLS * NAVPC;
 
   // 기존 월드 오브젝트 정리
   for (const b of [...buildings]) destroyBuilding(b, false);
@@ -5154,7 +5228,7 @@ window.__game = {
   get buildJob() { return buildJob; },
   get wallCast() { return wallCast; }, get wallOrders() { return wallOrders; },
   get buildOrder() { return buildOrder; },
-  wallSpotOk, clearWallOrders,
+  wallSpotOk, clearWallOrders, nearestBuildSpot,
   get ghostCell() { return ghostCell; }, get ghostWhy() { return ghostWhy; },
   startBuild, cancelBuild, pickShelter, shelterTodo,
   buildings, placeBuilding, destroyBuilding, STAGES,
