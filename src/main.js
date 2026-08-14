@@ -1532,6 +1532,34 @@ function toggleMineOrder() {
 }
 
 // 명령 수행 — 볼주머니가 비었으면 더미로, 찼으면 창고로 걸어간다
+// 기둥 회피 조향 (D65).
+// 길찾기(clearHam)는 기둥을 아예 무시하므로 **경로가 기둥을 관통**할 수 있다.
+// 그대로 밀면 물리가 밀어내고 조향이 다시 밀어붙여 제자리에서 떤다(파닥거림).
+// 진행 방향 앞에 있는 기둥을 옆으로 흘려보내는 성분을 더해 준다.
+function steerAroundPosts(x, z, dx, dz, r) {
+  let sx = dx, sz = dz;
+  const need = P.wall.post / 2 + r + 0.15;
+  const reach = need + CS * 1.2;
+  const c = worldToCell(x, z);
+  for (let dj = -2; dj <= 2; dj++)
+    for (let di = -2; di <= 2; di++) {
+      const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+      if (!ob || ob.bedrock || ob.bldgRef) continue;
+      const w = cellToWorld(ob.i, ob.j);
+      const ox = w.x - x, oz = w.z - z;
+      const ahead = ox * dx + oz * dz;          // 진행 방향 성분 (뒤에 있으면 무시)
+      if (ahead <= 0 || ahead > reach) continue;
+      const perp = ox * -dz + oz * dx;          // 좌우 성분
+      if (Math.abs(perp) >= need) continue;     // 이미 옆으로 충분히 비껴 있다
+      const push = (need - Math.abs(perp)) / need;
+      const sign = perp >= 0 ? -1 : 1;          // 기둥이 있는 반대쪽으로
+      sx += -dz * sign * push * 1.6;
+      sz += dx * sign * push * 1.6;
+    }
+  const l = Math.hypot(sx, sz);
+  return l > 1e-6 ? { x: sx / l, z: sz / l } : { x: dx, z: dz };
+}
+
 // 목표까지 A*로 한 걸음 걷는다 (명령 수행용 공용 이동). 도착했으면 true.
 // 채굴 명령과 벽 명령이 같은 경로 캐시를 쓴다 — 둘은 동시에 살아 있지 않다.
 function stepToward(gx, gz, stopAt, dt) {
@@ -1551,9 +1579,10 @@ function stepToward(gx, gz, stopAt, dt) {
   const dl = Math.hypot(dx, dz);
   if (dl > 0.03) {
     dx /= dl; dz /= dl;
-    player.x += dx * effPlayerSpeed() * dt;
-    player.z += dz * effPlayerSpeed() * dt;
-    player.faceX = dx; player.faceZ = dz;
+    const st = steerAroundPosts(player.x, player.z, dx, dz, P.player.radius);
+    player.x += st.x * effPlayerSpeed() * dt;
+    player.z += st.z * effPlayerSpeed() * dt;
+    player.faceX = st.x; player.faceZ = st.z;
   }
   return false;
 }
@@ -1953,9 +1982,10 @@ function updateWorkers(dt) {
       const dl = Math.hypot(dx, dz);
       if (dl > 0.03) {
         dx /= dl; dz /= dl;
-        w.x += dx * effWorkerSpeed() * dt;
-        w.z += dz * effWorkerSpeed() * dt;
-        w.faceX = dx; w.faceZ = dz;
+        const st = steerAroundPosts(w.x, w.z, dx, dz, P.worker.radius);
+        w.x += st.x * effWorkerSpeed() * dt;
+        w.z += st.z * effWorkerSpeed() * dt;
+        w.faceX = st.x; w.faceZ = st.z;
       }
       collideWithObstacles(w, P.worker.radius);
     }
@@ -2291,9 +2321,10 @@ function updateGuards(dt) {
       const dl = Math.hypot(dx, dz);
       if (dl > 0.03) {
         dx /= dl; dz /= dl;
-        g.x += dx * effGuardSpeed() * dt;
-        g.z += dz * effGuardSpeed() * dt;
-        g.faceX = dx; g.faceZ = dz;
+        const st = steerAroundPosts(g.x, g.z, dx, dz, gr);
+        g.x += st.x * effGuardSpeed() * dt;
+        g.z += st.z * effGuardSpeed() * dt;
+        g.faceX = st.x; g.faceZ = st.z;
       }
       collideWithObstacles(g, gr);
     } else {
@@ -2909,13 +2940,34 @@ function planEnemyPath(enemy) {
 // 들어오는 일이 생겼고, 그때 벽을 뚫고 때리는 것처럼 보였다.
 // 통행 판정(clearance)이 아니라 **셀 점유**로 재는 게 핵심 — 손이 닿느냐의 문제다.
 function segmentBlocked(x0, z0, x1, z1) {
-  const len = Math.hypot(x1 - x0, z1 - z0);
+  const dx = x1 - x0, dz = z1 - z0;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return false;
+  const ux = dx / len, uz = dz / len;
   const steps = Math.max(1, Math.ceil(len / (CS * 0.4)));
+  const checked = new Set();
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
-    const c = worldToCell(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
-    const ob = obstacles.get(cellKey(c.i, c.j));
-    if (ob) return true;
+    const c = worldToCell(x0 + dx * t, z0 + dz * t);
+    for (let dj = -1; dj <= 1; dj++)
+      for (let di = -1; di <= 1; di++) {
+        const key = cellKey(c.i + di, c.j + dj);
+        if (checked.has(key)) continue;
+        checked.add(key);
+        const ob = obstacles.get(key);
+        if (!ob) continue;
+        const w = cellToWorld(ob.i, ob.j);
+        // 선분에서 이 장애물 중심까지의 최단 거리
+        const proj = clamp((w.x - x0) * ux + (w.z - z0) * uz, 0, len);
+        const nx = x0 + ux * proj, nz = z0 + uz * proj;
+        if (ob.bedrock || ob.bldgRef) {
+          if (Math.abs(w.x - nx) <= CS / 2 && Math.abs(w.z - nz) <= CS / 2) return true;
+        } else if (Math.hypot(w.x - nx, w.z - nz) < P.wall.post / 2) {
+          // 기둥은 **원**이다 (D65). 셀로 재면 기둥 옆 빈틈까지 가려져서,
+          // 기둥 두 개 사이에 서 있으면 아무도 못 때리는 무적 지대가 생겼다.
+          return true;
+        }
+      }
   }
   return false;
 }
@@ -3974,6 +4026,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('적 등장까지(초)');
   f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
   f.add(P.chaser, 'reward', 0, 60, 1).name('처치 보상 (순찰묘)');
+  f.add(P.enemy, 'attackRange', 0, 4, 0.1).name('적 공격 사거리(+몸)');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('레벨당 적 체력 +');
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('레벨당 적 속도 + (0=고정)');
 
@@ -4831,6 +4884,8 @@ function updateAlly(dt) {
       dx += rx; dz += rz;
       const l2 = Math.hypot(dx, dz) || 1;
       dx /= l2; dz /= l2;
+      const st = steerAroundPosts(ally.x, ally.z, dx, dz, P.ally.radius);
+      dx = st.x; dz = st.z;
       ally.x += dx * effAllySpeed() * dt;
       ally.z += dz * effAllySpeed() * dt;
       ally.faceX = dx; ally.faceZ = dz;
