@@ -86,7 +86,16 @@ const P = {
             blastRadius: 1.7, fuse: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
-  wall: { cost: 12, removeCost: 4, cooldown: 0.15, height: 1.1, range: 3.0 },
+  // post = 벽 기둥의 한 변 길이 (D57). 셀(1.0)보다 작아서 **틈이 생긴다**:
+  //   직교로 붙이면 틈 1.0-0.4 = 0.6  → 플레이어(지름 0.7)도 못 지나감 = 진짜 벽
+  //   대각으로 붙이면 틈 √2×0.6 = 0.85 → **플레이어만 통과**, 순찰묘(2.7)·날쌘묘(1.7)는 불가
+  // 원작 파일런의 성질이 여기서 나온다: 벽은 문이 아니라 체(sieve)다.
+  // 벽은 **가서·바라보고·잠깐 서서** 짓는다 (D58, 원작 프로브).
+  //  range 1.2 = 그 칸 바로 앞까지 가야 한다 / faceDot = 그 방향을 보고 있어야 한다
+  //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
+  //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
+  wall: { cost: 12, removeCost: 4, cooldown: 0.05, height: 1.5, range: 1.2, post: 0.4,
+          castTime: 0.3, faceDot: 0.2 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
@@ -391,7 +400,9 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   const mesh = new THREE.Mesh(wallGeo, mat);
   const h = bedrock ? 1.4 : P.wall.height * (building ? 0.15 : 1);
   const w = cellToWorld(i, j);
-  mesh.scale.set(CS * 0.98, h, CS * 0.98);
+  // 플레이어 벽만 가느다란 기둥 — 틈이 보여야 "지나갈 수 있겠다"가 읽힌다
+  const side = bedrock || building ? CS * 0.98 : P.wall.post;
+  mesh.scale.set(side, h, side);
   mesh.position.set(w.x, h / 2, w.z);
   mesh.castShadow = mesh.receiveShadow = true;
   scene.add(mesh);
@@ -2381,6 +2392,13 @@ function clearPickups() {
 //  → "덩치가 커서 좁은 틈을 못 지나감"의 근본 구현.
 //  틈의 반폭 < 반지름이면 양쪽 벽이 동시에 밀어내서 물리적으로 통과 불가.
 // ============================================================
+// 장애물의 실제 물리 반폭 (D57).
+// **플레이어가 세운 벽은 셀 전체가 아니라 가운데 기둥**이다 — 원작 파일런처럼.
+//   · 직교로 붙인 두 기둥 사이 틈 = CS - post  (플레이어도 못 지나감 = 벽)
+//   · 대각으로 붙인 두 기둥 사이 틈 = √2 × (CS - post)  (**플레이어만 통과**)
+// 지형(bedrock)과 건물은 예전처럼 셀을 꽉 채운다.
+const obHalf = (ob) => (ob.bedrock || ob.bldgRef ? CS / 2 : P.wall.post / 2);
+
 function collideWithObstacles(ent, r) {
   for (let pass = 0; pass < 3; pass++) {
     const c = worldToCell(ent.x, ent.z);
@@ -2389,8 +2407,9 @@ function collideWithObstacles(ent, r) {
         const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
         if (!ob) continue;
         const w = cellToWorld(ob.i, ob.j);
-        const x0 = w.x - CS / 2, x1 = w.x + CS / 2;
-        const z0 = w.z - CS / 2, z1 = w.z + CS / 2;
+        const h = obHalf(ob);
+        const x0 = w.x - h, x1 = w.x + h;
+        const z0 = w.z - h, z1 = w.z + h;
         const px = clamp(ent.x, x0, x1);
         const pz = clamp(ent.z, z0, z1);
         let dx = ent.x - px, dz = ent.z - pz;
@@ -2419,8 +2438,9 @@ function collideWithObstacles(ent, r) {
 
 function distToObstacle(ent, ob) {
   const w = cellToWorld(ob.i, ob.j);
-  const px = clamp(ent.x, w.x - CS / 2, w.x + CS / 2);
-  const pz = clamp(ent.z, w.z - CS / 2, w.z + CS / 2);
+  const h = obHalf(ob);
+  const px = clamp(ent.x, w.x - h, w.x + h);
+  const pz = clamp(ent.z, w.z - h, w.z + h);
   return Math.hypot(ent.x - px, ent.z - pz);
 }
 
@@ -3576,6 +3596,7 @@ function updatePlayer(dt) {
     if (ml > 1e-4) {
       // 직접 움직이면 채굴 명령은 즉시 풀린다 — 개입이 항상 우선이다
       if (playerOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
+      wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
       mx /= ml; mz /= ml;
       player.x += mx * effPlayerSpeed() * dt;
       player.z += mz * effPlayerSpeed() * dt;
@@ -3616,10 +3637,13 @@ function updatePlayer(dt) {
            !playerStunned && playerHp < P.player.hp - 0.5);
     const mining = playerJob === 'mine';
     const building = !!buildJob;
+    const casting = !!wallCast;
     setBar(playerWorkBar,
-           building ? buildJob.t / buildJob.dur : (player.mineT || 0) / effMineTime(),
+           casting ? wallCast.t / P.wall.castTime
+                   : building ? buildJob.t / buildJob.dur
+                   : (player.mineT || 0) / effMineTime(),
            player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z,
-           mining || building);
+           mining || building || casting);
   }
 
   // ---- 건설 고스트: 마우스가 가리키는 타일 + 선택 슬롯의 발자국 ----
@@ -3659,14 +3683,33 @@ function updatePlayer(dt) {
       const occupied = obstacles.has(cellKey(gi, gj));
       const inRange = distCellToPoint(gi, gj, player.x, player.z) <= P.wall.range;
       const onNode = !!nodeAt(gi, gj);
-      const hitsPlayer = distCellToPoint(gi, gj, player.x, player.z) < P.player.radius + 0.02;
+      // "누가 서 있는 자리인가"는 **기둥 크기**로 잰다 (D57).
+      // 셀 전체로 재면 바로 앞 칸이 늘 '내가 서 있는 자리'가 되어,
+      // 사거리 안이면서 동시에 지을 수 있는 띠가 사라진다 (사각지대가 생겼었다).
+      const postR = (slot.key === 'wall' ? P.wall.post : CS) / 2;
+      const dCen = Math.hypot(w.x - player.x, w.z - player.z);
+      const hitsPlayer = dCen < postR + P.player.radius + 0.02;
       let hitsEnemy = false;
       for (const e of enemies)
-        if (distCellToPoint(gi, gj, e.x, e.z) < enemyR(e) + 0.02) { hitsEnemy = true; break; }
-      const allyBlock = ally.active && distCellToPoint(gi, gj, ally.x, ally.z) < P.ally.radius + 0.02
-        && slot.key === 'wall';
-      valid = inRange && !occupied && !onNode && !hitsPlayer && !hitsEnemy && !allyBlock && affordable
-;
+        if (Math.hypot(w.x - e.x, w.z - e.z) < postR + enemyR(e) + 0.02) { hitsEnemy = true; break; }
+      const allyBlock = ally.active && slot.key === 'wall'
+        && Math.hypot(w.x - ally.x, w.z - ally.z) < postR + P.ally.radius + 0.02;
+      // 벽은 **그 방향을 보고 있어야** 지어진다 (D58). 시전 중이면 이미 그쪽을 보므로 통과
+      let facing = true;
+      if (slot.key === 'wall' && !wallCast) {
+        const cw2 = cellToWorld(gi, gj);
+        const fx = cw2.x - player.x, fz = cw2.z - player.z;
+        const fl = Math.hypot(fx, fz);
+        facing = fl < 0.6 ||
+          (player.faceX * fx + player.faceZ * fz) / fl >= P.wall.faceDot;
+      }
+      valid = inRange && facing && !occupied && !onNode && !hitsPlayer && !hitsEnemy
+        && !allyBlock && affordable;
+      // 왜 못 짓는지 (디버그 훅 + 아래 HUD 힌트용)
+      ghostWhy = !affordable ? '치즈 부족' : occupied ? '이미 뭔가 있음' : onNode ? '치즈더미 위'
+        : hitsPlayer ? '내가 서 있는 자리' : hitsEnemy ? '적이 서 있는 자리'
+        : allyBlock ? '동료가 서 있는 자리' : !inRange ? '더 가까이 가야 함'
+        : !facing ? '그쪽을 바라봐야 함' : '';
     }
   }
   ghostCell = { i: gi, j: gj, valid };
@@ -3679,6 +3722,10 @@ function updatePlayer(dt) {
   } else if (slot.key === 'trap' || slot.key === 'decoy') {
     ghost.scale.set(CS * 0.9, 0.15, CS * 0.9);
     ghost.position.set(w.x, 0.08, w.z);
+  } else if (slot.key === 'wall') {
+    // 고스트도 기둥 크기로 — 세우기 전에 틈이 얼마나 남는지 보여야 한다
+    ghost.scale.set(P.wall.post, P.wall.height, P.wall.post);
+    ghost.position.set(w.x, P.wall.height / 2, w.z);
   } else {
     ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
     ghost.position.set(w.x, P.wall.height / 2, w.z);
@@ -3691,16 +3738,28 @@ function updatePlayer(dt) {
   // 벽: 홀드하면 쿨다운마다 연속 설치 / 나머지: 누르는 순간 1회
   buildCooldown -= dt;
   if (slot.key === 'wall') {
-    if (wantBuild && buildCooldown <= 0 && valid) {
-      resources -= P.wall.cost;
-      const ob = addObstacle(gi, gj, false);
-      refreshClearance();
-      repathAll();
-      ob.mesh.scale.y = 0.02;
-      ob.mesh.position.y = 0.01;
-      popping.push({ ob, t: 0 });
-      spawnBuildFx(w.x, w.z);
-      buildCooldown = P.wall.cooldown;
+    // 가서 · 바라보고 · 잠깐 서서 (D58). 그 0.3초가 무방비 시간이다.
+    if (wantBuild && valid && buildCooldown <= 0) {
+      if (!wallCast || wallCast.i !== gi || wallCast.j !== gj) wallCast = { i: gi, j: gj, t: 0 };
+      wallCast.t += dt;
+      // 시전 중에는 그 칸을 바라본다 (원작 프로브처럼)
+      const fx = w.x - player.x, fz = w.z - player.z;
+      const fl = Math.hypot(fx, fz);
+      if (fl > 0.05) { player.faceX = fx / fl; player.faceZ = fz / fl; }
+      if (wallCast.t >= P.wall.castTime) {
+        resources -= P.wall.cost;
+        const ob = addObstacle(gi, gj, false);
+        refreshClearance();
+        repathAll();
+        ob.mesh.scale.y = 0.02;
+        ob.mesh.position.y = 0.01;
+        popping.push({ ob, t: 0 });
+        spawnBuildFx(w.x, w.z);
+        wallCast = null;
+        buildCooldown = P.wall.cooldown;
+      }
+    } else if (!wantBuild || !valid) {
+      wallCast = null;
     }
   } else if (slot.key === 'remove') {
     if (wantBuild && buildCooldown <= 0 && valid) {
@@ -3726,6 +3785,8 @@ function updatePlayer(dt) {
 // ---- 건물 건설 (시간 소요 · 무방비) ----
 // 짓는 동안 플레이어는 그 자리에 묶인다. ESC로 중단하면 펑 터지고 자원을 돌려받는다.
 let buildJob = null;   // { b, t, dur, cost }
+let wallCast = null;   // { i, j, t } — 벽 시전 중 (D58). 이동하면 즉시 null
+let ghostWhy = '';     // 지금 그 칸에 못 짓는 이유 (HUD 힌트 + 디버그)
 
 function buildTimeOf(kind) {
   return kind === 'depot' ? P.build.depotTime
@@ -3858,6 +3919,14 @@ const gui = new GUI({ title: '튜닝' });
   const f = gui.addFolder('자원');
   f.add(P.wall, 'cost', 1, 60, 1).name('벽 비용');
   f.add(P.wall, 'removeCost', 0, 30, 1).name('철거 비용');
+  f.add(P.wall, 'post', 0.15, 1, 0.02).name('벽 기둥 굵기 (틈 = 1-굵기)').onChange(() => {
+    for (const ob of obstacles.values())
+      if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
+  });
+  f.add(P.wall, 'height', 0.4, 3, 0.1).name('벽 높이');
+  f.add(P.wall, 'range', 0.4, 6, 0.1).name('벽 설치 거리 (가까이 가야 함)');
+  f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 시전 시간(초) — 무방비');
+  f.add(P.wall, 'faceDot', -1, 1, 0.05).name('바라봐야 하는 정도 (-1=아무 방향)');
   f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
   f.add(P.res, 'nodeAmount', 50, 2000, 10).name('더미 매장량 (재시작부터)');
 }
@@ -4022,7 +4091,7 @@ function applySettings(s) {
   for (const e of enemies) e.vis.group.scale.setScalar(enemyR(e));
   for (const ob of obstacles.values()) {
     if (ob.bedrock || ob.building) continue;
-    ob.mesh.scale.y = P.wall.height;
+    ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
     ob.mesh.position.y = P.wall.height / 2;
   }
   repathAll();
@@ -4116,7 +4185,9 @@ const helpEl = document.getElementById('help');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
-  'WASD 이동 · 기본은 빈손 — 1~9로 지을 것을 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
+  'WASD 이동 · 기본은 빈손 — 1~9로 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
+  '벽은 **가서 · 바라보고 · 0.3초 서서** 짓는다. 그 사이 움직이면 취소 — 잠깐 무방비다\n' +
+  '벽은 기둥이다: 직교로 붙이면 아무도 못 지나가고, **대각으로 붙이면 나만 지나간다**\n' +
   '빈손일 때 좌클릭/드래그 = 유닛 선택 · 우클릭 = 명령 (더미=채굴 / 빈 땅=이동)\n' +
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
@@ -4212,6 +4283,7 @@ function restart() {
   orderPath = [];
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   buildJob = null;
+  wallCast = null;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
   ally.buildCd = 0;
@@ -4429,7 +4501,11 @@ function flashMsg(text, color = '#6ee07a') {
 //  햄스터만 드나든다. 코어 규칙을 AI가 스스로 이용하는 모습이 보인다.
 let allyGrace = 0;
 
-const ALLY_RING = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+// 은신처는 **대각 네 기둥**이다 (D57 이후). 3x3 링에서 한 칸 비우던 옛 방식은
+// 벽 7개(84치즈)가 들고, 무엇보다 **플레이어에게 나쁜 패턴을 시범 보였다.**
+// 기둥 4개(48치즈)면 고양이는 못 들어오고 햄스터는 네 방향으로 드나든다.
+// 동료가 이걸 짓는 걸 보는 게 이 게임의 유일한 튜토리얼이다.
+const ALLY_RING = [[-1,-1],[1,-1],[-1,1],[1,1]];
 
 // 은신처 자리 고르기 — 적 스폰과 내 스폰에서 떨어진, 3x3이 비는 곳
 function pickShelter() {
@@ -4462,8 +4538,8 @@ function shelterTodo() {
     const ci = i + di, cj = j + dj;
     if (!obstacles.has(cellKey(ci, cj))) missing.push([ci, cj]);
   }
-  // 1칸은 출입구 — 남은 게 1개면 완성으로 본다
-  return missing.length <= 1 ? null : missing;
+  // 네 기둥이 다 서야 완성이다 (출입구는 기둥 사이 틈이라 따로 비울 필요가 없다)
+  return missing.length ? missing : null;
 }
 
 function updateAlly(dt) {
@@ -4680,6 +4756,8 @@ function updateHUD() {
     (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
+    (wallCast ? ' · 벽 세우는 중 (움직이면 취소)' : '') +
+    (buildSlot >= 0 && !ghostCell.valid && ghostWhy ? ` · ⚠ ${ghostWhy}` : '') +
     (playerOrder ? ' 🔁자동채굴(움직이면 취소)' : '') +
     (playerJob === 'mine' ? ' ⛏채굴' : playerJob === 'drop' ? ' 📦하역' : '') +
     (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') +
@@ -4812,6 +4890,8 @@ window.__game = {
   get playerJob() { return playerJob; },
   get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
   get buildJob() { return buildJob; },
+  get wallCast() { return wallCast; },
+  get ghostCell() { return ghostCell; }, get ghostWhy() { return ghostWhy; },
   startBuild, cancelBuild, pickShelter, shelterTodo,
   buildings, placeBuilding, destroyBuilding, STAGES,
   get stage() { return stage; },
