@@ -151,7 +151,10 @@ const P = {
     costGrowth: 0.15,
   },
   res: {
-    startWalls: 10, wallCost: 5,
+    // 시작 치즈는 **개수로 직접** 정한다. 예전엔 '벽 N개분'(startWalls × wallCost)이라
+    // 벽값을 만질 때마다 시작 자금이 같이 흔들렸다 (벽값 1로 내리니 10치즈가 됐다).
+    start: 40,
+    startWalls: 10, wallCost: 5,   // (구값 — 지금은 안 쓴다)
     // 치즈더미는 유한하고 다시 차지 않는다. 바닥나면 새 더미를 확보하러 나가야 한다
     // = 영역 확장 압박 (01 문서의 "공간 욕심 vs 벽 길이")
     nodeAmount: 2700,
@@ -280,7 +283,7 @@ const TYPE_INFO = {
   bomber: { label: '자폭묘', canBreak: true },   // 폭발로만 벽을 부순다
 };
 // 시작 자원은 "벽 N개분"으로 정의 — 벽 비용을 바꿔도 시작 여유가 유지됨
-const startResources = () => P.res.startWalls * P.wall.cost;
+const startResources = () => P.res.start;
 
 // ============================================================
 // 격자 / 좌표계
@@ -3964,6 +3967,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.carry, 'mineTime', 0.3, 6, 0.1).name('한 짐 캐는 시간(초)');
   f.add(P.res, 'nodeAmount', 100, 6000, 100).name('더미 매장량 (재시작부터)');
   f.add(P.worker, 'cost', 1, 120, 1).name('일꾼 비용');
+  f.add(P.res, 'start', 0, 400, 5).name('시작 치즈 (재시작부터)');
 
   f.add(P.enemy, 'count', 0, 20, 1).name('적 시작 마릿수').onChange((v) => setEnemyCount(v));
   f.add(P.patrol, 'count', 0, 10, 1).name('순찰조 수 (재시작부터)');
@@ -4046,7 +4050,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('벽 높이');
   f.add(P.wall, 'range', 0.5, 9, 0.1).name('벽 설치 거리 (여기까지 걸어간다)');
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 시전 시간(초) — 무방비');
-  f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
+  f.add(P.res, 'start', 0, 400, 5).name('시작 치즈 (재시작부터)');
   f.add(P.res, 'nodeAmount', 50, 2000, 10).name('더미 매장량 (재시작부터)');
 }
 {
