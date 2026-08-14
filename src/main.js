@@ -93,14 +93,14 @@ const P = {
   //   틈(CS-post) < 0.7 < 관문(√2·CS-post) → post ∈ (CS-0.7, √2·CS-0.7)
   // 원작 파일런의 성질이 여기서 나온다: 벽은 문이 아니라 체(sieve)다.
   // 벽은 **가서·바라보고·잠깐 서서** 짓는다 (D58, 원작 프로브).
-  //  range 3.2 = **두 칸(3.0m)까지는 닿는다** (D67). 이 값이 핵심이다:
-  //   내 기둥 하나 너머 칸을 지으려면 기둥 앞에 서서 2.3m를 뻗어야 하는데,
-  //   나브 격자가 0.75m라 그 좁은 띠에 설 칸이 없다 → 길찾기가 **벽을 빙 돌아**
-  //   밖으로 나가는 경로를 냈다 (노출된 채 짓는 그림). 두 칸이면 한 칸 뒤에서 닿는다.
-  //   어디에 설지는 nearestBuildSpot이 고른다 — 가장 적게 움직이는 자리
+  //  range 2.0 = 이 안에서만 지어진다 (D69). **자동 이동은 접었다.**
+  //   3.2(두 칸)로 늘렸더니 은신처 안에서 안전하게 벽을 늘려갈 수 있게 됐다 —
+  //   "위험을 감수하고 빼꼼 나와 확장한다"가 통째로 사라졌다.
+  //   2.0이면 은신처 중심(기둥 1.5m)에서 그 너머 칸에 못 닿아, 관문까지 나와야 한다.
+  //   자리 잡는 건 플레이어가 WASD로 한다. 자동으로 걸어가 주지 않는다.
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
-  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 3.2, post: 0.9,
+  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 0.9,
           castTime: 0.3 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
@@ -563,6 +563,75 @@ const MAPS = [
             [6, 47, 1.8], [8, 50, 1.8], [5, 44, 1.8],
             [50, 8, 1.8], [48, 5, 1.8], [51, 11, 1.8]],
   },
+  {
+    name: '네 마당',
+    size: 56,
+    floor: 0x2b3244, gridColor: 0x4c5a7a,
+    desc: '십자로 갈린 네 구역. 어느 마당을 차지하느냐가 첫 결정이다',
+    playerSpawn: [28, 40], enemySpawn: [28, 8],
+    build(t) {
+      // 십자 격벽 — 가운데는 넓게 열려 있고, 각 팔에 넉넉한 틈이 하나씩
+      t.vLine(28, 4, 22, [12, 13, 14]);
+      t.vLine(28, 34, 52, [42, 43, 44]);
+      t.hLine(4, 22, 28, [12, 13, 14]);
+      t.hLine(34, 52, 28, [42, 43, 44]);
+    },
+    nodes: [[14, 14], [42, 14], [14, 42], [42, 42],
+            [28, 20], [28, 36], [20, 28], [36, 28],
+            [6, 6, 1.8], [9, 5, 1.8], [50, 50, 1.8], [47, 51, 1.8]],
+  },
+  {
+    name: '두 섬',
+    size: 56,
+    floor: 0x263038, gridColor: 0x44606c,
+    desc: '지형이 거의 없다. 넓은 개활지에서 벽만으로 살아야 한다',
+    playerSpawn: [40, 40], enemySpawn: [16, 16],
+    build(t) {
+      // 작은 바위 무리 두 덩이뿐 — 나머지는 완전 개활
+      for (const [i, j] of [[20, 22], [21, 22], [20, 23], [22, 21]]) t.put(i, j);
+      for (const [i, j] of [[35, 34], [36, 34], [35, 35], [34, 36]]) t.put(i, j);
+      for (const [i, j] of [[10, 40], [46, 14], [28, 28], [12, 12], [44, 46]]) t.put(i, j);
+    },
+    nodes: [[13, 27], [27, 13], [43, 29], [29, 43], [19, 45], [45, 19],
+            [6, 6, 1.8], [8, 9, 1.8], [5, 10, 1.8],
+            [50, 50, 1.8], [48, 47, 1.8], [51, 45, 1.8]],
+  },
+  {
+    name: '긴 회랑',
+    size: 56,
+    floor: 0x33302a, gridColor: 0x60594a,
+    desc: '남북으로 뻗은 회랑 하나. 적이 오는 방향이 뻔한 대신 넓게 못 펼친다',
+    playerSpawn: [28, 46], enemySpawn: [28, 6],
+    build(t) {
+      // 회랑 벽 두 줄 — 양끝이 열려 있어 완전 봉쇄는 아니다
+      t.vLine(19, 10, 46, [26, 27, 28, 29]);
+      t.vLine(37, 10, 46, [26, 27, 28, 29]);
+    },
+    nodes: [[28, 16], [24, 26], [32, 36], [28, 42],
+            [10, 24], [46, 32], [12, 44], [44, 14],
+            [6, 6, 1.8], [9, 8, 1.8], [50, 50, 1.8], [47, 48, 1.8]],
+  },
+  {
+    name: '원형 광장',
+    size: 56,
+    floor: 0x2f2a36, gridColor: 0x584c66,
+    desc: '가운데 둥근 담장. 안은 안전해 보이지만 치즈는 전부 밖에 있다',
+    playerSpawn: [28, 28], enemySpawn: [28, 6],
+    build(t) {
+      // 중앙 원형 담장 — 네 방향에 문
+      const R = 9, C = 28;
+      for (let a = 0; a < 360; a += 4) {
+        const rad = (a * Math.PI) / 180;
+        const i = Math.round(C + Math.cos(rad) * R), j = Math.round(C + Math.sin(rad) * R);
+        const doorway = (a > 82 && a < 98) || (a > 172 && a < 188)
+          || (a > 262 && a < 278) || a < 8 || a > 352;
+        if (!doorway) t.put(i, j);
+      }
+    },
+    nodes: [[12, 20], [44, 20], [12, 36], [44, 36], [28, 12], [28, 44],
+            [6, 6, 1.8], [8, 9, 1.8], [50, 50, 1.8], [48, 47, 1.8],
+            [6, 50, 1.8], [50, 6, 1.8]],
+  },
 ];
 let mapIndex = 0;
 
@@ -654,9 +723,21 @@ function seedPillarClearance(d) {
   }
 }
 
-function refreshClearance() {
+// 벽이 바뀔 때마다 즉시 재계산하면, 벽을 연달아 놓을 때 프레임마다 여러 번 돈다 (D70).
+// 더러워졌다고 표시만 해 두고 **프레임당 한 번** 처리한다.
+let navDirty = false;
+const markNavDirty = () => { navDirty = true; };
+function flushNavDirty() {
+  if (!navDirty) return;
+  navDirty = false;
+  refreshClearance();
+  repathAll();
+}
+
+function refreshClearance(terrainChanged = false) {
   clearAll = computeClearance('all');
-  clearBed = computeClearance('bed');
+  // 'bed'는 지형만 본다 — 벽을 세워도 안 바뀌므로 맵 생성 때만 계산한다
+  if (terrainChanged || !clearBed) clearBed = computeClearance('bed');
   clearNoBldg = computeClearance('noBldg');
   clearHam = computeClearance('ham');
   seedPillarClearance(clearHam);
@@ -1095,7 +1176,9 @@ function setEnemyCount(count) {
   refreshReach();
 }
 
-const repathAll = () => { for (const e of enemies) e.repathT = 0; };
+// 벽이 바뀌면 전원이 **다음 프레임에 한꺼번에** A*를 돌려 스파이크가 났다 (D70).
+// 재계산 주기 안에서 무작위로 흩어 프레임당 한두 마리씩만 돌게 한다.
+const repathAll = () => { for (const e of enemies) e.repathT = Math.random() * P.enemy.repath; };
 
 // 벽 설치 미리보기 (고스트)
 const ghost = new THREE.Mesh(
@@ -1435,8 +1518,7 @@ function placeBuilding(kind, i, j, owner = 'p') {
     b.cells.push(key);
   }
   buildings.push(b);
-  refreshClearance();
-  repathAll();
+  markNavDirty();
   spawnBuildFx(cx, cz);
   return b;
 }
@@ -1447,8 +1529,7 @@ function destroyBuilding(b, byEnemy) {
   disposeBar(b.bar);
   scene.remove(b.mesh);
   buildings.splice(buildings.indexOf(b), 1);
-  refreshClearance();
-  repathAll();
+  markNavDirty();
   if (byEnemy) flashMsg(`${BLDG_INFO[b.kind].label}가 파괴됐다!`, '#ff6b6b');
 }
 
@@ -1633,174 +1714,21 @@ function stepToward(gx, gz, stopAt, dt) {
   return false;
 }
 
-// 목표를 지을 수 있는 **가장 가까운 자리**를 찾는다 (D67).
-// 목표 좌표로 곧장 A*를 돌리면 "목표 지점까지 가는 경로"가 나온다. 그래서 벽 줄 너머가
-// 목표일 때 **줄 끝까지 빙 돌아 밖으로 나가** 노출된 채 짓는 그림이 됐다.
-// 실제로 필요한 건 "목표에 손이 닿는 가장 가까운 서 있을 자리"다.
-// 내 위치에서 BFS로 넓혀가며 **사거리 안에 드는 첫 칸**을 고르면,
-// 벽 이쪽 편이면 이쪽 편에서, 은신처 안이면 목표 쪽 틈에서 빼꼼 내밀고 짓게 된다.
-function nearestBuildSpot(tx, tz, r, range) {
-  if (!clearHam) return null;
-  const pass = (i) => canPass(clearHam, i, r);
-  const start = nearestPassableNav(player.x, player.z, pass);
-  const seen = new Uint8Array(NAV * NAV);
-  const q = [start];
-  seen[start] = 1;
-  let head = 0;
-  while (head < q.length && head < 5000) {
-    const cur = q[head++];
-    const w = navToWorld(cur);
-    if (Math.hypot(w.x - tx, w.z - tz) <= range) return w;
-    // **8방향**이어야 한다 (D68). 대각 관문은 대각으로만 지나갈 수 있어서,
-    // 4방향 BFS로는 은신처 밖으로 나가는 길을 못 찾는다 (A*는 원래 8방향이다).
-    const cx = cur % NAV, cz = (cur / NAV) | 0;
-    const push = (n) => { if (!seen[n] && pass(n)) { seen[n] = 1; q.push(n); } };
-    const L = cx > 0, R = cx < NAV - 1, U = cz > 0, D = cz < NAV - 1;
-    if (L) push(cur - 1);
-    if (R) push(cur + 1);
-    if (U) push(cur - NAV);
-    if (D) push(cur + NAV);
-    if (L && U) push(cur - NAV - 1);
-    if (R && U) push(cur - NAV + 1);
-    if (L && D) push(cur + NAV - 1);
-    if (R && D) push(cur + NAV + 1);
-  }
-  return null;
-}
-
-// ---- 벽 명령 (D60) ----
-// 클릭 한 번이면 **거기에 지으러 간다는 명령**이 걸린다. 누르고 있을 필요 없다.
-//  · 사거리 밖이어도 된다 — 걸어가서 짓는다
-//  · 내가 서 있는 자리도 된다 — **살짝 비켜선 뒤** 짓는다
-//  · 여러 번 클릭하면 줄줄이 예약된다 (순서대로)
-//  · WASD로 직접 움직이면 전부 취소 (개입이 항상 우선 — 채굴 명령과 같은 규칙)
-let wallOrders = [];
-
-function clearWallOrders(msg) {
-  if (!wallOrders.length && !wallCast) return;
-  wallOrders = [];
-  wallCast = null;
-  if (msg) flashMsg(msg, '#9aa3b2');
-}
-
-// 그 칸에 지을 수 있는가 (거리·바라보는 방향은 **명령이 알아서 하므로 보지 않는다**)
+// 그 칸에 기둥을 세울 수 있는가 (거리는 호출부에서 따로 본다)
 function wallSpotOk(i, j) {
   if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) return '맵 밖입니다';
   if (obstacles.has(cellKey(i, j))) return '이미 뭔가 있음';
   if (nodeAt(i, j)) return '치즈더미 위';
   const w = cellToWorld(i, j);
   const pr = P.wall.post / 2;
+  // 기둥 크기로 잰다 — 셀 전체로 재면 바로 앞 칸이 늘 '내가 선 자리'가 된다
+  if (Math.hypot(w.x - player.x, w.z - player.z) < pr + P.player.radius + 0.02)
+    return '내가 서 있는 자리';
   for (const e of enemies)
     if (Math.hypot(w.x - e.x, w.z - e.z) < pr + enemyR(e) + 0.02) return '적이 서 있는 자리';
   if (ally.active && Math.hypot(w.x - ally.x, w.z - ally.z) < pr + P.ally.radius + 0.02)
     return '동료가 서 있는 자리';
   return null;
-}
-
-function updateWallOrder(dt) {
-  while (wallOrders.length) {
-    const o = wallOrders[0];
-    const err = wallSpotOk(o.i, o.j);
-    if (err) { wallOrders.shift(); wallCast = null; continue; }   // 상황이 바뀌었으면 건너뛴다
-    if (resources < P.wall.cost) { clearWallOrders('치즈가 부족해 벽 명령을 취소'); return; }
-    const w = cellToWorld(o.i, o.j);
-    const dCen = Math.hypot(w.x - player.x, w.z - player.z);
-    const tooClose = P.wall.post / 2 + P.player.radius + 0.15;
-
-    // 1) 내가 그 자리에 서 있으면 **살짝 비켜선다** (원작 프로브가 자리를 내주듯)
-    if (dCen < tooClose) {
-      let ax = player.x - w.x, az = player.z - w.z;
-      const al = Math.hypot(ax, az);
-      if (al < 1e-4) { ax = player.faceX || 1; az = player.faceZ || 0; }
-      else { ax /= al; az /= al; }
-      const gx = clamp(w.x + ax * (tooClose + 0.2), -HALF + 1, HALF - 1);
-      const gz = clamp(w.z + az * (tooClose + 0.2), -HALF + 1, HALF - 1);
-      stepToward(gx, gz, 0.12, dt);
-      wallCast = null;
-      return;
-    }
-    // 2) 아직 멀면 걸어간다
-    if (dCen > P.wall.range) {
-      // 목표가 아니라 **시공 자리**로 간다 (D67). 0.4초마다 다시 고른다.
-      o.spotT = (o.spotT || 0) - dt;
-      if (!o.spot || o.spotT <= 0) {
-        o.spot = nearestBuildSpot(w.x, w.z, P.player.radius, P.wall.range - navRes * 0.5);
-        o.spotT = 0.4;
-      }
-      // 격자에 걸리는 자리를 못 찾으면 목표로 직행한다 (조용히 취소하지 않는다).
-      // 어차피 매 프레임 사거리를 연속값으로 다시 재므로, 가까워지면 거기서 짓는다.
-      if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt);
-      else stepToward(w.x, w.z, P.wall.range - 0.05, dt);
-      wallCast = null;
-      return;
-    }
-
-    // 3) 도착 — 그 칸을 보고 잠깐 서서 짓는다 (무방비 구간)
-    const fx = w.x - player.x, fz = w.z - player.z;
-    const fl = Math.hypot(fx, fz) || 1;
-    player.faceX = fx / fl; player.faceZ = fz / fl;
-    if (!wallCast || wallCast.i !== o.i || wallCast.j !== o.j) wallCast = { i: o.i, j: o.j, t: 0 };
-    wallCast.t += dt;
-    if (wallCast.t >= P.wall.castTime) {
-      resources -= P.wall.cost;
-      const ob = addObstacle(o.i, o.j, false);
-      refreshClearance();
-      repathAll();
-      ob.mesh.scale.y = 0.02;
-      ob.mesh.position.y = 0.01;
-      popping.push({ ob, t: 0 });
-      spawnBuildFx(w.x, w.z);
-      wallCast = null;
-      wallOrders.shift();
-    }
-    return;
-  }
-}
-
-// ---- 건물 명령 (D66) ----
-// 창고·공방·경비탑도 벽(D60)과 같다: 클릭 = "거기에 지으러 가라".
-// 걸어가서, 발자국 위에 서 있었다면 비켜서고, 도착하면 D44의 채널링(3~4초 무방비)을 시작한다.
-let buildOrder = null;   // { kind, i, j }
-
-function updateBuildOrder(dt) {
-  const o = buildOrder;
-  if (!o || buildJob) return;
-  const err = buildingPlacement(o.i, o.j, o.kind, true);
-  if (err) {
-    // 적이 지나가는 중이면 근처에서 기다린다. 자리 자체가 사라졌으면 취소.
-    if (err !== '적이 서 있는 자리입니다') {
-      buildOrder = null;
-      flashMsg(`건물 명령 취소 — ${err}`, '#e05050');
-      return;
-    }
-  }
-  const cx = cellToWorld(o.i, o.j).x + CS / 2, cz = cellToWorld(o.i, o.j).z + CS / 2;
-  const d = Math.hypot(cx - player.x, cz - player.z);
-  // 발자국(2x2, 반폭 CS) 위에 서 있으면 비켜선다
-  const tooClose = CS + P.player.radius + 0.75;
-  if (d < tooClose) {
-    let ax = player.x - cx, az = player.z - cz;
-    const l = Math.hypot(ax, az);
-    if (l < 1e-4) { ax = player.faceX || 1; az = player.faceZ || 0; }
-    else { ax /= l; az /= l; }
-    stepToward(clamp(cx + ax * (tooClose + 0.3), -HALF + 1, HALF - 1),
-               clamp(cz + az * (tooClose + 0.3), -HALF + 1, HALF - 1), 0.15, dt);
-    return;
-  }
-  const reach = P.wall.range + CS * 0.5;
-  if (d > reach) {
-    o.spotT = (o.spotT || 0) - dt;
-    if (!o.spot || o.spotT <= 0) {
-      o.spot = nearestBuildSpot(cx, cz, P.player.radius, reach - navRes * 0.5);
-      o.spotT = 0.4;
-    }
-    if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt);
-    else stepToward(cx, cz, reach - 0.05, dt);
-    return;
-  }
-  if (err) return;   // 사거리엔 왔는데 적이 자리에 있다 — 비킬 때까지 대기
-  startBuild(o.kind, o.i, o.j);
-  buildOrder = null;
 }
 
 function updateMineOrder(dt) {
@@ -2196,7 +2124,7 @@ function detonate(e) {
   if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); e.homeRing = null; }
   const idx = enemies.indexOf(e);
   if (idx >= 0) enemies.splice(idx, 1);
-  if (broke) { refreshClearance(); repathAll(); }
+  if (broke) markNavDirty();
   else refreshReach();
   flashMsg(broke ? `자폭! 벽 ${broke}칸이 날아갔다` : '자폭묘가 터졌다', '#ff8b5e');
 }
@@ -3477,14 +3405,15 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
   // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
+  // ESC = 한 단계 물러나기. 더 물러날 게 없으면 메뉴가 뜬다 (D71)
   if (e.code === 'Escape') {
-    if (buildJob) cancelBuild(true);
-    else if (buildOrder) { buildOrder = null; flashMsg('건물 명령 취소', '#9aa3b2'); }
-    else if (wallOrders.length) clearWallOrders('벽 명령 취소');
+    if (menuOpen) setMenu(false);
+    else if (buildJob) cancelBuild(true);
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (playerOrder) clearMineOrder('채굴 명령 취소');
     else if (selectedUnits.size) selectedUnits.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
+    else setMenu(true);
   }
   if (e.code === 'KeyE' && alive) toggleMineOrder();
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
@@ -3906,17 +3835,12 @@ function updatePlayer(dt) {
     if (ml > 1e-4) {
       // 직접 움직이면 걸어둔 명령은 전부 풀린다 — 개입이 항상 우선이다
       if (playerOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
-      if (wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소');
-      if (buildOrder) { buildOrder = null; flashMsg('직접 이동 — 건물 명령 취소', '#9aa3b2'); }
+      wallCast = null;
       wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
       mx /= ml; mz /= ml;
       player.x += mx * effPlayerSpeed() * dt;
       player.z += mz * effPlayerSpeed() * dt;
       player.faceX = mx; player.faceZ = mz;
-    } else if (buildOrder) {
-      updateBuildOrder(dt);       // 건물 명령이 최우선 (하나뿐이고 비싸다)
-    } else if (wallOrders.length) {
-      updateWallOrder(dt);        // 벽 명령이 채굴보다 우선 (방금 내린 지시니까)
     } else if (playerOrder) {
       updateMineOrder(dt);
     }
@@ -3994,16 +3918,13 @@ function updatePlayer(dt) {
     valid = affordable && guards.length < P.guard.max;
   } else if (hasTile) {
     if (slot.size === 2) {
-      const berr = buildingPlacement(gi, gj, slot.key, true);
+      const berr = buildingPlacement(gi, gj, slot.key);
       valid = affordable && !berr;
       ghostWhy = !affordable ? '치즈 부족' : (berr || '');
     } else {
-      // 벽은 **명령**이므로 거리·방향을 보지 않는다 (D60).
-      // 멀면 걸어가고, 내가 선 자리면 비켜선다. 판단할 건 "거기에 지을 수 있느냐"뿐.
-      const err = slot.key === 'wall' ? wallSpotOk(gi, gj)
-        : (obstacles.has(cellKey(gi, gj)) ? '이미 뭔가 있음'
-           : nodeAt(gi, gj) ? '치즈더미 위'
-           : distCellToPoint(gi, gj, player.x, player.z) > P.wall.range ? '더 가까이 가야 함' : null);
+      // 사거리 안 + 지을 수 있는 자리 (D69 — 자동 이동을 접었으므로 거리를 다시 본다)
+      const err = wallSpotOk(gi, gj)
+        || (Math.hypot(w.x - player.x, w.z - player.z) > P.wall.range ? '더 가까이 가야 함' : null);
       valid = !err && affordable;
       ghostWhy = !affordable ? '치즈 부족' : (err || '');
     }
@@ -4034,31 +3955,39 @@ function updatePlayer(dt) {
   // 벽: 홀드하면 쿨다운마다 연속 설치 / 나머지: 누르는 순간 1회
   buildCooldown -= dt;
   if (slot.key === 'wall') {
-    // 클릭 한 번 = "거기에 지으러 가라" (D60). 누르고 있을 필요 없다.
-    // 같은 칸을 또 찍는 게 아니면 줄줄이 예약된다.
-    if (buildPressed && valid && hasTile) {
-      if (!wallOrders.some((o) => o.i === gi && o.j === gj)) {
-        wallOrders.push({ i: gi, j: gj });
-        if (playerOrder) clearMineOrder();   // 벽을 짓겠다는 건 채굴보다 앞선 의사표시
-        orderPath.length = 0; orderRepathT = 0;
+    // **제자리에서 짓는다** (D69). 사거리 안이어야 하고, 0.3초 서 있어야 한다.
+    // 자동으로 걸어가 주지 않는다 — 어디에 설지는 플레이어가 WASD로 정한다.
+    if (wantBuild && valid && hasTile) {
+      if (!wallCast || wallCast.i !== gi || wallCast.j !== gj) wallCast = { i: gi, j: gj, t: 0 };
+      wallCast.t += dt;
+      const fx = w.x - player.x, fz = w.z - player.z;
+      const fl = Math.hypot(fx, fz);
+      if (fl > 0.05) { player.faceX = fx / fl; player.faceZ = fz / fl; }
+      if (wallCast.t >= P.wall.castTime) {
+        resources -= P.wall.cost;
+        const ob = addObstacle(gi, gj, false);
+        markNavDirty();
+        ob.mesh.scale.y = 0.02;
+        ob.mesh.position.y = 0.01;
+        popping.push({ ob, t: 0 });
+        spawnBuildFx(w.x, w.z);
+        wallCast = null;
       }
+    } else {
+      wallCast = null;
     }
   } else if (slot.key === 'remove') {
     if (wantBuild && buildCooldown <= 0 && valid) {
       const ob = obstacles.get(cellKey(gi, gj));
       resources -= P.wall.removeCost;
       removeObstacle(ob);
-      refreshClearance();
-      repathAll();
+      markNavDirty();
       spawnBuildFx(w.x, w.z);
       buildCooldown = P.wall.cooldown;
     }
   } else if (buildPressed && (hasTile || unitSlot)) {
-    if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower') {
-      buildOrder = { kind: slot.key, i: gi, j: gj };   // 걸어가서 짓는다 (D66)
-      orderPath.length = 0; orderRepathT = 0;
-      if (playerOrder) clearMineOrder();
-    }
+    if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower')
+      startBuild(slot.key, gi, gj);
     else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
     else if (slot.key === 'worker') hireWorker('p');
   }
@@ -4136,8 +4065,7 @@ function removeGhostWall() {
   const ob = obstacles.get(cellKey(ghostCell.i, ghostCell.j));
   if (ob && !ob.bedrock) {
     removeObstacle(ob);
-    refreshClearance();
-    repathAll();
+    markNavDirty();
   }
 }
 
@@ -4515,15 +4443,14 @@ const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
 helpEl.textContent =
   'WASD 이동 · 기본은 빈손 — 1~9로 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
-  '벽은 **클릭 한 번 = 지으러 가라** 명령. 멀어도·내가 선 자리도 OK (알아서 가서 비켜선다)\n' +
-  '도착하면 0.3초 서서 짓는다 — 그때가 무방비. 직접 움직이면 명령 취소\n' +
+  '벽은 **사거리 안에서 0.3초 서서** 짓는다 — 그때가 무방비. 자리는 WASD로 잡는다\n' +
   '벽은 기둥이다: 직교로 붙이면 아무도 못 지나가고, **대각으로 붙이면 나만 지나간다**\n' +
   '빈손일 때 좌클릭/드래그 = 유닛 선택 · 우클릭 = 명령 (더미=채굴 / 빈 땅=이동)\n' +
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
   '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
   '유닛은 내 옆에서 나온다 (자리 안 찍음) · Tab 방어병 전원 선택 · 적 우클릭 = 집중 공격\n' +
-  '파란 링 = 순찰조 (발각돼도 잠깐만 쫓는다) · 초록 표시 = 고양이가 못 들어오는 은신처\n' +
+  '파란 링 = 순찰조 · 초록 표시 = 고양이가 못 들어오는 은신처 · **ESC = 메뉴**\n' +
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
 
 let alive = true;
@@ -4583,8 +4510,8 @@ function rebuildWorld(idx) {
   PLAYER_SPAWN = cellToWorld(M.playerSpawn[0], M.playerSpawn[1]);
   ENEMY_SPAWN = cellToWorld(M.enemySpawn[0], M.enemySpawn[1]);
 
-  clearAll = null; // 크기가 바뀌었으므로 이전 필드는 버린다
-  refreshClearance();
+  clearAll = null; clearBed = null; // 크기가 바뀌었으므로 이전 필드는 버린다
+  refreshClearance(true);
 }
 
 function setMap(idx) {
@@ -4611,11 +4538,10 @@ function restart() {
   clearWorkers();
   playerOrder = null;
   orderPath = [];
+  if (menuOpen) setMenu(false);
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   buildJob = null;
   wallCast = null;
-  wallOrders = [];
-  buildOrder = null;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
   ally.buildCd = 0;
@@ -4824,6 +4750,45 @@ function flashMsg(text, color = '#6ee07a') {
 }
 
 
+// ---- ESC 메뉴 (D71) ----
+// 취소할 게 없을 때 ESC를 누르면 뜬다. 열려 있는 동안 게임은 멈춘다.
+const menuEl = document.getElementById('menu');
+const mapListEl = document.getElementById('m-maplist');
+let menuOpen = false;
+
+function setMenu(on) {
+  menuOpen = on;
+  menuEl.classList.toggle('on', on);
+  mapListEl.classList.remove('on');
+  paused = on;
+}
+
+function buildMapList() {
+  mapListEl.innerHTML = '';
+  MAPS.forEach((m, k) => {
+    const b = document.createElement('button');
+    b.textContent = (k === mapIndex ? '● ' : '') + m.name + ' — ' + m.desc;
+    b.style.fontSize = '13px';
+    b.style.textAlign = 'left';
+    b.onclick = () => { setMenu(false); setMap(k); };
+    mapListEl.appendChild(b);
+  });
+}
+
+document.getElementById('m-resume').onclick = () => setMenu(false);
+document.getElementById('m-restart').onclick = () => { setMenu(false); restart(); };
+document.getElementById('m-maps').onclick = () => { buildMapList(); mapListEl.classList.add('on'); };
+document.getElementById('m-quit').onclick = () => {
+  setMenu(false);
+  alive = false;
+  paused = false;
+  ghost.visible = false;
+  overlayEl.querySelector('h1').textContent = '게임 종료';
+  document.getElementById('overlay-sub').textContent =
+    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — R 키로 다시 시작`;
+  overlayEl.classList.remove('hidden');
+};
+
 // ---- 동료 AI (생존 특화) ----
 //  경제 활동 없음. 우선순위:
 //   1. 내가 기절 → 구조 (카이팅으로 틈을 만든 뒤 접근)
@@ -4992,8 +4957,7 @@ function updateAlly(dt) {
           ob.mesh.material.color.setHex(0x7f93c8);   // 동료 벽은 살짝 파랗게
           popping.push({ ob, t: 0 });
           spawnBuildFx(tw.x, tw.z);
-          refreshClearance();
-          repathAll();
+          markNavDirty();
         }
       }
     }
@@ -5091,8 +5055,7 @@ function updateHUD() {
     (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
-    (buildOrder ? ` · 🏗${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중 — 움직이면 취소` : '') +
-    (wallOrders.length ? ` · 🧱벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ' (가는 중)'} — 움직이면 취소` : '') +
+    (wallCast ? ' · 🧱벽 세우는 중 (움직이면 취소)' : '') +
     (buildSlot >= 0 && !ghostCell.valid && ghostWhy ? ` · ⚠ ${ghostWhy}` : '') +
     (playerOrder ? ' 🔁자동채굴(움직이면 취소)' : '') +
     (playerJob === 'mine' ? ' ⛏채굴' : playerJob === 'drop' ? ' 📦하역' : '') +
@@ -5138,6 +5101,7 @@ function tick(dt) {
     }
     updateAlly(dt);
     updateRescue();
+    flushNavDirty();           // 이번 프레임에 바뀐 벽을 한 번에 반영 (D70)
     trackTargetVelocity(dt);   // 리드 조준용 속도 추정 (적이 앞을 노린다)
     if (enemyActive()) {
       ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
@@ -5226,9 +5190,8 @@ window.__game = {
   get playerJob() { return playerJob; },
   get allyRes() { return allyRes; }, set allyRes(v) { allyRes = v; },
   get buildJob() { return buildJob; },
-  get wallCast() { return wallCast; }, get wallOrders() { return wallOrders; },
-  get buildOrder() { return buildOrder; },
-  wallSpotOk, clearWallOrders, nearestBuildSpot,
+  get wallCast() { return wallCast; },
+  wallSpotOk,
   get ghostCell() { return ghostCell; }, get ghostWhy() { return ghostWhy; },
   startBuild, cancelBuild, pickShelter, shelterTodo,
   buildings, placeBuilding, destroyBuilding, STAGES,

@@ -70,6 +70,27 @@
       border: 1px solid #6ee07a; background: rgba(110, 224, 122, 0.14);
       border-radius: 2px;
     }
+    #menu {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(8, 10, 16, 0.72);
+      font-family: system-ui, sans-serif;
+    }
+    #menu.on { display: flex; }
+    #menu .box {
+      background: rgba(18, 22, 32, 0.97); border: 1px solid #46506a; border-radius: 10px;
+      padding: 18px 20px; min-width: 260px; color: #e8ecf4; text-align: center;
+    }
+    #menu h2 { margin: 0 0 14px; font-size: 20px; font-weight: 700; }
+    #menu button {
+      display: block; width: 100%; margin: 6px 0; padding: 10px 14px;
+      background: #2a3550; color: #dfe7f7; border: 1px solid #46506a; border-radius: 6px;
+      font-size: 15px; cursor: pointer; font-family: inherit;
+    }
+    #menu button:hover { background: #37456b; border-color: #6ee07a; }
+    #menu .maps { display: none; margin-top: 10px; border-top: 1px solid #333d55; padding-top: 10px; }
+    #menu .maps.on { display: block; }
+    #menu .hint { color: #8b94a8; font-size: 12px; margin-top: 10px; }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
       text-align: center; pointer-events: none;
@@ -86,6 +107,15 @@
   <div id="selbox"></div>
   <div id="hotbar"></div>
   <div id="upgrade"></div>
+  <div id="menu"><div class="box">
+    <h2>일시정지</h2>
+    <button id="m-resume">계속하기</button>
+    <button id="m-restart">다시 시작</button>
+    <button id="m-maps">맵 선택</button>
+    <button id="m-quit">종료</button>
+    <div class="maps" id="m-maplist"></div>
+    <div class="hint">ESC로 닫기</div>
+  </div></div>
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
     <p id="overlay-sub">R 키로 다시 시작</p>
