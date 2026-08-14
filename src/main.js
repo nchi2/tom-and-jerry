@@ -96,7 +96,7 @@ const P = {
   //  range 1.8 = 이 거리까지 걸어가서 짓는다 (D60: 멀면 알아서 간다)
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
-  wall: { cost: 12, removeCost: 4, cooldown: 0.05, height: 2.0, range: 1.8, post: 0.9,
+  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 1.8, post: 0.9,
           castTime: 0.3 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
@@ -563,6 +563,7 @@ let mapIndex = 0;
 let clearAll = null;
 let clearBed = null;
 let clearNoBldg = null; // 지형+벽만 막힘 — 순찰묘/날쌘묘의 "건물 뚫기" 경로용
+let clearHam = null;    // 지형+건물만 막힘 — **햄스터 전용** (기둥은 물리로 비껴간다, D61)
 
 // mode: 'all' = 전부 막힘 / 'bed' = 지형만 / 'noBldg' = 지형+벽 (건물은 통과 취급)
 function navBlocked(i, j, mode) {
@@ -571,6 +572,13 @@ function navBlocked(i, j, mode) {
   if (!ob) return false;
   if (mode === 'bed') return ob.bedrock;
   if (mode === 'noBldg') return ob.bedrock || !ob.bldgRef;
+  // 'ham' = 햄스터 시야의 통행권 (D61).
+  // **플레이어 벽(기둥)은 막지 않는다** — 기둥은 0.9m 원기둥이라 햄스터가 옆으로
+  // 비껴 지나갈 수 있는데, 나브 격자(0.75m)로는 그 여백을 표현할 수 없어
+  // 셀 전체가 막힌 것으로 보였다. 그러면 길찾기가 "여긴 못 간다"고 하는데
+  // 물리는 통과시켜서 **제자리에서 파닥거리는** 현상이 난다.
+  // 기둥 회피는 원-원 밀어내기(물리)에 맡기고, 길찾기는 지형·건물만 본다.
+  if (mode === 'ham') return ob.bedrock || !!ob.bldgRef;
   return true;
 }
 
@@ -611,6 +619,7 @@ function refreshClearance() {
   clearAll = computeClearance('all');
   clearBed = computeClearance('bed');
   clearNoBldg = computeClearance('noBldg');
+  clearHam = computeClearance('ham');
   refreshReach(); // 벽이 바뀌면 적 도달 가능 영역(자원 확보 판정)도 갱신
 }
 
@@ -1171,14 +1180,14 @@ function refreshReach() {
 let safeCache = { t: -99, gen: -1, x: 0, z: 0, r: 0, cell: null };
 
 function nearestSafeSpot(x, z, r = P.ally.radius) {
-  if (!safeField || !clearAll) return null;
+  if (!safeField || !clearHam) return null;
   // 짧게 캐시한다 — 프레임마다 전체 BFS를 돌릴 이유가 없다
   // 캐시 무효화 조건이 셋이다. 시간(0.4초)만으로 재면
   //  · 재시작 시 survival이 0으로 돌아가 이전 판 캐시가 통과하고
   //  · 벽을 세워 은신처가 새로 생겨도 낡은 답(주로 null)이 계속 나온다. 둘 다 실제로 났다.
   if (safeCache.gen === safeGen && Math.abs(survival - safeCache.t) < 0.4 && safeCache.r === r
       && Math.hypot(x - safeCache.x, z - safeCache.z) < 1.5) return safeCache.cell;
-  const pass = (i) => canPass(clearAll, i, r);
+  const pass = (i) => canPass(clearHam, i, r);
   const start = nearestPassableNav(x, z, pass);
   const seen = new Uint8Array(NAV * NAV);
   const q = [start];
@@ -1527,7 +1536,7 @@ function stepToward(gx, gz, stopAt, dt) {
   orderRepathT -= dt;
   if (orderRepathT <= 0 || !orderPath.length) {
     orderRepathT = 0.45;
-    const pass = (i) => canPass(clearAll, i, P.player.radius);
+    const pass = (i) => canPass(clearHam, i, P.player.radius);
     const res = astar(nearestPassableNav(player.x, player.z, pass), worldToNav(gx, gz), pass, () => 0);
     orderPath = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   }
@@ -1930,7 +1939,7 @@ function updateWorkers(dt) {
       w.repathT -= dt;
       if (w.repathT <= 0 || !w.path.length) {
         w.repathT = 0.5;
-        const pass = (i) => canPass(clearAll, i, P.worker.radius);
+        const pass = (i) => canPass(clearHam, i, P.worker.radius);
         const res = astar(nearestPassableNav(w.x, w.z, pass), worldToNav(gx, gz), pass, () => 0);
         w.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
       }
@@ -2154,10 +2163,10 @@ function makeSelRing(color, scale = 1) {
 function spawnSpotNear(x, z, r, n = 0) {
   for (let t = 0; t < 24; t++) {
     const a = (n + t) * 2.399963;
-    const d = 1.1 + t * 0.12;
+    const d = 1.6 + t * 0.18;
     const sx = clamp(x + Math.cos(a) * d, -HALF + 1, HALF - 1);
     const sz = clamp(z + Math.sin(a) * d, -HALF + 1, HALF - 1);
-    if (clearAll && !canPass(clearAll, worldToNav(sx, sz), r)) continue;
+    if (clearHam && !canPass(clearHam, worldToNav(sx, sz), r)) continue;
     return { x: sx, z: sz };
   }
   return { x, z };
@@ -2268,7 +2277,7 @@ function updateGuards(dt) {
       g.repathT -= dt;
       if (g.repathT <= 0 || !g.path.length) {
         g.repathT = 0.4;
-        const pass = (i) => canPass(clearAll, i, gr);
+        const pass = (i) => canPass(clearHam, i, gr);
         const res = astar(nearestPassableNav(g.x, g.z, pass), worldToNav(g.gx, g.gz), pass, () => 0);
         g.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
       }
@@ -4748,7 +4757,7 @@ function updateAlly(dt) {
     ally.repathT -= dt;
     if (ally.repathT <= 0 || !ally.path.length) {
       ally.repathT = urgent ? 0.25 : 0.5;
-      const pass = (i) => canPass(clearAll, i, P.ally.radius);
+      const pass = (i) => canPass(clearHam, i, P.ally.radius);
       const res = astar(nearestPassableNav(ally.x, ally.z, pass), worldToNav(gx, gz), pass, () => 0);
       ally.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
     }
