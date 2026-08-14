@@ -3941,8 +3941,47 @@ function removeGhostWall() {
 // GUI
 // ============================================================
 const gui = new GUI({ title: '튜닝' });
+
+// ---- 자주 만지는 것 ----
+// 실제로 플레이하며 반복해서 요청됐던 값들만 위로 꺼냈다.
+// 나머지는 전부 아래 '고급' 안에 접혀 있다 — 열어야 보인다.
 {
-  const f = gui.addFolder('플레이어');
+  const f = gui.addFolder('★ 자주 만지는 것');
+  f.add({ 다시시작: () => restart() }, '다시시작').name('다시시작 (R)');
+
+  f.add(P.tempo, 'moveScale', 0.3, 1.5, 0.05).name('전체 이동 속도 (템포)');
+  f.add(P.player, 'hp', 20, 400, 10).name('내 체력 (재시작부터)');
+
+  f.add(P.wall, 'cost', 0, 40, 1).name('벽 비용');
+  f.add(P.wall, 'post', 0.2, 2.2, 0.05).name('벽 기둥 굵기').onChange(() => {
+    for (const ob of obstacles.values())
+      if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
+  });
+  f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
+
+  f.add(P.carry, 'playerLoad', 1, 60, 1).name('한 짐 — 나');
+  f.add(P.carry, 'workerLoad', 1, 60, 1).name('한 짐 — 일꾼');
+  f.add(P.carry, 'mineTime', 0.3, 6, 0.1).name('한 짐 캐는 시간(초)');
+  f.add(P.res, 'nodeAmount', 100, 6000, 100).name('더미 매장량 (재시작부터)');
+  f.add(P.worker, 'cost', 1, 120, 1).name('일꾼 비용');
+
+  f.add(P.enemy, 'count', 0, 20, 1).name('적 시작 마릿수').onChange((v) => setEnemyCount(v));
+  f.add(P.patrol, 'count', 0, 10, 1).name('순찰조 수 (재시작부터)');
+  f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('적 등장까지(초)');
+  f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
+  f.add(P.chaser, 'reward', 0, 60, 1).name('처치 보상 (순찰묘)');
+  f.add(P.threat, 'hpGain', 0, 400, 10).name('레벨당 적 체력 +');
+  f.add(P.threat, 'speedGain', 0, 2, 0.05).name('레벨당 적 속도 + (0=고정)');
+
+  f.add(P.guard, 'max', 1, 40, 1).name('방어병 최대');
+  f.add(P.guard, 'costGrowth', 0, 0.6, 0.01).name('방어병 값 상승률');
+}
+
+// ---- 고급: 나머지 전부 (기본 접힘) ----
+const adv = gui.addFolder('고급 — 전체 설정');
+
+{
+  const f = adv.addFolder('플레이어');
   f.add(P.player, 'speed', 1, 18, 0.1).name('이동 속도');
   f.add(P.player, 'radius', 0.15, 0.8, 0.01).name('반지름')
     .onChange((v) => playerVis.group.scale.setScalar(v));
@@ -3953,7 +3992,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'wipeOnCatch', 0, 1, 1).name('잡히면 전부 소멸 (원작)');
 }
 {
-  const f = gui.addFolder('적 (공통)');
+  const f = adv.addFolder('적 (공통)');
   f.add(P.enemy, 'count', 1, 12, 1).name('시작 마릿수 (순찰묘)')
     .onChange((v) => setEnemyCount(v));
   f.add(P.enemy, 'attackRange', 0.2, 2, 0.05).name('공격 사거리');
@@ -3966,7 +4005,7 @@ const gui = new GUI({ title: '튜닝' });
 }
 {
   // 종류별 스탯 — 반지름을 바꾸면 그 종류의 모델 크기와 통행권이 같이 바뀐다
-  const f = gui.addFolder('적 유형');
+  const f = adv.addFolder('적 유형');
   const radiusChanged = (type) => () => {
     for (const e of enemies) if (e.type === type) e.vis.group.scale.setScalar(P[type].radius);
     refreshReach();
@@ -3985,7 +4024,7 @@ const gui = new GUI({ title: '튜닝' });
   f3.add(P.bomber, 'fuse', 0.2, 3, 0.1).name('점화 시간(초)');
 }
 {
-  const f = gui.addFolder('벽');
+  const f = adv.addFolder('벽');
   f.add(P.wall, 'range', 1, 8, 0.5).name('설치 사거리');
   f.add(P.wall, 'cooldown', 0, 1, 0.05).name('설치 쿨다운');
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('높이').onChange((h) => {
@@ -3997,7 +4036,7 @@ const gui = new GUI({ title: '튜닝' });
   });
 }
 {
-  const f = gui.addFolder('자원');
+  const f = adv.addFolder('자원');
   f.add(P.wall, 'cost', 1, 60, 1).name('벽 비용');
   f.add(P.wall, 'removeCost', 0, 30, 1).name('철거 비용');
   f.add(P.wall, 'post', 0.2, 2.2, 0.05).name('벽 기둥 굵기 (틈 = 1-굵기)').onChange(() => {
@@ -4011,14 +4050,14 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.res, 'nodeAmount', 50, 2000, 10).name('더미 매장량 (재시작부터)');
 }
 {
-  const f = gui.addFolder('동료 (AI 햄스터)');
+  const f = adv.addFolder('동료 (AI 햄스터)');
   f.add(P.ally, 'enabled', 0, 1, 1).name('사용 (재시작부터, 0=솔로)');
   f.add(P.ally, 'speed', 2, 18, 0.1).name('이동 속도');
   f.add(P.ally, 'fleeDist', 1, 18, 0.1).name('도망 시작 거리');
   f.add(P.ally, 'startWalls', 0, 40, 1).name('동료 벽 예산 (재시작부터)');
 }
 {
-  const f = gui.addFolder('건물 (2번 창고 · 3번 공방)');
+  const f = adv.addFolder('건물 (2번 창고 · 3번 공방)');
   f.add(P.depot, 'cost', 5, 60, 1).name('창고 비용');
   f.add(P.depot, 'hp', 50, 1500, 10).name('창고 내구도 (새 건물부터)');
   f.add(P.depot, 'dropRange', 1, 12, 0.2).name('창고 하역 거리');
@@ -4044,7 +4083,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
 }
 {
-  const f = gui.addFolder('채굴 명령 (E · 우클릭 · 드래그)');
+  const f = adv.addFolder('채굴 명령 (E · 우클릭 · 드래그)');
   f.add(P.command, 'promptRange', 1, 18, 0.5).name("'E' 안내가 뜨는 거리");
   f.add(P.command, 'pickRange', 0.5, 7, 0.1).name('우클릭 집는 반경');
   f.add(P.command, 'dragMin', 2, 40, 1).name('상자 선택 최소 드래그(px)');
@@ -4054,7 +4093,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.worker, 'cost', 5, 120, 1).name('일꾼 비용');
 }
 {
-  const f = gui.addFolder('방어병 3종 (6 사수 · 7 근접병 · 8 정예병)');
+  const f = adv.addFolder('방어병 3종 (6 사수 · 7 근접병 · 8 정예병)');
   f.add(P.guard, 'speed', 1, 18, 0.1).name('공통 이동 속도');
   f.add(P.guard, 'max', 1, 40, 1).name('방어병 최대');
   f.add(P.guard, 'costGrowth', 0, 0.6, 0.01).name('한 명 늘 때마다 값 상승률');
@@ -4076,7 +4115,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.guard, 'eliteReload', 0.2, 4, 0.1).name('정예병 공격 간격');
 }
 {
-  const f = gui.addFolder('순찰조 (맵 상주)');
+  const f = adv.addFolder('순찰조 (맵 상주)');
   f.add(P.patrol, 'count', 0, 10, 1).name('마릿수 (재시작부터)');
   f.add(P.patrol, 'radius', 2, 24, 0.5).name('순찰 반경');
   f.add(P.patrol, 'turn', 0, 1.5, 0.05).name('도는 속도');
@@ -4088,7 +4127,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.patrol, 'minFromSpawn', 0, 60, 1).name('내 시작점과 최소 거리');
 }
 {
-  const f = gui.addFolder('적 체력 / 보상');
+  const f = adv.addFolder('적 체력 / 보상');
   f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
   f.add(P.chaser, 'reward', 0, 100, 1).name('순찰묘 처치 보상');
   f.add(P.runner, 'hp', 100, 4000, 50).name('날쌘묘 체력');
@@ -4097,7 +4136,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.bomber, 'reward', 0, 100, 1).name('자폭묘 처치 보상');
 }
 {
-  const f = gui.addFolder('적 접근 방식 (우회 시도)');
+  const f = adv.addFolder('적 접근 방식 (우회 시도)');
   f.add(P.enemy, 'flankRadius', 0, 20, 0.5).name('접근 반경');
   f.add(P.enemy, 'probeTurn', 0.2, 3, 0.1).name('막혔을 때 각도 전환');
   f.add(P.enemy, 'probeHold', 0.5, 8, 0.5).name('새 각도 유지(초)');
@@ -4107,7 +4146,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'targetHold', 0, 10, 0.5).name('목표 유지 시간(초)');
 }
 {
-  const f = gui.addFolder('적 지능 (기억 · 잠복 · 예측 · 차단)');
+  const f = adv.addFolder('적 지능 (기억 · 잠복 · 예측 · 차단)');
   f.add(P.enemy, 'campTime', 0, 30, 0.5).name('틈 앞 잠복 시간(0=끔)');
   f.add(P.enemy, 'memoryTime', 0, 30, 0.5).name('마지막 목격 기억(초)');
   f.add(P.enemy, 'leadTime', 0, 1.5, 0.05).name('리드 조준(0=현재 위치)');
@@ -4118,7 +4157,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'safeMargin', 0.2, 6, 0.1).name('은신처 인정 여유(m)').onChange(refreshReach);
 }
 {
-  const f = gui.addFolder('픽업 (밖에 나갈 이유)');
+  const f = adv.addFolder('픽업 (밖에 나갈 이유)');
   f.add(P.pickup, 'interval', 3, 40, 1).name('생성 주기(초)');
   f.add(P.pickup, 'maxOnMap', 1, 12, 1).name('동시 최대 개수');
   f.add(P.pickup, 'minPlayerDist', 4, 30, 1).name('플레이어 최소 거리');
@@ -4128,7 +4167,7 @@ const gui = new GUI({ title: '튜닝' });
 }
 
 {
-  const f = gui.addFolder('위협 (시간 경과 강화)');
+  const f = adv.addFolder('위협 (시간 경과 강화)');
   f.add(P.threat, 'interval', 5, 90, 1).name('강화 주기(초)');
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('속도 증가/레벨');
   f.add(P.threat, 'dpsGain', 0, 40, 1).name('공격력 증가/레벨');
@@ -4235,6 +4274,10 @@ const settingsIO = {
     .onChange((name) => setMap(MAPS.findIndex((m) => m.name === name)));
   f.add({ 다시시작: () => restart() }, '다시시작').name('현재 맵 재시작 (R)');
 }
+
+// 고급 폴더는 통째로 접어 둔다 — 하위 폴더도 전부 (열어야 보인다)
+adv.close();
+for (const sub of adv.folders) sub.close();
 
 let camFolder = null;
 const camSelector = { mode: CAM_MODES[camIndex].name };
