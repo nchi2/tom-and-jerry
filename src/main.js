@@ -8,21 +8,21 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 const P = {
   // 한 방에 죽지 않는다 — 공격을 맞아 체력이 다 깎여야 잡힌다 (원작 프로브가
   // 울트라 두 방을 버티던 것). 죽음이 "한순간의 실수"가 아니라 "누적된 실수"가 된다.
-  player: { speed: 6.0, radius: 0.35, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1,
+  player: { speed: 9.0, radius: 0.35, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1,
             // 이 거리 안에 고양이가 있으면 가장 가까운 은신처를 바닥에 표시한다 (D55-C)
-            safeMarkRange: 12,
+            safeMarkRange: 18,
             // 은신처로 인정하려면 적 도달 영역에서 이만큼 떨어져 있어야 한다(m).
             // 대략 공격 사거리(hr+attackRange)만큼 — 벽 옆 한 칸이 은신처로 잡히면 안 된다
-            safeMargin: 1.2 },
+            safeMargin: 1.8 },
   enemy: {
     count: 3,              // 시작 마릿수 (전부 순찰묘)
-    attackRange: 0.6, repath: 0.35,
+    attackRange: 0.9, repath: 0.35,
     spawnDelay: 12,
-    spread: 5.0,           // 스폰 지점 주변에 흩어지는 반경
-    aggroRange: 7.0,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
+    spread: 7.5,           // 스폰 지점 주변에 흩어지는 반경
+    aggroRange: 10.5,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
     aggroChance: 0.35,     // 경로 재계산 때 한눈팔 확률
     aggroTime: 4.0,        // 한 번 끌리면 이 시간 동안 유지
-    flankRadius: 5.5,      // 목표 둘레 이 반경의 지점을 노리고 접근한다
+    flankRadius: 8.25,      // 목표 둘레 이 반경의 지점을 노리고 접근한다
     probeTurn: 1.1,        // 막혔을 때 접근각을 돌리는 크기(라디안)
     probeHold: 2.5,        // 새 접근각을 유지하는 시간(초)
     drift: 0.55,           // 포위 링 전체가 목표 둘레를 도는 속도(라디안/초)
@@ -35,7 +35,7 @@ const P = {
     memoryTime: 8.0,       // "마지막으로 닿았던 자리"를 기억하는 시간(초)
     leadTime: 0.45,        // 목표의 이동 방향 앞을 노리는 정도(초). 0=현재 위치만
     cutoffShare: 0.34,     // 무리 중 이 비율은 목표가 아니라 **은신처로 가는 길**을 막는다
-    cutoffLead: 2.2,       // 차단조가 목표보다 얼마나 앞(은신처 쪽)을 잡는가(m)
+    cutoffLead: 3.3,       // 차단조가 목표보다 얼마나 앞(은신처 쪽)을 잡는가(m)
     giveUpProbes: 3,       // 이만큼 시도해도 막히면 포기하고 서성인다
     prowlTime: 4.0,        // 서성이는 시간 — 플레이어가 확장을 시도할 틈
     attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
@@ -47,21 +47,21 @@ const P = {
   // 초소는 맵 전역에 흩어야 한다. 한 구역에 몰리면 나머지 절반이 무주공산이 된다.
   patrol: {
     count: 3,           // 순찰조 마릿수 (재시작부터)
-    radius: 7.0,        // 초소 둘레를 도는 반경
+    radius: 10.5,       // 초소 둘레를 도는 반경
     turn: 0.30,         // 도는 속도(라디안/초)
-    sight: 11.0,        // 햄스터를 발견하는 거리
+    sight: 16.5,        // 햄스터를 발견하는 거리
     chaseTime: 9.0,     // 발견 후 쫓는 시간(초) — 지나면 초소로 복귀
-    leash: 22.0,        // 초소에서 이만큼 벗어나면 무조건 복귀 (시간만으로는 못 끊는다)
+    leash: 33.0,        // 초소에서 이만큼 벗어나면 무조건 복귀 (시간만으로는 못 끊는다)
     leashCool: 4.0,     // 줄이 끊긴 뒤 다시 발각되지 않는 시간(초)
     postSpread: 0.62,   // 초소를 맵 반지름의 몇 배 위치에 둘지
-    minFromSpawn: 16,   // 내 시작 지점에서 최소 이만큼 떨어뜨린다
+    minFromSpawn: 24,   // 내 시작 지점에서 최소 이만큼 떨어뜨린다
   },
   // 동료는 경제 활동을 하지 않는다. 벽으로 은신처를 만들어 살아남고,
   // 내가 기절하면 구하러 온다. 그게 전부다 (멀티 구출 루프의 시험용).
   ally: {
     enabled: 1,            // 1=AI 동료 햄스터 (재시작부터). 0=솔로: 잡히면 즉시 전멸
-    speed: 6.0, radius: 0.35,
-    fleeDist: 5.0,         // 이 거리 안에 적이 오면 도망이 우선
+    speed: 9.0, radius: 0.35,
+    fleeDist: 7.5,         // 이 거리 안에 적이 오면 도망이 우선
     startWalls: 12,        // 시작 벽 예산 (동료 전용 지갑)
     buildCd: 0.35,         // 벽 하나 놓는 간격
     // 구조 판단 (D55-C): 내가 닿는 시간이 고양이보다 이만큼 늦어도 시도한다(초).
@@ -78,23 +78,25 @@ const P = {
   // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
   // reward = 처치 시 주는 치즈.
   // dmg = 플레이어/동료에게 한 방에 주는 피해
-  chaser: { radius: 1.35, speed: 5.0, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
-  runner: { radius: 0.85, speed: 6.8, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
+  chaser: { radius: 2.03, speed: 7.5, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
+  runner: { radius: 1.28, speed: 10.2, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
-  bomber: { radius: 1.5, speed: 2.6, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
-            blastRadius: 1.7, fuse: 0.9 },
+  bomber: { radius: 2.25, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
+            blastRadius: 2.55, fuse: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
-  // post = 벽 기둥의 한 변 길이 (D57). 셀(1.0)보다 작아서 **틈이 생긴다**:
-  //   직교로 붙이면 틈 1.0-0.4 = 0.6  → 플레이어(지름 0.7)도 못 지나감 = 진짜 벽
-  //   대각으로 붙이면 틈 √2×0.6 = 0.85 → **플레이어만 통과**, 순찰묘(2.7)·날쌘묘(1.7)는 불가
+  // post = 벽 **원기둥의 지름** (D57·D59). 셀(1.5)보다 작아서 틈이 생긴다:
+  //   직교로 붙이면 틈 1.5-0.9 = 0.6   → 플레이어(지름 0.7)도 못 지나감 = 진짜 벽
+  //   대각으로 붙이면 √2×1.5-0.9 = 1.22 → **플레이어만 통과** (순찰묘 4.1·날쌘묘 2.6 불가)
+  // post는 셀 크기에 비례하지 않는다 — **플레이어 지름에 묶여 있다.**
+  //   틈(CS-post) < 0.7 < 관문(√2·CS-post) → post ∈ (CS-0.7, √2·CS-0.7)
   // 원작 파일런의 성질이 여기서 나온다: 벽은 문이 아니라 체(sieve)다.
   // 벽은 **가서·바라보고·잠깐 서서** 짓는다 (D58, 원작 프로브).
-  //  range 1.2 = 그 칸 바로 앞까지 가야 한다 / faceDot = 그 방향을 보고 있어야 한다
+  //  range 1.8 = 그 칸 바로 앞까지 가야 한다 / faceDot = 그 방향을 보고 있어야 한다
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
-  wall: { cost: 12, removeCost: 4, cooldown: 0.05, height: 1.5, range: 1.2, post: 0.4,
+  wall: { cost: 12, removeCost: 4, cooldown: 0.05, height: 2.0, range: 1.8, post: 0.9,
           castTime: 0.3, faceDot: 0.2 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
@@ -102,7 +104,7 @@ const P = {
   // 건물은 약하다 — 적이 오래 붙들려 있지 않고 금방 정리하고 플레이어에게 온다
   // 치즈 창고 — 치즈를 부리는 곳. 더미에서 일정 거리 떨어뜨려야 지어진다
   // (붙여 지으면 채굴 사거리와 하역 사거리가 겹쳐 '나르는 행위'가 사라진다)
-  depot: { cost: 0, hp: 130, dropRange: 2.8, minPileDist: 4.0 },
+  depot: { cost: 0, hp: 130, dropRange: 4.2, minPileDist: 6.0 },
   // 볼주머니 채굴 (원작 프로브) — 치즈더미에서 캐서 창고까지 날라야 잔고가 된다
   // 스타크래프트 프로브와 같은 리듬: 더미에 붙어 한 짐을 캐고(시간 소요),
   // 창고까지 걸어가서 한 번에 부린다. 왕복 자체가 게임의 박자다.
@@ -112,10 +114,10 @@ const P = {
   carry: {
     playerLoad: 3, workerLoad: 2,
     mineTime: 1.6,      // 한 짐을 캐는 데 걸리는 시간(초)
-    range: 2.2,         // 치즈더미에 붙어야 하는 거리
+    range: 3.3,         // 치즈더미에 붙어야 하는 거리
   },
   worker: {
-    cost: 30, speed: 4.6, radius: 0.3,
+    cost: 30, speed: 6.9, radius: 0.3,
     perPile: 3,         // 치즈더미 하나에 붙을 수 있는 일꾼 수
     max: 12,
   },
@@ -123,13 +125,13 @@ const P = {
   //  플레이어: 가까이 가면 뜨는 E, 또는 더미 우클릭. **직접 움직이면 즉시 취소**
   //  일꾼: 드래그 상자 선택(Shift 또는 일꾼 위에서 시작) → 더미 우클릭
   command: {
-    promptRange: 4.5,   // 이 거리 안에 더미가 있으면 머리 위에 'E' 안내가 뜬다
-    pickRange: 1.8,     // 우클릭이 치즈더미를 집는 허용 반경(m)
+    promptRange: 6.75,  // 이 거리 안에 더미가 있으면 머리 위에 'E' 안내가 뜬다
+    pickRange: 2.7,     // 우클릭이 치즈더미를 집는 허용 반경(m)
     pickPx: 46,         // 유닛을 집는 허용 반경(화면 픽셀) — 카메라 각도와 무관하게
     dragMin: 7,         // 상자 선택으로 인정하는 최소 드래그(픽셀)
   },
   workshop: { cost: 15, hp: 100 },                               // 공방 — 업그레이드는 이 옆에서
-  tower: { cost: 35, hp: 110, range: 7.0, dmg: 30, reload: 1.0 }, // 경비탑 — 원작 포토캐논. 던진다
+  tower: { cost: 35, hp: 110, range: 10.5, dmg: 30, reload: 1.0 }, // 경비탑 — 원작 포토캐논. 던진다
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0 },
@@ -138,10 +140,10 @@ const P = {
   //  근접병: 체력이 있어 붙어서 버틴다. 사거리가 짧아 몸으로 막는 역할
   //  정예병: 체력이 높아 잘 안 죽는다. 비싸다 — 벽 없이 버티는 값이다
   guard: {
-    archerCost: 25, archerRange: 7.0, archerDmg: 26, archerReload: 1.1,
-    meleeCost: 30, meleeHp: 90, meleeRange: 0.9, meleeDmg: 34, meleeReload: 0.9,
-    eliteCost: 60, eliteHp: 260, eliteRange: 6.0, eliteDmg: 30, eliteReload: 1.0,
-    speed: 5.2, radius: 0.35,
+    archerCost: 25, archerRange: 10.5, archerDmg: 26, archerReload: 1.1,
+    meleeCost: 30, meleeHp: 90, meleeRange: 1.35, meleeDmg: 34, meleeReload: 0.9,
+    eliteCost: 60, eliteHp: 260, eliteRange: 9.0, eliteDmg: 30, eliteReload: 1.0,
+    speed: 7.8, radius: 0.35,
     max: 12,
     // 자폭묘를 얼마나 우선해서 때리는가 (1보다 작을수록 우선. 0.4 = 2.5배 가깝게 친다)
     bomberBias: 0.4,
@@ -158,7 +160,7 @@ const P = {
   pickup: {
     interval: 14,        // 새 픽업이 생기는 주기(초)
     maxOnMap: 5,         // 동시에 존재할 수 있는 최대 개수
-    minPlayerDist: 14,   // 플레이어에게서 이만큼 떨어진 곳에만 생성 (= 위험을 감수해야 함)
+    minPlayerDist: 21,   // 플레이어에게서 이만큼 떨어진 곳에만 생성 (= 위험을 감수해야 함)
     partsEach: 1,        // 부품 상자 하나당 부품
     cheeseEach: 35,      // 치즈 더미 하나당 치즈
     partsRatio: 0.6,     // 부품 상자가 나올 확률
@@ -168,7 +170,7 @@ const P = {
     maxLevel: 5,
     baseCost: 1, costStep: 1,   // n레벨 비용 = baseCost + costStep * n
     mineStep: 0.5,              // 채굴 속도
-    speedStep: 0.6,             // 햄스터 이동 속도
+    speedStep: 0.9,             // 햄스터 이동 속도
     radiusStep: 0.2,            // 채굴 시간 단축(초)
     wallhpStep: 45,             // 새 벽 내구도
     towerStep: 9,               // 경비탑 화력
@@ -182,7 +184,7 @@ const P = {
     // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
     interval: 30, speedGain: 0, dpsGain: 6, everyLevels: 0, hpGain: 120,
     // 속도는 상한을 둔다 — 적이 플레이어보다 빨라지면 술래잡기가 아니게 된다
-    speedCap: 7.2,
+    speedCap: 10.8,
     // 원작의 탐욕 페널티: 일정 수를 잡으면 그때 우루루 쏟아진다
     killsPerSurge: 6, surgeSize: 3,
   },
@@ -283,11 +285,11 @@ const startResources = () => P.res.startWalls * P.wall.cost;
 // ============================================================
 // 격자 / 좌표계
 //  - 벽 격자: CELLS x CELLS, 한 칸 CS(1.0m)
-//  - 내비 격자: 벽 격자의 2배 해상도 (navRes = 0.5m)
+//  - 내비 격자: 벽 격자의 2배 해상도 (navRes = CS/2)
 // ============================================================
 // 맵마다 크기가 다르므로 가변. 모든 헬퍼가 호출 시점에 읽는다.
 let CELLS = 56;
-const CS = 1.0;
+const CS = 1.5;
 let HALF = (CELLS * CS) / 2;
 const navRes = CS / 2;
 let NAV = CELLS * 2;
@@ -385,6 +387,11 @@ function buildGround(floorColor, gridColor) {
 // ============================================================
 const obstacles = new Map();
 const wallGeo = new THREE.BoxGeometry(1, 1, 1);
+// 플레이어 벽은 **원기둥**이다 (D59). 사각 기둥이면 대각 관문이 코너-코너 거리라
+// √2×(틈)밖에 안 나오는데, 원이면 중심거리 자체가 √2배로 벌어져 관문이 훨씬 넓다.
+//   사각: 대각 관문 = √2(CS-post)          = 0.85  (몸 0.7 → 여유 7.5cm씩, 사실상 못 지나감)
+//   원형: 대각 관문 = √2·CS - post         = 1.01  (여유 15cm씩, 실제로 지나갈 수 있다)
+const postGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
 
 function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   const key = cellKey(i, j);
@@ -397,11 +404,12 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
     emissive: new THREE.Color(building ? 0x1a4a8f : 0x000000),
     emissiveIntensity: building ? 0.6 : 0,
   });
-  const mesh = new THREE.Mesh(wallGeo, mat);
+  const post = !bedrock && !building;
+  const mesh = new THREE.Mesh(post ? postGeo : wallGeo, mat);
   const h = bedrock ? 1.4 : P.wall.height * (building ? 0.15 : 1);
   const w = cellToWorld(i, j);
-  // 플레이어 벽만 가느다란 기둥 — 틈이 보여야 "지나갈 수 있겠다"가 읽힌다
-  const side = bedrock || building ? CS * 0.98 : P.wall.post;
+  // 플레이어 벽만 가느다란 원기둥 — 틈이 보여야 "지나갈 수 있겠다"가 읽힌다
+  const side = post ? P.wall.post : CS * 0.98;
   mesh.scale.set(side, h, side);
   mesh.position.set(w.x, h / 2, w.z);
   mesh.castShadow = mesh.receiveShadow = true;
@@ -2407,6 +2415,18 @@ function collideWithObstacles(ent, r) {
         const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
         if (!ob) continue;
         const w = cellToWorld(ob.i, ob.j);
+        // 기둥(플레이어 벽)은 원기둥 — 원-원 밀어내기
+        if (!ob.bedrock && !ob.bldgRef) {
+          const pr = P.wall.post / 2;
+          let dx = ent.x - w.x, dz = ent.z - w.z;
+          let d = Math.hypot(dx, dz);
+          const need = pr + r;
+          if (d >= need) continue;
+          if (d < 1e-6) { dx = 1; dz = 0; d = 1; }
+          ent.x = w.x + (dx / d) * need;
+          ent.z = w.z + (dz / d) * need;
+          continue;
+        }
         const h = obHalf(ob);
         const x0 = w.x - h, x1 = w.x + h;
         const z0 = w.z - h, z1 = w.z + h;
@@ -2438,6 +2458,8 @@ function collideWithObstacles(ent, r) {
 
 function distToObstacle(ent, ob) {
   const w = cellToWorld(ob.i, ob.j);
+  if (!ob.bedrock && !ob.bldgRef)
+    return Math.max(Math.hypot(ent.x - w.x, ent.z - w.z) - P.wall.post / 2, 0);
   const h = obHalf(ob);
   const px = clamp(ent.x, w.x - h, w.x + h);
   const pz = clamp(ent.z, w.z - h, w.z + h);
@@ -3862,7 +3884,7 @@ function removeGhostWall() {
 const gui = new GUI({ title: '튜닝' });
 {
   const f = gui.addFolder('플레이어');
-  f.add(P.player, 'speed', 2, 14, 0.1).name('이동 속도');
+  f.add(P.player, 'speed', 1, 18, 0.1).name('이동 속도');
   f.add(P.player, 'radius', 0.15, 0.8, 0.01).name('반지름')
     .onChange((v) => playerVis.group.scale.setScalar(v));
   f.add(P.player, 'graceTime', 0, 5, 0.1).name('피격 뒤 무적(초)');
@@ -3878,7 +3900,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'attackRange', 0.2, 2, 0.05).name('공격 사거리');
   f.add(P.enemy, 'repath', 0.1, 1.5, 0.05).name('경로 재계산 주기');
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('등장 딜레이(초)');
-  f.add(P.enemy, 'spread', 0, 14, 0.5).name('스폰 흩어짐 (재시작부터)');
+  f.add(P.enemy, 'spread', 0, 20, 0.5).name('스폰 흩어짐 (재시작부터)');
   f.add(P.enemy, 'aggroRange', 0, 16, 0.5).name('건물 어그로 시야');
   f.add(P.enemy, 'aggroChance', 0, 1, 0.05).name('한눈팔 확률');
   f.add(P.enemy, 'aggroTime', 1, 12, 0.5).name('어그로 지속(초)');
@@ -3919,12 +3941,12 @@ const gui = new GUI({ title: '튜닝' });
   const f = gui.addFolder('자원');
   f.add(P.wall, 'cost', 1, 60, 1).name('벽 비용');
   f.add(P.wall, 'removeCost', 0, 30, 1).name('철거 비용');
-  f.add(P.wall, 'post', 0.15, 1, 0.02).name('벽 기둥 굵기 (틈 = 1-굵기)').onChange(() => {
+  f.add(P.wall, 'post', 0.2, 2.2, 0.05).name('벽 기둥 굵기 (틈 = 1-굵기)').onChange(() => {
     for (const ob of obstacles.values())
       if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
   });
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('벽 높이');
-  f.add(P.wall, 'range', 0.4, 6, 0.1).name('벽 설치 거리 (가까이 가야 함)');
+  f.add(P.wall, 'range', 0.5, 9, 0.1).name('벽 설치 거리 (가까이 가야 함)');
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 시전 시간(초) — 무방비');
   f.add(P.wall, 'faceDot', -1, 1, 0.05).name('바라봐야 하는 정도 (-1=아무 방향)');
   f.add(P.res, 'startWalls', 0, 30, 1).name('시작 벽 개수분 (재시작부터)');
@@ -3933,20 +3955,20 @@ const gui = new GUI({ title: '튜닝' });
 {
   const f = gui.addFolder('동료 (AI 햄스터)');
   f.add(P.ally, 'enabled', 0, 1, 1).name('사용 (재시작부터, 0=솔로)');
-  f.add(P.ally, 'speed', 2, 12, 0.1).name('이동 속도');
-  f.add(P.ally, 'fleeDist', 1, 12, 0.1).name('도망 시작 거리');
+  f.add(P.ally, 'speed', 2, 18, 0.1).name('이동 속도');
+  f.add(P.ally, 'fleeDist', 1, 18, 0.1).name('도망 시작 거리');
   f.add(P.ally, 'startWalls', 0, 40, 1).name('동료 벽 예산 (재시작부터)');
 }
 {
   const f = gui.addFolder('건물 (2번 창고 · 3번 공방)');
   f.add(P.depot, 'cost', 5, 60, 1).name('창고 비용');
   f.add(P.depot, 'hp', 50, 1500, 10).name('창고 내구도 (새 건물부터)');
-  f.add(P.depot, 'dropRange', 1, 8, 0.2).name('창고 하역 거리');
-  f.add(P.depot, 'minPileDist', 0, 14, 0.5).name('창고-더미 최소 거리');
+  f.add(P.depot, 'dropRange', 1, 12, 0.2).name('창고 하역 거리');
+  f.add(P.depot, 'minPileDist', 0, 20, 0.5).name('창고-더미 최소 거리');
   f.add(P.carry, 'mineTime', 0.3, 6, 0.1).name('한 짐 캐는 시간(초)');
   f.add(P.carry, 'playerLoad', 2, 60, 1).name('플레이어 한 짐');
   f.add(P.carry, 'workerLoad', 2, 60, 1).name('일꾼 한 짐');
-  f.add(P.carry, 'range', 1, 6, 0.1).name('채굴 접근 거리');
+  f.add(P.carry, 'range', 1, 9, 0.1).name('채굴 접근 거리');
   f.add(P.build, 'depotTime', 0.5, 12, 0.5).name('창고 건설 시간(초)');
   f.add(P.build, 'workshopTime', 0.5, 12, 0.5).name('공방 건설 시간(초)');
   f.add(P.build, 'towerTime', 0.5, 12, 0.5).name('경비탑 건설 시간(초)');
@@ -3954,58 +3976,58 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
   f.add(P.tower, 'cost', 5, 120, 5).name('경비탑 비용');
   f.add(P.tower, 'hp', 50, 1500, 10).name('경비탑 내구도 (새 건물부터)');
-  f.add(P.tower, 'range', 2, 16, 0.5).name('경비탑 사거리');
+  f.add(P.tower, 'range', 2, 24, 0.5).name('경비탑 사거리');
   f.add(P.tower, 'dmg', 2, 120, 1).name('경비탑 투척 피해');
   f.add(P.tower, 'reload', 0.2, 4, 0.1).name('경비탑 투척 간격');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('적 체력 증가/레벨');
-  f.add(P.threat, 'speedCap', 3, 14, 0.1).name('적 속도 상한');
+  f.add(P.threat, 'speedCap', 3, 21, 0.1).name('적 속도 상한');
   f.add(P.tempo, 'moveScale', 0.3, 1.5, 0.05).name('전체 이동 속도 배율');
   f.add(P.threat, 'killsPerSurge', 1, 30, 1).name('N킬마다 우루루');
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
 }
 {
   const f = gui.addFolder('채굴 명령 (E · 우클릭 · 드래그)');
-  f.add(P.command, 'promptRange', 1, 12, 0.5).name("'E' 안내가 뜨는 거리");
-  f.add(P.command, 'pickRange', 0.5, 5, 0.1).name('우클릭 집는 반경');
+  f.add(P.command, 'promptRange', 1, 18, 0.5).name("'E' 안내가 뜨는 거리");
+  f.add(P.command, 'pickRange', 0.5, 7, 0.1).name('우클릭 집는 반경');
   f.add(P.command, 'dragMin', 2, 40, 1).name('상자 선택 최소 드래그(px)');
   f.add(P.worker, 'perPile', 1, 8, 1).name('한 더미당 일꾼 수');
   f.add(P.worker, 'max', 1, 30, 1).name('일꾼 최대');
-  f.add(P.worker, 'speed', 1, 12, 0.1).name('일꾼 이동 속도');
+  f.add(P.worker, 'speed', 1, 18, 0.1).name('일꾼 이동 속도');
   f.add(P.worker, 'cost', 5, 120, 1).name('일꾼 비용');
 }
 {
   const f = gui.addFolder('방어병 3종 (6 사수 · 7 근접병 · 8 정예병)');
-  f.add(P.guard, 'speed', 1, 12, 0.1).name('공통 이동 속도');
+  f.add(P.guard, 'speed', 1, 18, 0.1).name('공통 이동 속도');
   f.add(P.guard, 'max', 1, 40, 1).name('방어병 최대');
   f.add(P.guard, 'costGrowth', 0, 0.6, 0.01).name('한 명 늘 때마다 값 상승률');
   f.add(P.guard, 'bomberBias', 0.1, 2, 0.05).name('자폭묘 우선도(작을수록 우선)');
   f.add(P.guard, 'radius', 0.15, 1, 0.05).name('공통 몸집');
   f.add(P.guard, 'archerCost', 5, 150, 1).name('사수 비용');
-  f.add(P.guard, 'archerRange', 2, 16, 0.5).name('사수 사거리');
+  f.add(P.guard, 'archerRange', 2, 24, 0.5).name('사수 사거리');
   f.add(P.guard, 'archerDmg', 2, 120, 1).name('사수 피해');
   f.add(P.guard, 'archerReload', 0.2, 4, 0.1).name('사수 투척 간격');
   f.add(P.guard, 'meleeCost', 5, 150, 1).name('근접병 비용');
   f.add(P.guard, 'meleeHp', 10, 1000, 10).name('근접병 체력');
-  f.add(P.guard, 'meleeRange', 0.3, 5, 0.1).name('근접병 사거리(몸 표면 기준)');
+  f.add(P.guard, 'meleeRange', 0.3, 7, 0.1).name('근접병 사거리(몸 표면 기준)');
   f.add(P.guard, 'meleeDmg', 2, 150, 1).name('근접병 피해');
   f.add(P.guard, 'meleeReload', 0.2, 4, 0.1).name('근접병 공격 간격');
   f.add(P.guard, 'eliteCost', 5, 250, 5).name('정예병 비용');
   f.add(P.guard, 'eliteHp', 10, 2000, 10).name('정예병 체력');
-  f.add(P.guard, 'eliteRange', 2, 16, 0.5).name('정예병 사거리');
+  f.add(P.guard, 'eliteRange', 2, 24, 0.5).name('정예병 사거리');
   f.add(P.guard, 'eliteDmg', 2, 150, 1).name('정예병 피해');
   f.add(P.guard, 'eliteReload', 0.2, 4, 0.1).name('정예병 공격 간격');
 }
 {
   const f = gui.addFolder('순찰조 (맵 상주)');
   f.add(P.patrol, 'count', 0, 10, 1).name('마릿수 (재시작부터)');
-  f.add(P.patrol, 'radius', 2, 16, 0.5).name('순찰 반경');
+  f.add(P.patrol, 'radius', 2, 24, 0.5).name('순찰 반경');
   f.add(P.patrol, 'turn', 0, 1.5, 0.05).name('도는 속도');
-  f.add(P.patrol, 'sight', 3, 25, 0.5).name('발견 거리');
+  f.add(P.patrol, 'sight', 3, 36, 0.5).name('발견 거리');
   f.add(P.patrol, 'chaseTime', 1, 30, 0.5).name('추격 지속(초)');
-  f.add(P.patrol, 'leash', 5, 60, 1).name('초소에서 벗어나는 한계');
+  f.add(P.patrol, 'leash', 5, 90, 1).name('초소에서 벗어나는 한계');
   f.add(P.patrol, 'leashCool', 0, 15, 0.5).name('줄 끊긴 뒤 무시 시간');
   f.add(P.patrol, 'postSpread', 0.2, 0.95, 0.02).name('초소 흩는 반경 (재시작부터)');
-  f.add(P.patrol, 'minFromSpawn', 0, 40, 1).name('내 시작점과 최소 거리');
+  f.add(P.patrol, 'minFromSpawn', 0, 60, 1).name('내 시작점과 최소 거리');
 }
 {
   const f = gui.addFolder('적 체력 / 보상');
@@ -4018,7 +4040,7 @@ const gui = new GUI({ title: '튜닝' });
 }
 {
   const f = gui.addFolder('적 접근 방식 (우회 시도)');
-  f.add(P.enemy, 'flankRadius', 0, 14, 0.5).name('접근 반경');
+  f.add(P.enemy, 'flankRadius', 0, 20, 0.5).name('접근 반경');
   f.add(P.enemy, 'probeTurn', 0.2, 3, 0.1).name('막혔을 때 각도 전환');
   f.add(P.enemy, 'probeHold', 0.5, 8, 0.5).name('새 각도 유지(초)');
   f.add(P.enemy, 'drift', 0, 2, 0.05).name('포위 링 도는 속도');
@@ -4032,10 +4054,10 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'memoryTime', 0, 30, 0.5).name('마지막 목격 기억(초)');
   f.add(P.enemy, 'leadTime', 0, 1.5, 0.05).name('리드 조준(0=현재 위치)');
   f.add(P.enemy, 'cutoffShare', 0, 0.8, 0.02).name('차단조 비율');
-  f.add(P.enemy, 'cutoffLead', 0, 8, 0.2).name('차단 지점 앞당김(m)');
+  f.add(P.enemy, 'cutoffLead', 0, 12, 0.2).name('차단 지점 앞당김(m)');
   f.add(P.ally, 'rescueMargin', -3, 6, 0.1).name('동료 구조 과감함(초)');
-  f.add(P.player, 'safeMarkRange', 0, 30, 1).name('은신처 표시가 뜨는 거리');
-  f.add(P.player, 'safeMargin', 0.2, 4, 0.1).name('은신처 인정 여유(m)').onChange(refreshReach);
+  f.add(P.player, 'safeMarkRange', 0, 45, 1).name('은신처 표시가 뜨는 거리');
+  f.add(P.player, 'safeMargin', 0.2, 6, 0.1).name('은신처 인정 여유(m)').onChange(refreshReach);
 }
 {
   const f = gui.addFolder('픽업 (밖에 나갈 이유)');
