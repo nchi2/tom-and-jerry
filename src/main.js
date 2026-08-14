@@ -78,11 +78,11 @@ const P = {
   // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
   // reward = 처치 시 주는 치즈.
   // dmg = 플레이어/동료에게 한 방에 주는 피해
-  chaser: { radius: 1.35, speed: 5.0, bldgDps: 24, hp: 1300, reward: 18, dmg: 34 },
-  runner: { radius: 0.85, speed: 6.8, bldgDps: 16, hp: 750, reward: 12, dmg: 20 },
+  chaser: { radius: 1.35, speed: 5.0, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
+  runner: { radius: 0.85, speed: 6.8, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
-  bomber: { radius: 1.5, speed: 2.6, bldgDps: 40, hp: 1000, reward: 30, dmg: 45,
+  bomber: { radius: 1.5, speed: 2.6, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
             blastRadius: 1.7, fuse: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
@@ -133,6 +133,11 @@ const P = {
     meleeCost: 30, meleeHp: 90, meleeRange: 0.9, meleeDmg: 34, meleeReload: 0.9,
     eliteCost: 60, eliteHp: 260, eliteRange: 6.0, eliteDmg: 30, eliteReload: 1.0,
     speed: 5.2, radius: 0.35,
+    max: 12,
+    // 자폭묘를 얼마나 우선해서 때리는가 (1보다 작을수록 우선. 0.4 = 2.5배 가깝게 친다)
+    bomberBias: 0.4,
+    // 병력이 늘수록 다음 한 명이 비싸진다 (D56) — 치즈→병력→처치→치즈 눈덩이를 끊는다
+    costGrowth: 0.15,
   },
   res: {
     startWalls: 10, wallCost: 5,
@@ -159,8 +164,14 @@ const P = {
     wallhpStep: 45,             // 새 벽 내구도
     towerStep: 9,               // 경비탑 화력
   },
+  // 모든 이동 속도에 곱해지는 배율 (D56).
+  // 사람도 고양이도 같이 느려지므로 **상대 속도 관계는 그대로**고 템포만 내려간다.
+  // 술래잡기의 판단 시간을 벌어주는 값이라, 손맛에 가장 크게 영향을 준다.
+  tempo: { moveScale: 0.75 },
   threat: {
-    interval: 30, speedGain: 0.15, dpsGain: 6, everyLevels: 0, hpGain: 120,
+    // speedGain 0 = 후반에도 더 빨라지지 않는다 (2026-08-13).
+    // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
+    interval: 30, speedGain: 0, dpsGain: 6, everyLevels: 0, hpGain: 120,
     // 속도는 상한을 둔다 — 적이 플레이어보다 빨라지면 술래잡기가 아니게 된다
     speedCap: 7.2,
     // 원작의 탐욕 페널티: 일정 수를 잡으면 그때 우루루 쏟아진다
@@ -193,11 +204,15 @@ const BUILD_SLOTS = [
   { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
   { key: 'tower', label: '경비탑', size: 2, cost: () => P.tower.cost },
   { key: 'worker', label: '일꾼 고용', size: 1, cost: () => P.worker.cost },
-  { key: 'archer', label: '사수', size: 1, cost: () => P.guard.archerCost },
-  { key: 'melee', label: '근접병', size: 1, cost: () => P.guard.meleeCost },
-  { key: 'elite', label: '정예병', size: 1, cost: () => P.guard.eliteCost },
+  { key: 'archer', label: '사수', size: 1, cost: () => guardCost('archer') },
+  { key: 'melee', label: '근접병', size: 1, cost: () => guardCost('melee') },
+  { key: 'elite', label: '정예병', size: 1, cost: () => guardCost('elite') },
   { key: 'remove', label: '철거', size: 1, cost: () => P.wall.removeCost },
 ];
+
+// 다음 한 명의 값 — 이미 거느린 병력 수만큼 비싸진다 (D56)
+const guardCost = (type) =>
+  Math.round(GUARD_TYPES[type].cost() * Math.pow(1 + P.guard.costGrowth, guards.length));
 
 // 방어병 병종 (D51) — 값은 전부 P.guard에서 읽는다 (튜닝 슬라이더와 세팅 스냅샷 때문)
 const GUARD_TYPES = {
@@ -236,7 +251,12 @@ let parts = 0;
 
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
 const effMineRate = () => P.res.mineRate + upg.mine * P.upgrade.mineStep;
-const effPlayerSpeed = () => P.player.speed + upg.speed * P.upgrade.speedStep;
+// 모든 이동 속도는 이 배율을 통과한다 (D56) — 여기 한 곳만 바꾸면 전체 템포가 바뀐다
+const moveScale = () => P.tempo.moveScale;
+const effPlayerSpeed = () => (P.player.speed + upg.speed * P.upgrade.speedStep) * moveScale();
+const effWorkerSpeed = () => P.worker.speed * moveScale();
+const effGuardSpeed = () => P.guard.speed * moveScale();
+const effAllySpeed = () => P.ally.speed * moveScale();
 // 업그레이드는 채굴 '시간'을 줄인다 (레벨당 radiusStep초)
 const effMineTime = () => Math.max(P.carry.mineTime - upg.radius * P.upgrade.radiusStep, 0.25);
 const effWallHp = () => P.wall.hp + upg.wallhp * P.upgrade.wallhpStep;
@@ -914,7 +934,7 @@ function enemySpawnPos(n) {
 const typeP = (e) => P[e.type];
 const enemyR = (e) => typeP(e).radius;
 const enemySpeedOf = (e) =>
-  Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap);
+  Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap) * moveScale();
 const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain;
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 const typeMaxHp = (type) => P[type].hp + threatLevel() * P.threat.hpGain;
@@ -1637,9 +1657,11 @@ function hireWorker(owner = 'p') {
   const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
   vis.group.scale.setScalar(P.worker.radius);
   const ring = makeSelRing(0xf0c040, 0.85);
+  // 일꾼도 **내 옆에서** 나온다 (동료 것은 동료 옆에서)
+  const sp = spawnSpotNear(home.x, home.z, P.worker.radius, workers.length);
   const w = {
     kind: 'worker',
-    x: dep.cx + (Math.random() - 0.5) * 2, z: dep.cz + 1.6 + Math.random(),
+    x: sp.x, z: sp.z,
     faceX: 0, faceZ: 1, carry: 0, pile: null, job: null, owner,
     // forced = 플레이어가 직접 지정한 더미 (자동 재배치가 덮어쓰지 않는다)
     // moveGoal = 이동 명령 목적지 / idle = 명령을 끝내고 대기 중 (스스로 일하지 않음)
@@ -1678,6 +1700,18 @@ const selGuards = () => [...selectedUnits].filter((u) => u.kind === 'guard' && g
 // 유닛 집기는 **화면 좌표**로 한다.
 // 지면 좌표로 재면 카메라가 기울수록 몸통과 발밑이 어긋나 빗나가고,
 // 3인칭 시점에서는 아예 안 잡혔다.
+// 적 집기 — 몸집이 크므로 화면 반경을 넉넉히 준다 (자폭묘를 급하게 찍어야 하니까)
+function enemyAtScreen(clientX, clientY, maxPx = P.command.pickPx * 1.6) {
+  let best = null, bd = maxPx;
+  for (const e of enemies) {
+    const s = worldToScreen(e.x, 0.8, e.z);
+    if (!s) continue;
+    const d = Math.hypot(s.x - clientX, s.y - clientY);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
 function unitAtScreen(clientX, clientY, maxPx = P.command.pickPx) {
   let best = null, bd = maxPx;
   for (const u of myUnits()) {
@@ -1806,8 +1840,8 @@ function updateWorkers(dt) {
       const dl = Math.hypot(dx, dz);
       if (dl > 0.03) {
         dx /= dl; dz /= dl;
-        w.x += dx * P.worker.speed * dt;
-        w.z += dz * P.worker.speed * dt;
+        w.x += dx * effWorkerSpeed() * dt;
+        w.z += dz * effWorkerSpeed() * dt;
         w.faceX = dx; w.faceZ = dz;
       }
       collideWithObstacles(w, P.worker.radius);
@@ -1865,10 +1899,14 @@ function detonate(e) {
   // 반경 안의 건물·햄스터도 피해
   for (const b of [...buildings])
     if (Math.hypot(b.cx - e.x, b.cz - e.z) < R + 1.2) damageBuilding(b, P.bomber.dmg * 2);
+  // 폭풍도 벽을 넘지 않는다. 벽 제거를 먼저 했으므로, **남아 있는 벽**(지형·건물)만
+  // 가려준다 — 자기가 뚫은 구멍으로는 그대로 들이친다
   for (const h of [player, ally])
-    if (h.active !== false && Math.hypot(h.x - e.x, h.z - e.z) < R + 0.6) hurtHamster(h, P.bomber.dmg);
+    if (h.active !== false && Math.hypot(h.x - e.x, h.z - e.z) < R + 0.6
+        && !segmentBlocked(e.x, e.z, h.x, h.z)) hurtHamster(h, P.bomber.dmg);
   for (const g of [...guards])
-    if (Math.hypot(g.x - e.x, g.z - e.z) < R + 0.6) removeGuard(g, true);
+    if (Math.hypot(g.x - e.x, g.z - e.z) < R + 0.6 && !segmentBlocked(e.x, e.z, g.x, g.z))
+      damageGuard(g, P.bomber.dmg * 3);
 
   scene.remove(e.vis.group);
   disposeBar(e.bar);
@@ -2009,23 +2047,45 @@ function makeSelRing(color, scale = 1) {
   return ring;
 }
 
-function placeGuard(i, j, type = 'archer') {
+// 유닛은 **내 옆에서 나온다** — 자리를 찍을 필요가 없다.
+// 건물은 어디에 짓느냐가 전략이지만 병력은 아니고, 전투 중에 타일을 조준하는 건
+// 조작 부담만 컸다 (특히 자폭묘가 붙는 순간).
+function spawnSpotNear(x, z, r, n = 0) {
+  for (let t = 0; t < 24; t++) {
+    const a = (n + t) * 2.399963;
+    const d = 1.1 + t * 0.12;
+    const sx = clamp(x + Math.cos(a) * d, -HALF + 1, HALF - 1);
+    const sz = clamp(z + Math.sin(a) * d, -HALF + 1, HALF - 1);
+    if (clearAll && !canPass(clearAll, worldToNav(sx, sz), r)) continue;
+    return { x: sx, z: sz };
+  }
+  return { x, z };
+}
+
+function placeGuard(type = 'archer') {
   const T = GUARD_TYPES[type];
-  if (resources < T.cost()) { flashMsg(`치즈가 부족합니다 (${T.label} ${T.cost()})`, '#e05050'); return null; }
-  if (obstacles.has(cellKey(i, j)) || nodeAt(i, j)) { flashMsg('그 자리에는 세울 수 없습니다', '#e05050'); return null; }
-  const w = cellToWorld(i, j);
-  if (Math.hypot(player.x - w.x, player.z - w.z) > P.wall.range + 1.0) { flashMsg('너무 멉니다', '#e05050'); return null; }
-  resources -= T.cost();
+  const cost = guardCost(type);
+  if (resources < cost) { flashMsg(`치즈가 부족합니다 (${T.label} ${cost})`, '#e05050'); return null; }
+  if (guards.length >= P.guard.max) { flashMsg(`방어병이 너무 많습니다 (최대 ${P.guard.max})`, '#e05050'); return null; }
+  const w = spawnSpotNear(player.x, player.z, T.radius(), guards.length);
+  resources -= cost;
   const vis = makeGuardVis(type);
   const maxHp = T.hp();
   const g = {
     kind: 'guard', type, x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1,
-    vis, ring: makeSelRing(0x9fe8a0, 1.05), path: [], repathT: 0, reload: 0,
+    vis, ring: makeSelRing(0x9fe8a0, 1.05), path: [], repathT: 0, reload: 0, focus: null,
     hp: maxHp, maxHp, bar: maxHp > 0 ? makeBar(0x5fd07a, 1.0) : null, swing: 0,
   };
   guards.push(g);
   spawnBuildFx(w.x, w.z);
   return g;
+}
+
+// 체력이 있는 병종은 깎이고, 사수(체력 0)는 한 방에 쓰러진다
+function damageGuard(g, dmg) {
+  if (g.maxHp <= 0) { removeGuard(g, true); return; }
+  g.hp -= dmg;
+  if (g.hp <= 0) removeGuard(g, true);
 }
 
 function removeGuard(g, byEnemy) {
@@ -2090,6 +2150,17 @@ function updateGuards(dt) {
     }
     if (!guards.includes(g)) continue;
 
+    // 집중 공격 명령이 있으면 사거리에 들어갈 때까지 쫓아간다
+    if (g.focus && enemies.includes(g.focus)) {
+      const fd = Math.hypot(g.focus.x - g.x, g.focus.z - g.z) - enemyR(g.focus);
+      if (fd > T.range() * 0.8) {
+        const a = Math.atan2(g.x - g.focus.x, g.z - g.focus.z);
+        const stand = enemyR(g.focus) + T.range() * 0.6;
+        g.gx = clamp(g.focus.x + Math.sin(a) * stand, -HALF + 1, HALF - 1);
+        g.gz = clamp(g.focus.z + Math.cos(a) * stand, -HALF + 1, HALF - 1);
+      }
+    } else if (g.focus) g.focus = null;
+
     // 명령받은 자리로 이동
     const dGoal = Math.hypot(g.gx - g.x, g.gz - g.z);
     if (dGoal > 0.25) {
@@ -2107,8 +2178,8 @@ function updateGuards(dt) {
       const dl = Math.hypot(dx, dz);
       if (dl > 0.03) {
         dx /= dl; dz /= dl;
-        g.x += dx * P.guard.speed * dt;
-        g.z += dz * P.guard.speed * dt;
+        g.x += dx * effGuardSpeed() * dt;
+        g.z += dz * effGuardSpeed() * dt;
         g.faceX = dx; g.faceZ = dz;
       }
       collideWithObstacles(g, gr);
@@ -2116,14 +2187,26 @@ function updateGuards(dt) {
       g.path.length = 0;
     }
 
-    // 사거리 안 가장 가까운 적을 친다 — 사수/정예병은 던지고(벽을 넘음), 근접병은 후려친다.
+    // 사거리 안 적을 친다 — 사수/정예병은 던지고(벽을 넘음), 근접병은 후려친다.
     // 거리는 **적의 몸 표면까지**로 잰다. 중심 거리로 재면 반지름 1.35짜리 순찰묘는
     // 몸이 닿아도 중심이 1.7m 밖이라 근접병이 영원히 못 때린다.
     g.reload -= dt;
-    let tgt = null, bd = T.range();
-    for (const e of enemies) {
-      const d = Math.hypot(e.x - g.x, e.z - g.z) - enemyR(e);
-      if (d < bd) { bd = d; tgt = e; }
+    if (g.focus && !enemies.includes(g.focus)) g.focus = null;
+    let tgt = null, bd = T.range(), best = Infinity;
+    // 1) 집중 공격 명령이 살아 있으면 그 적이 최우선
+    if (g.focus) {
+      const d = Math.hypot(g.focus.x - g.x, g.focus.z - g.z) - enemyR(g.focus);
+      if (d < T.range()) { tgt = g.focus; bd = d; }
+    }
+    // 2) 아니면 사거리 안에서 고른다. **자폭묘가 우선** — 벽을 부수는 유일한 존재라
+    //    먼저 끊지 않으면 방어선이 통째로 날아간다 (조작 없이도 그건 해줘야 한다)
+    if (!tgt) {
+      for (const e of enemies) {
+        const d = Math.hypot(e.x - g.x, e.z - g.z) - enemyR(e);
+        if (d >= T.range()) continue;
+        const score = d * (e.type === 'bomber' ? P.guard.bomberBias : 1);
+        if (score < best) { best = score; bd = d; tgt = e; }
+      }
     }
     if (tgt) {
       const dc = Math.max(Math.hypot(tgt.x - g.x, tgt.z - g.z), 0.001);
@@ -2685,6 +2768,22 @@ function planEnemyPath(enemy) {
   enemy.aiMode = '배회';
 }
 
+// 두 점 사이에 **막힌 칸이 하나라도 있으면** true.
+// 벽 너머 공격을 막는 데 쓴다 — 몸집이 커서 벽 반대편에 있어도 사거리(2.3m) 안에
+// 들어오는 일이 생겼고, 그때 벽을 뚫고 때리는 것처럼 보였다.
+// 통행 판정(clearance)이 아니라 **셀 점유**로 재는 게 핵심 — 손이 닿느냐의 문제다.
+function segmentBlocked(x0, z0, x1, z1) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const steps = Math.max(1, Math.ceil(len / (CS * 0.4)));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const c = worldToCell(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
+    const ob = obstacles.get(cellKey(c.i, c.j));
+    if (ob) return true;
+  }
+  return false;
+}
+
 function segmentClearFor(x0, z0, x1, z1, r) {
   const len = Math.hypot(x1 - x0, z1 - z0);
   const steps = Math.max(1, Math.ceil(len / (navRes * 0.6)));
@@ -2963,7 +3062,11 @@ function updateEnemy(enemy, dt) {
   let hitTarget = null;
   for (const h of chaseTargets()) {
     const hr = h === player ? P.player.radius : P.ally.radius;
-    if (Math.hypot(h.x - enemy.x, h.z - enemy.z) < er + hr + P.enemy.attackRange) { hitTarget = h; break; }
+    if (Math.hypot(h.x - enemy.x, h.z - enemy.z) >= er + hr + P.enemy.attackRange) continue;
+    // 벽 너머로는 못 때린다 — 사거리 안이어도 사이에 막힌 칸이 있으면 무효
+    if (segmentBlocked(enemy.x, enemy.z, h.x, h.z)) continue;
+    hitTarget = h;
+    break;
   }
   enemy.atkT = (enemy.atkT || 0) - dt;
   // 자폭묘는 "앞을 막은 벽"에도 점화한다 — 벽이 무적이라 이게 유일한 돌파 수단
@@ -3054,6 +3157,14 @@ window.addEventListener('keydown', (e) => {
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
   }
   if (e.code === 'KeyE' && alive) toggleMineOrder();
+  // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
+  if (e.code === 'Tab') {
+    e.preventDefault();
+    selectedUnits.clear();
+    for (const gu of guards) selectedUnits.add(gu);
+    if (guards.length) selectionMsg();
+    else flashMsg('방어병이 없습니다', '#e05050');
+  }
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
   // 숫자키 = 업그레이드 패널이 열려 있으면 구매, 아니면 건설 슬롯 선택
   for (let k = 0; k < 9; k++) {
@@ -3176,10 +3287,19 @@ window.addEventListener('mousedown', (e) => {
     return;
   }
 
+  // 2) 적 위 → 선택한 방어병 전원 **집중 공격** (자폭묘를 끊는 데 이게 필요하다)
+  const foe = enemyAtScreen(e.clientX, e.clientY);
+  if (foe && selGuards().length) {
+    let n = 0;
+    for (const gu of selGuards()) { gu.focus = foe; gu.repathT = 0; gu.path.length = 0; n++; }
+    flashMsg(`${n}기 집중 공격 — ${TYPE_INFO[foe.type].label}`, '#ff8b5e');
+    return;
+  }
+
   const hit = pointerGround(e);
   if (!hit) return;
 
-  // 2) 치즈더미 → 일꾼이 선택돼 있으면 일꾼에게, 아니면 내가 간다
+  // 3) 치즈더미 → 일꾼이 선택돼 있으면 일꾼에게, 아니면 내가 간다
   const pile = nearestPile(hit.x, hit.z, P.command.pickRange);
   if (pile) {
     if (selWorkers().length) commandWorkersToPile(pile);
@@ -3188,10 +3308,11 @@ window.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 3) 빈 땅 → 선택한 유닛 전부 이동
+  // 4) 빈 땅 → 선택한 유닛 전부 이동 (집중 공격 명령은 여기서 풀린다)
   const c = worldToCell(hit.x, hit.z);
   if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
   const cw = cellToWorld(c.i, c.j);
+  for (const gu of selGuards()) gu.focus = null;
   commandUnitsMove(cw.x, cw.z);
 });
 
@@ -3528,6 +3649,9 @@ function updatePlayer(dt) {
     valid = !!ob && !ob.bedrock && !ob.bldgRef && affordable;
   } else if (slot.key === 'worker') {
     valid = affordable && !!nearestDepot(player.x, player.z);
+  } else if (GUARD_TYPES[slot.key]) {
+    // 유닛은 내 옆에서 나온다 — 자리를 안 찍으므로 타일 유효성도 없다
+    valid = affordable && guards.length < P.guard.max;
   } else if (hasTile) {
     if (slot.size === 2) {
       valid = affordable && !buildingPlacement(gi, gj, slot.key);
@@ -3546,7 +3670,9 @@ function updatePlayer(dt) {
     }
   }
   ghostCell = { i: gi, j: gj, valid };
-  ghost.visible = alive && hasTile;
+  // 유닛 슬롯은 자리를 안 찍으므로 고스트를 띄우지 않는다
+  const unitSlot = slot.key === 'worker' || !!GUARD_TYPES[slot.key];
+  ghost.visible = alive && hasTile && !unitSlot;
   if (slot.size === 2) {
     ghost.scale.set(CS * 1.98, slot.key === 'wall' ? P.wall.height : 1.2, CS * 1.98);
     ghost.position.set(w.x + CS / 2, 0.6, w.z + CS / 2);
@@ -3586,10 +3712,10 @@ function updatePlayer(dt) {
       spawnBuildFx(w.x, w.z);
       buildCooldown = P.wall.cooldown;
     }
-  } else if (buildPressed && hasTile) {
+  } else if (buildPressed && (hasTile || unitSlot)) {
     if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower')
       startBuild(slot.key, gi, gj);
-    else if (GUARD_TYPES[slot.key]) placeGuard(gi, gj, slot.key);
+    else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
     else if (slot.key === 'worker') hireWorker('p');
   }
 
@@ -3764,6 +3890,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.tower, 'reload', 0.2, 4, 0.1).name('경비탑 투척 간격');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('적 체력 증가/레벨');
   f.add(P.threat, 'speedCap', 3, 14, 0.1).name('적 속도 상한');
+  f.add(P.tempo, 'moveScale', 0.3, 1.5, 0.05).name('전체 이동 속도 배율');
   f.add(P.threat, 'killsPerSurge', 1, 30, 1).name('N킬마다 우루루');
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
 }
@@ -3780,6 +3907,9 @@ const gui = new GUI({ title: '튜닝' });
 {
   const f = gui.addFolder('방어병 3종 (6 사수 · 7 근접병 · 8 정예병)');
   f.add(P.guard, 'speed', 1, 12, 0.1).name('공통 이동 속도');
+  f.add(P.guard, 'max', 1, 40, 1).name('방어병 최대');
+  f.add(P.guard, 'costGrowth', 0, 0.6, 0.01).name('한 명 늘 때마다 값 상승률');
+  f.add(P.guard, 'bomberBias', 0.1, 2, 0.05).name('자폭묘 우선도(작을수록 우선)');
   f.add(P.guard, 'radius', 0.15, 1, 0.05).name('공통 몸집');
   f.add(P.guard, 'archerCost', 5, 150, 1).name('사수 비용');
   f.add(P.guard, 'archerRange', 2, 16, 0.5).name('사수 사거리');
@@ -3991,6 +4121,7 @@ helpEl.textContent =
   '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
   '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
+  '유닛은 내 옆에서 나온다 (자리 안 찍음) · Tab 방어병 전원 선택 · 적 우클릭 = 집중 공격\n' +
   '파란 링 = 순찰조 (발각돼도 잠깐만 쫓는다) · 초록 표시 = 고양이가 못 들어오는 은신처\n' +
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
 
@@ -4375,7 +4506,7 @@ function updateAlly(dt) {
       const d = Math.hypot(e.x - player.x, e.z - player.z) - enemyR(e);
       catT = Math.min(catT, d / Math.max(enemySpeedOf(e), 0.1));
     }
-    const myT = dMe / Math.max(P.ally.speed, 0.1);
+    const myT = dMe / Math.max(effAllySpeed(), 0.1);
     urgent = true;
     if (myT < catT + P.ally.rescueMargin || dMe < 3) {
       ally.mode = '구조';
@@ -4494,8 +4625,8 @@ function updateAlly(dt) {
       dx += rx; dz += rz;
       const l2 = Math.hypot(dx, dz) || 1;
       dx /= l2; dz /= l2;
-      ally.x += dx * P.ally.speed * dt;
-      ally.z += dz * P.ally.speed * dt;
+      ally.x += dx * effAllySpeed() * dt;
+      ally.z += dz * effAllySpeed() * dt;
       ally.faceX = dx; ally.faceZ = dz;
     }
     collideWithObstacles(ally, P.ally.radius);
