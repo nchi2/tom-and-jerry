@@ -19,7 +19,11 @@ const P = {
             // 구르기는 **스태미너**로 산다 (D81). 쿨다운만 있으면 리듬만 맞추면
             // 무한히 구를 수 있었다. 총량이 있으면 "언제 쓸지"가 결정이 된다.
             rollDist: 4.2, rollTime: 0.28, rollCool: 0.35,
-            stamMax: 100, stamRoll: 34, stamRegen: 13, stamDelay: 0.9 },
+            stamMax: 100, stamRoll: 34, stamRegen: 13, stamDelay: 0.9,
+            // 내 영토 위에서는 기운이 이 배율로 더 빨리 찬다 (D86).
+            // 영토의 유일한 실이익 — 일부러 소소하게 뒀다. "쫓기다 내 땅으로 뛰어들면
+            // 숨을 돌린다"는 감각만 주고, 경제에는 손대지 않는다(웅크리기를 조장하지 않게).
+            terrStamMul: 2.2 },
   enemy: {
     count: 3,              // 시작 마릿수 (전부 순찰묘)
     attackRange: 0.9, repath: 0.35,
@@ -50,6 +54,10 @@ const P = {
     attackWindup: 0.6,     // 공격 예비동작 — 이 동안 몸을 뒤로 빼며 부푼다.
                            //  Shift 구르기로 피할 수 있는 창이다 (D77·D78)
     attackCooldown: 1.3,   // 공격 간격
+    // 추격 중인데 이만큼 **한 대도 못 때리면** 목표를 포기하고 건물을 습격한다 (D85).
+    // 이게 없으면 은신처 둘레에 뭉쳐 서서 아무것도 안 하는 무리가 된다 —
+    // 숨어 있는 게 안전할 수는 있어도 **공짜여서는 안 된다.** 숨으면 살림이 뜯긴다.
+    raidPatience: 6.0,
   },
   // 순찰조 (D52) — 웨이브와 별개로 **맵에 상주하는** 고양이.
   // 제 초소 둘레를 돌다가 햄스터를 발견하면 쫓고, 시간이 지나면 초소로 돌아간다.
@@ -98,6 +106,12 @@ const P = {
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
   bomber: { radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
             blastRadius: 2.55, fuse: 0.9 },
+  // 보스 "톰" — 10스테이지에 쳐들어온다 (D83). 위협 레벨 스케일링에서 제외된
+  // 고정 스탯으로 승부한다 (typeMaxHp·건물 dps 가산 둘 다 boss는 예외 처리).
+  // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
+  // (smashCooldown·smashWindup) — 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다.
+  boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 6000, reward: 0, dmg: 55,
+          smashCooldown: 8.0, smashWindup: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
   // post = 벽 **원기둥의 지름** (D57·D59·D74). 셀(1.5)보다 작아서 틈이 생긴다:
@@ -116,8 +130,12 @@ const P = {
   //   자리 잡는 건 플레이어가 WASD로 한다. 자동으로 걸어가 주지 않는다.
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
+  //  crackMax = 자폭묘 폭발을 **몇 번까지 버티는가** (D90). 예전엔 한 방에 사라졌다.
+  //   폭발은 벽을 없애는 대신 **금을 낸다.** crackMax번까지는 버티고, 그 다음 폭발에 무너진다.
+  //   금 간 벽은 **F로 수리**한다 (repairCost). 자폭묘 하나로 방어선이 뚫리던 걸 막고,
+  //   대신 "터진 자리를 제때 메우는" 유지 노동을 만든다.
   wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 1.0,
-          castTime: 0.3 },
+          castTime: 0.3, crackMax: 2, repairCost: 2 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
@@ -137,7 +155,7 @@ const P = {
     range: 3.3,         // 치즈더미에 붙어야 하는 거리
   },
   worker: {
-    cost: 30, speed: 6.9, radius: 0.3,
+    cost: 50, speed: 6.9, radius: 0.3,   // 50 = 가장 먼저 뽑는 것이라 값을 올렸다 (D88)
     perPile: 3,         // 치즈더미 하나에 붙을 수 있는 일꾼 수
     max: 12,
   },
@@ -150,11 +168,44 @@ const P = {
     pickPx: 46,         // 유닛을 집는 허용 반경(화면 픽셀) — 카메라 각도와 무관하게
     dragMin: 7,         // 상자 선택으로 인정하는 최소 드래그(픽셀)
   },
-  workshop: { cost: 15, hp: 100 },                               // 공방 — 업그레이드는 이 옆에서
-  tower: { cost: 35, hp: 110, range: 10.5, dmg: 30, reload: 1.0 }, // 경비탑 — 원작 포토캐논. 던진다
+  // 공방 — 유일한 기술 구조물(D82). 새 건물을 더 짓는 게 아니라 **제자리에서
+  // 레벨업**해서 2차/3차 기술을 연다 (칸수는 늘 2x2). 근처(4m)에서 F로 업그레이드.
+  //  tier1(짓자마자): 경비탑 1차 + 근접병   tier2: 경비탑 2차 + 사수   tier3: 경비탑 3차 + 정예병
+  // 게이트는 "그 tier 공방이 지금 실존하는가" — 부서지면 즉시 재잠김
+  // (U패널 개조처럼 영구 해금이 아니다 — 확인된 설계 선택. 02문서 D82 참고).
+  //
+  // **공방 업그레이드만 부품을 함께 요구한다** (D84). 부품은 밖에 떨어지는 픽업으로만
+  // 얻으므로(안전지대 안에는 절대 안 생김), 기술을 올리려면 반드시 밖에 나가야 한다.
+  // 치즈는 안에서 벌 수 있어도 부품은 못 번다 = 웅크리기로는 테크가 안 올라간다.
+  // 경비탑 업그레이드는 치즈만 든다 — 부품 관문은 기술 트리의 뿌리(공방)에만 건다.
+  workshop: { cost: 15, hp: 100,
+              tier2Cost: 80, tier2Parts: 2, tier2Time: 2.5,
+              tier3Cost: 250, tier3Parts: 5, tier3Time: 3.5 },
+  // 경비탑 — 원작 포토캐논. 던진다. 2x2 고정, 3단계 제자리 업그레이드(D82).
+  //  t1(배치 시 기본): 약하고 저렴 — 좁은 구간을 값싸게 메우는 용도
+  //  t2(업그레이드): 지금까지의 기본값 그대로. t3(업그레이드): 겁나 세고 겁나 비쌈
+  // cost는 t2/t3에서는 "배치값"이 아니라 "그 등급으로 올리는 업그레이드값"이다.
+  tower: {
+    t1Cost: 20, t1Hp: 70, t1Range: 8.0, t1Dmg: 14, t1Reload: 1.1,
+    t2Cost: 60, t2Hp: 110, t2Range: 10.5, t2Dmg: 30, t2Reload: 1.0,
+    t3Cost: 1000, t3Hp: 500, t3Range: 16.0, t3Dmg: 130, t3Reload: 0.8,
+  },
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
-  build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0 },
+  // 경비탑 업그레이드(t1→2, t2→3)도 같은 무방비 채널링을 쓴다.
+  //
+  // inset = 건물 **충돌 상자**를 셀 경계에서 이만큼 안으로 들인다 (D84).
+  // 벽 기둥(D57)이 셀보다 작아서 대각 관문이 생기는 것과 똑같은 원리를 건물에도 준다:
+  //   대각으로 붙인 두 건물 사이 = √2 × 2×inset = 0.85m → **플레이어(0.52)만 통과**
+  //   (날쌘묘 1.26 · 순찰묘 1.9는 여전히 막힘)
+  // 부수 효과: 직교로 1칸 띄운 건물 사이가 1.5 → 2.1m가 되어 순찰묘가 통과한다.
+  // 이건 의도한 것이다 — D20의 "건물은 벽의 대용품이 아니다"를 물리로 강제한다.
+  // 지형(bedrock)은 그대로 셀을 꽉 채운다. 길찾기 격자도 안 건드렸다 —
+  // 새 통행권은 D57과 같이 **물리로 직접 움직이는 플레이어에게만** 생긴다.
+  // refundRatio = X 철거로 건물을 부술 때 되찾는 비율 (D90).
+  //  건물은 잘못 놓으면 되돌릴 방법이 없었다. 절반을 돌려주면 "옮기자"가 실제 선택이 된다.
+  build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
+           inset: 0.3, refundRatio: 0.5 },
   // 방어병 3종 (D51) — 타일에 배치하고 우클릭으로 재배치 명령.
   //  사수  : D29 그대로. 체력 0 = 적과 닿으면 즉사. 벽 뒤에 세워야만 쓸모가 있다
   //  근접병: 체력이 있어 붙어서 버틴다. 사거리가 짧아 몸으로 막는 역할
@@ -178,25 +229,52 @@ const P = {
     // 치즈더미는 유한하고 다시 차지 않는다. 바닥나면 새 더미를 확보하러 나가야 한다
     // = 영역 확장 압박 (01 문서의 "공간 욕심 vs 벽 길이")
     nodeAmount: 2700,
+    // 치즈 지출에 곱해지는 배율 (D88). 값을 하나하나 고치는 대신 지출 지점에서
+    // 곱한다 — 기본값을 읽을 수 있게 유지하고, 슬라이더 하나로 전체 물가를 조절한다.
+    // **벽과 철거는 여기서 빠진다** (D89) — 벽값은 D62에서 "아껴 쓰는 자원이 아니라
+    // 흘리듯 쓰는 동사"로 만들려고 일부러 1로 내린 값이다. 물가 1.5배에 벽까지 태우면
+    // 2가 되어(=2배, 이 게임에서 가장 큰 상대 인상폭) 그 의도가 정면으로 깨진다.
+    // 물가 인상의 대상은 건물·병력이다 — 벽은 언제나 쉽게 세워져야 한다.
+    costScale: 1.5,
+    // **영토 면적당 초당 치즈** (D88 실험). 치즈더미 없이 숨어 있어도 소량은 모인다.
+    //  ⚠ 위험을 알고 넣은 값이다: D36이 자동 수입(D22)을 없앤 이유가
+    //    "경제가 공간과 무관해졌다"였다. 여기서는 **면적에 비례**하므로 반대로
+    //    "넓혀야 번다"가 되지만, 너무 크면 채굴 왕복(D36·D41·D53)이 무의미해진다.
+    //  기준: 0.003 × 272㎡(13x13 링) ≈ 0.82/s. 일꾼 3명 채굴이 3.2/s이므로 그 1/4 수준.
+    //  0으로 두면 이 시스템이 꺼진다.
+    terrIncome: 0.003,
   },
   // 부품 — 밖에 흩어진 픽업으로만 얻는다. 업그레이드 전용 화폐.
+  // **후반 대응 수단이 여기 걸려 있다** (D87): 적은 스테이지마다 체력이 오르는데
+  // (threat.hpGain) 낮은 등급 타워·병력의 화력은 그대로라, 적의 자연회복(초당 2%)조차
+  // 못 넘기고 영원히 못 죽이는 구간이 생긴다. 그걸 넘길 유일한 수단이 부품 업그레이드고,
+  // 부품은 **적 도달 영역에만** 떨어지므로 결국 밖으로 나가 돌아다녀야 한다.
+  // 그래서 스테이지가 오를수록 픽업이 더 자주·더 많이 나온다 — 나갈 값어치가 커진다.
   pickup: {
     interval: 14,        // 새 픽업이 생기는 주기(초)
+    stageSpeedup: 0.9,   // 스테이지당 주기 단축(초). 최소 4초까지
     maxOnMap: 5,         // 동시에 존재할 수 있는 최대 개수
+    stageOnMap: 0.4,     // 스테이지당 동시 최대 개수 +
     minPlayerDist: 21,   // 플레이어에게서 이만큼 떨어진 곳에만 생성 (= 위험을 감수해야 함)
     partsEach: 1,        // 부품 상자 하나당 부품
+    stageParts: 0.34,    // 스테이지당 상자당 부품 + (3스테이지마다 +1)
     cheeseEach: 35,      // 치즈 더미 하나당 치즈
     partsRatio: 0.6,     // 부품 상자가 나올 확률
   },
-  // 업그레이드 (부품으로 구매, 공방 필요) — 레벨당 증가폭
+  // 업그레이드 (부품으로 구매, 공방 필요) — 레벨당 증가폭.
+  // **후반의 유일한 화력 대응 수단**이다 (D87). 적 체력은 스테이지마다 오르는데
+  // 타워·병력의 기본 화력은 고정이라, 화력 업그레이드 없이는 자연회복도 못 넘긴다.
+  // maxLevel을 8로 올린 건 후반에 부품을 쏟아부을 곳이 남아 있어야 하기 때문이다
+  // (비용이 레벨당 누진이라 8레벨은 부품 8개 — 아무렇게나 못 찍는다).
   upgrade: {
-    maxLevel: 5,
+    maxLevel: 8,
     baseCost: 1, costStep: 1,   // n레벨 비용 = baseCost + costStep * n
     mineStep: 0.5,              // 채굴 속도
     speedStep: 0.9,             // 햄스터 이동 속도
     radiusStep: 0.2,            // 채굴 시간 단축(초)
     wallhpStep: 45,             // 새 벽 내구도
     towerStep: 9,               // 경비탑 화력
+    guardStep: 8,               // 방어병 화력 (사수·근접병·정예병 전부)
   },
   // 모든 이동 속도에 곱해지는 배율 (D56).
   // 사람도 고양이도 같이 느려지므로 **상대 속도 관계는 그대로**고 템포만 내려간다.
@@ -231,43 +309,81 @@ const STAGES = [
 ];
 
 // ---- 건설 핫바 ----
-// 숫자키 1~9로 선택하고 클릭/Space로 짓는다 (6~9는 예약 슬롯)
+// 숫자키 1~8로 선택하고 클릭/Space로 짓는다. **유닛은 Enter로 뽑는다** (D88).
+// 순서는 **실제로 짓는 순서**다 (D88): 벽 → 창고 → 일꾼 → 공방 → 그 뒤로 기술이 열린다.
+// 철거는 슬롯에서 뺐다 — X키 전용이다 (슬롯 하나를 늘 잡아먹을 만한 행동이 아니다).
+// need: 이 슬롯을 쓰려면 필요한 공방 등급 (0 = 조건 없음). D82의 기술 트리를 핫바에 그대로 비춘다.
 const BUILD_SLOTS = [
-  { key: 'wall', label: '벽', size: 1, cost: () => P.wall.cost },
-  { key: 'depot', label: '치즈 창고', size: 2, cost: () => P.depot.cost },
-  { key: 'workshop', label: '공방', size: 2, cost: () => P.workshop.cost },
-  { key: 'tower', label: '경비탑', size: 2, cost: () => P.tower.cost },
-  { key: 'worker', label: '일꾼 고용', size: 1, cost: () => P.worker.cost },
-  { key: 'archer', label: '사수', size: 1, cost: () => guardCost('archer') },
-  { key: 'melee', label: '근접병', size: 1, cost: () => guardCost('melee') },
-  { key: 'elite', label: '정예병', size: 1, cost: () => guardCost('elite') },
-  { key: 'remove', label: '철거', size: 1, cost: () => P.wall.removeCost },
+  { key: 'wall', label: '벽', size: 1, need: 0, cost: () => P.wall.cost },
+  { key: 'depot', label: '치즈 창고', size: 2, need: 0, cost: () => cheeseCost(P.depot.cost) },
+  { key: 'worker', label: '일꾼 고용', size: 1, need: 0, cost: () => cheeseCost(P.worker.cost) },
+  { key: 'workshop', label: '공방', size: 2, need: 0, cost: () => cheeseCost(P.workshop.cost) },
+  { key: 'tower', label: '경비탑', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
+  { key: 'melee', label: '근접병', size: 1, need: 1, cost: () => guardCost('melee') },
+  { key: 'archer', label: '사수', size: 1, need: 2, cost: () => guardCost('archer') },
+  { key: 'elite', label: '정예병', size: 1, need: 3, cost: () => guardCost('elite') },
 ];
 
-// 다음 한 명의 값 — 이미 거느린 병력 수만큼 비싸진다 (D56)
-const guardCost = (type) =>
-  Math.round(GUARD_TYPES[type].cost() * Math.pow(1 + P.guard.costGrowth, guards.length));
+// 잠긴 이유 (없으면 null) — 핫바와 실제 거부 판정이 같은 함수를 본다
+const slotLockReason = (sl) =>
+  sl.need > 0 && maxWorkshopTier() < sl.need
+    ? (sl.need === 1 ? '공방 필요' : `공방 Lv.${sl.need} 필요`)
+    : null;
+// 유닛 슬롯 = 자리를 안 찍고 내 옆에서 나오는 것들 (Enter로 생산)
+const isUnitSlot = (sl) => !!sl && (sl.key === 'worker' || !!GUARD_TYPES[sl.key]);
 
-// 방어병 병종 (D51) — 값은 전부 P.guard에서 읽는다 (튜닝 슬라이더와 세팅 스냅샷 때문)
+// 건물·병력의 치즈 지출은 이 함수를 통과한다 (D88) — 슬라이더 하나로 전체 물가를 조절한다.
+// 기본값을 하나하나 고치지 않으므로 "원래 값이 뭐였나"가 소스에 그대로 남는다.
+// **벽/철거는 통과시키지 않는다** (D89) — 벽은 늘 값이 1이어야 한다. P.res.costScale 주석 참고.
+const cheeseCost = (base) => Math.round(base * P.res.costScale);
+
+// 다음 한 명의 값 — **병종별로 따로** 이미 거느린 수만큼 비싸진다 (D56 → 병종별 분리).
+// 예전엔 guards.length(3종 합산)를 봐서 사수 하나 사면 근접병·정예병 값도 같이 올랐다.
+const guardCost = (type) =>
+  cheeseCost(GUARD_TYPES[type].cost() *
+    Math.pow(1 + P.guard.costGrowth, guards.filter((g) => g.type === type).length));
+
+// 공방이 지금 실존하는 최고 tier (0 = 공방 없음). 여러 채 지어도 최고 하나만 있으면
+// 통과 — 그 공방이 부서져도 다른 공방이 남아 있으면 해금이 유지된다.
+// "실존해야 생산 가능"이 확정 규칙이라(D82), 부서지면 이 값이 즉시 내려간다.
+const maxWorkshopTier = () =>
+  buildings.reduce((m, b) => (b.kind === 'workshop' && b.tier > m ? b.tier : m), 0);
+
+// 방어병 병종 (D51) — 값은 전부 P.guard에서 읽는다 (튜닝 슬라이더와 세팅 스냅샷 때문).
+// reqTier: 이 병종을 뽑으려면 공방이 최소 이 등급이어야 한다 (D82 기술 트리).
 const GUARD_TYPES = {
   archer: { label: '사수', body: 0x5f7f3f, helm: 0x44502f, radius: () => P.guard.radius,
-            cost: () => P.guard.archerCost, hp: () => 0, melee: false,
+            cost: () => P.guard.archerCost, hp: () => 0, melee: false, reqTier: 2,
             range: () => P.guard.archerRange, dmg: () => P.guard.archerDmg,
             reload: () => P.guard.archerReload },
   melee:  { label: '근접병', body: 0x8a5a2b, helm: 0x5c3a18, radius: () => P.guard.radius * 1.15,
-            cost: () => P.guard.meleeCost, hp: () => P.guard.meleeHp, melee: true,
+            cost: () => P.guard.meleeCost, hp: () => P.guard.meleeHp, melee: true, reqTier: 1,
             range: () => P.guard.meleeRange, dmg: () => P.guard.meleeDmg,
             reload: () => P.guard.meleeReload },
   elite:  { label: '정예병', body: 0x5a6f9f, helm: 0x3c4260, radius: () => P.guard.radius * 1.35,
-            cost: () => P.guard.eliteCost, hp: () => P.guard.eliteHp, melee: false,
+            cost: () => P.guard.eliteCost, hp: () => P.guard.eliteHp, melee: false, reqTier: 3,
             range: () => P.guard.eliteRange, dmg: () => P.guard.eliteDmg,
             reload: () => P.guard.eliteReload },
+};
+
+// 경비탑 3단계 (D82) — 값은 전부 P.tower에서 읽는다. cost는 tier1=배치값,
+// tier2/3=그 등급으로 올리는 업그레이드값이다. 칸수는 항상 2x2 — 등급은 제자리에서 오른다.
+const TOWER_TIERS = {
+  1: { cost: () => P.tower.t1Cost, hp: () => P.tower.t1Hp, range: () => P.tower.t1Range,
+       dmg: () => P.tower.t1Dmg, reload: () => P.tower.t1Reload, time: () => 0 },
+  2: { cost: () => P.tower.t2Cost, hp: () => P.tower.t2Hp, range: () => P.tower.t2Range,
+       dmg: () => P.tower.t2Dmg, reload: () => P.tower.t2Reload, time: () => P.build.towerUp2Time },
+  3: { cost: () => P.tower.t3Cost, hp: () => P.tower.t3Hp, range: () => P.tower.t3Range,
+       dmg: () => P.tower.t3Dmg, reload: () => P.tower.t3Reload, time: () => P.build.towerUp3Time },
 };
 // -1 = 아무것도 안 들고 있음 (기본값).
 // 숫자키로 들고, ESC로 내려놓는다 — 손에 뭔가 들려 있는 상태가 "예외"여야
 // 좌클릭이 실수로 벽을 흘리지 않는다.
 let buildSlot = -1;
 let prevWantBuild = false;
+let prevWantSpawn = false;
+// 철거는 핫바 슬롯이 아니라 별도 모드다 (D88) — X로 켜고 끈다
+let removeMode = false;
 const heldSlot = () => (buildSlot >= 0 ? BUILD_SLOTS[buildSlot] : null);
 
 // ---- 업그레이드 ----
@@ -278,9 +394,10 @@ const UPGRADES = [
   { key: 'speed', label: '이동 속도', unit: () => `+${P.upgrade.speedStep}` },
   { key: 'radius', label: '채굴 속도', unit: () => `-${P.upgrade.radiusStep}s` },
   { key: 'wallhp', label: '벽 내구도', unit: () => `+${P.upgrade.wallhpStep}` },
-  { key: 'tower', label: '경비탑 화력', unit: () => `+${P.upgrade.towerStep}/s` },
+  { key: 'tower', label: '경비탑 화력', unit: () => `+${P.upgrade.towerStep}` },
+  { key: 'guard', label: '방어병 화력', unit: () => `+${P.upgrade.guardStep}` },
 ];
-const upg = { mine: 0, speed: 0, radius: 0, wallhp: 0, tower: 0 };
+const upg = { mine: 0, speed: 0, radius: 0, wallhp: 0, tower: 0, guard: 0 };
 let parts = 0;
 
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
@@ -294,13 +411,18 @@ const effAllySpeed = () => P.ally.speed * moveScale();
 // 업그레이드는 채굴 '시간'을 줄인다 (레벨당 radiusStep초)
 const effMineTime = () => Math.max(P.carry.mineTime - upg.radius * P.upgrade.radiusStep, 0.25);
 const effWallHp = () => P.wall.hp + upg.wallhp * P.upgrade.wallhpStep;
-const effTowerDmg = () => P.tower.dmg + upg.tower * P.upgrade.towerStep;
+// 경비탑 화력 업그레이드는 모든 타워·모든 tier에 동일하게 가산된다 (읽는 base만 tier별로 다름)
+const effTowerDmg = (tier) => TOWER_TIERS[tier].dmg() + upg.tower * P.upgrade.towerStep;
+// 방어병 화력 업그레이드 (D87) — 3병종 전부에 같이 가산된다.
+// 후반에 적 체력이 오르면 낮은 병력으로는 자연회복조차 못 넘기므로, 이게 그 대응 수단이다.
+const effGuardDmg = (type) => GUARD_TYPES[type].dmg() + upg.guard * P.upgrade.guardStep;
 
 // 적 종류 메타 (숫자가 아니라서 P 밖에 둠 — 세팅 스냅샷에 안 섞이게)
 const TYPE_INFO = {
   chaser: { label: '순찰묘', canBreak: false },
   runner: { label: '날쌘묘', canBreak: false },
   bomber: { label: '자폭묘', canBreak: true },   // 폭발로만 벽을 부순다
+  boss: { label: '톰', canBreak: true },         // 강타로 벽을 부순다 (자폭 없음, D83)
 };
 // 시작 자원은 "벽 N개분"으로 정의 — 벽 비용을 바꿔도 시작 여유가 유지됨
 const startResources = () => P.res.start;
@@ -387,6 +509,7 @@ function buildGround(floorColor, gridColor) {
   gh.material.transparent = true;
   gh.position.y = 0.01;
   groundGroup.add(gh);
+  resizeTerritoryOverlay();
 
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x454c5e, roughness: 1 });
   const mk = (w, d, x, z) => {
@@ -406,6 +529,48 @@ function buildGround(floorColor, gridColor) {
   sun.shadow.camera.top = HALF + 2;
   sun.shadow.camera.bottom = -HALF - 2;
   sun.shadow.camera.updateProjectionMatrix();
+}
+
+// ---- 영토 바닥 색칠 (D86) ----
+// 나브 격자 한 칸 = 텍스처 한 픽셀. 색을 전부 같게 두고 **알파만** 켜고 끄므로
+// 선형 필터링이 가장자리를 부드럽게 번지게 해 준다 (색 번짐 없이 경계만 흐려진다).
+// 필드가 바뀔 때만 다시 그린다 — 매 프레임 28,000칸을 훑지 않는다.
+const terrCanvas = document.createElement('canvas');
+terrCanvas.width = terrCanvas.height = 2;
+const terrTex = new THREE.CanvasTexture(terrCanvas);
+const terrMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({
+    map: terrTex, transparent: true, opacity: 0.3, depthWrite: false,
+    color: 0xffffff,
+  })
+);
+terrMesh.rotation.x = -Math.PI / 2;
+terrMesh.position.y = 0.02;   // 바닥 위, 격자선 아래
+terrMesh.renderOrder = 1;
+scene.add(terrMesh);
+
+function resizeTerritoryOverlay() {
+  terrMesh.scale.set(CELLS * CS, CELLS * CS, 1);
+  territoryGen = -1;   // 맵이 바뀌었으니 다시 센다
+}
+
+let terrPainted = -1;
+function paintTerritory() {
+  if (terrPainted === territoryGen) return;
+  terrPainted = territoryGen;
+  if (terrCanvas.width !== NAV) terrCanvas.width = terrCanvas.height = NAV;
+  const g = terrCanvas.getContext('2d');
+  const img = g.createImageData(NAV, NAV);
+  const d = img.data;
+  // 텍스처 (0,0)은 로컬 +Y = 월드 -Z = 나브 z 0 — 그래서 픽셀 좌표가 나브 좌표와 그대로 맞는다
+  for (let k = 0; k < NAV * NAV; k++) {
+    const o = k * 4;
+    d[o] = 0x7a; d[o + 1] = 0xe6; d[o + 2] = 0xa0;
+    d[o + 3] = territory && territory[k] ? 255 : 0;
+  }
+  g.putImageData(img, 0, 0);
+  terrTex.needsUpdate = true;
 }
 
 // ============================================================
@@ -466,6 +631,37 @@ function updateWallColor(ob) {
   if (!ob.mesh) return; // 건물 셀은 건물 쪽에서 색을 관리
   const t = 1 - ob.hp / ob.maxHp;
   ob.mesh.material.color.copy(WALL_BASE).lerp(WALL_DMG, t);
+}
+
+// ---- 금 간 벽 (D90) ----
+// 자폭묘 폭발이 벽을 **없애는 대신 금을 낸다.** 금이 crackMax를 넘으면 무너진다.
+// 금이 갈수록 가늘어지고 붉어진다 — "저기 손봐야 한다"가 멀리서도 읽혀야 하므로
+// 색만 바꾸지 않고 **굵기**도 줄인다 (실루엣이 변하는 게 가장 눈에 띈다).
+const crackedWalls = () =>
+  [...obstacles.values()].filter((ob) => !ob.bedrock && !ob.bldgRef && ob.cracks > 0);
+
+function applyCrackVisual(ob) {
+  if (!ob.mesh) return;
+  const f = (ob.cracks || 0) / Math.max(P.wall.crackMax, 1);   // 0..1
+  const side = P.wall.post * (1 - 0.3 * f);
+  ob.mesh.scale.set(side, P.wall.height * (1 - 0.12 * f), side);
+  ob.mesh.position.y = (P.wall.height * (1 - 0.12 * f)) / 2;
+  ob.mesh.material.color.copy(WALL_BASE).lerp(WALL_DMG, 0.55 * f + 0.25 * (f > 0 ? 1 : 0));
+  ob.mesh.material.emissive.setHex(f > 0 ? 0x772222 : 0x000000);
+  ob.mesh.material.emissiveIntensity = f > 0 ? 0.35 * f + 0.2 : 0;
+}
+
+// 폭발 한 번 = 금 하나. 넘치면 무너진다. 무너졌으면 true를 돌려준다.
+function crackWall(ob) {
+  ob.cracks = (ob.cracks || 0) + 1;
+  if (ob.cracks > P.wall.crackMax) { removeObstacle(ob); return true; }
+  applyCrackVisual(ob);
+  return false;
+}
+
+function repairWall(ob) {
+  ob.cracks = 0;
+  applyCrackVisual(ob);
 }
 
 // ============================================================
@@ -842,6 +1038,7 @@ const CAT_PALETTES = {
   chaser: { a: 0x8e4257, b: 0xb0596d, eye: 0xffe14d, glow: 0xffc400 }, // 자주색·노란 눈
   runner: { a: 0x4f6d8e, b: 0x7391b5, eye: 0x7dff9a, glow: 0x37e06b }, // 청회색·초록 눈
   bomber: { a: 0x3d2a33, b: 0x7a3320, eye: 0xff7a45, glow: 0xff4400 }, // 흑적색·주황 눈
+  boss: { a: 0x241922, b: 0x4a2233, eye: 0xff3355, glow: 0xff0033 },  // "톰" — 짙은 자흑색·핏빛 눈
 };
 
 function makeCat(type = 'chaser') {
@@ -995,7 +1192,9 @@ const enemySpeedOf = (e) =>
   Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap) * moveScale();
 const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain;
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
-const typeMaxHp = (type) => P[type].hp + threatLevel() * P.threat.hpGain;
+// 보스는 위협 레벨 스케일링에서 제외한다 (D83) — 등장 시점 고정 스탯으로 승부해야
+// 생존시간에 안 묻힌다. 나머지 3종은 그대로 위협 레벨을 받는다.
+const typeMaxHp = (type) => P[type].hp + (type === 'boss' ? 0 : threatLevel() * P.threat.hpGain);
 const enemyMaxHp = (e) => typeMaxHp(e.type);
 
 let enemySeq = 0;   // 적 고유 번호 (포위 링 슬롯 배정용 — 죽어도 번호가 겹치지 않게)
@@ -1026,7 +1225,7 @@ function makeEnemy(type, n) {
     chaseTarget: null,        // 지금 노리는 햄스터 (무리를 갈라놓는 계산에 쓴다)
     probeT: 0,                // 현재 접근각을 유지할 남은 시간
     probes: 0, prowlT: 0, prowlX: 0, prowlZ: 0,
-    atkT: 0, windup: 0, lungeT: 0, fuseT: 0,
+    atkT: 0, windup: 0, lungeT: 0, fuseT: 0, noHitT: 0,
     hitFlash: 0,
     vis, bar: makeBar(0xe0483c, 1.3),
   };
@@ -1201,6 +1400,41 @@ function refreshReach() {
   safeGen++;      // 은신처 필드가 바뀌었다 → 캐시 무효화
 }
 
+// ---- 영토 (D86) ----
+// **"벽으로 안전하게 감싼 땅" = 고양이가 못 오는 칸(safeField) 중 내가 걸어서 갈 수 있는 곳.**
+// 새 판정을 하나도 만들지 않았다 — D54의 은신처 필드를 그대로 쓰고 "내가 닿는가"만 얹는다.
+// 그래서 공짜로 따라오는 것들:
+//   · 벽을 세우면 즉시 늘고, 자폭묘가 뚫으면 **즉시 훅 줄어든다**
+//   · 날쌘묘가 등장하면 저절로 줄어든다 (D14를 면적으로 체감하게 된다)
+//   · 지형 주머니도 내가 들어갈 수 있으면 영토다 — 누가 만들었는지 구분할 필요가 없다
+// 이건 paper.io식 "선을 그으면 내 땅"이 아니라 **통행권의 결과**다. D1이 기각한
+// '영역 점유' 코어를 들여오는 게 아니라, 크기 비대칭 코어에서 유도되는 표시일 뿐이다.
+let territory = null;     // Uint8Array — 내 영토 칸
+let territoryArea = 0;    // ㎡
+let territoryGen = -1;
+
+function refreshTerritory() {
+  if (!safeField || !clearHam) { territory = null; territoryArea = 0; return; }
+  if (territoryGen === safeGen) return;   // 필드가 안 바뀌었으면 다시 안 센다
+  territoryGen = safeGen;
+  // **내가 지금 어디 서 있는지와 무관하게** 센다 (D90 버그 수정).
+  // 예전에는 플레이어에서 BFS로 퍼뜨려 "지금 걸어서 닿는" 안전지대만 영토로 쳤다.
+  // 그래서 큰 땅을 만들어 두고 옆에 작은 땅을 이어붙이면, 서 있는 쪽만 내 땅이 되고
+  // **원래 큰 땅이 영토에서 빠져 버렸다.** 영토는 "내가 만든 땅"이지
+  // "지금 발이 닿는 땅"이 아니다 — 위치 의존을 통째로 없앴다.
+  const out = new Uint8Array(NAV * NAV);
+  let n = 0;
+  for (let k = 0; k < NAV * NAV; k++) {
+    if (!safeField[k]) continue;
+    if (!canPass(clearHam, k, P.player.radius)) continue;   // 햄스터가 설 수 있는 칸만
+    out[k] = 1; n++;
+  }
+  territory = out;
+  territoryArea = n * navRes * navRes;
+}
+
+const inTerritory = (x, z) => !!(territory && territory[worldToNav(x, z)]);
+
 // ---- 은신처 판별 (D54) ----
 // **은신처는 표시가 아니라 계산이다.**
 // enemyReach = 지금 살아 있는 적들이 반지름별로 갈 수 있는 칸의 합집합.
@@ -1318,6 +1552,10 @@ const BLDG_INFO = {
 // 소유자 구분은 지붕(포인트)에만 준다 — 건물 전체 색은 종류를 나타내야 하므로
 const OWNER_COLOR = { p: 0xffc94d, a: 0x5fa8ff };
 const OWNER_LABEL = { p: '내', a: '동료' };
+// 경비탑은 P.tower에 .cost/.hp가 없다 (tier별 t1/t2/t3로 나뉘어 있다, D82).
+// 새로 짓는 경비탑은 항상 tier1이므로 그 값을 읽는다.
+const buildCost = (kind) => cheeseCost(kind === 'tower' ? TOWER_TIERS[1].cost() : P[kind].cost);
+const buildHp = (kind) => (kind === 'tower' ? TOWER_TIERS[1].hp() : P[kind].hp);
 
 function buildingAt(i, j) {
   const ob = obstacles.get(cellKey(i, j));
@@ -1380,11 +1618,78 @@ function makeBuildingMesh(kind, owner) {
   return g;
 }
 
+// 공방·경비탑 제자리 업그레이드(D82)의 시각 표현.
+// 칸수가 안 바뀌므로 등급을 읽기가 어려웠다 (D88 지적) — 발광 세기만으로는 구분이 안 된다.
+// 그래서 **세 가지를 동시에** 준다:
+//   1. 등급 핍 — 건물 위에 떠 있는 막대 1/2/3개. 어느 각도에서도 개수를 셀 수 있다
+//   2. 지붕 색 — Lv.1 어두움 / Lv.2 밝음 / Lv.3 금색 + 발광
+//   3. 기하 — 층이 하나씩 쌓인다 (경비탑은 포탑이 커지고, 공방은 굴뚝이 자란다)
+const TIER_COLOR = [0x6a7386, 0x74c7f0, 0xffcc55];   // Lv.1 / 2 / 3
+// 핍은 **정육면체**다 — 위에서 봐도(탑다운) 옆에서 봐도(3인칭) 개수가 세진다.
+// 세로 막대로 만들었더니 탑다운에서 점으로 보이고, 타워는 포탑 돔에 묻혔다.
+const pipGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+const tierGeo = new THREE.BoxGeometry(1.0, 0.34, 1.0);
+
+function applyBuildingTierVisual(b) {
+  const tier = Math.max(1, Math.min(3, b.tier || 1));
+  const col = TIER_COLOR[tier - 1];
+
+  // --- 1. 등급 핍 (건물 위에 뜬 막대 N개) ---
+  if (b.pips) { b.mesh.remove(b.pips); b.pips.traverse((o) => o.material?.dispose?.()); }
+  const pips = new THREE.Group();
+  const pipMat = new THREE.MeshStandardMaterial({
+    color: col, emissive: new THREE.Color(col), emissiveIntensity: 0.85, roughness: 0.4,
+  });
+  for (let k = 0; k < tier; k++) {
+    const p = new THREE.Mesh(pipGeo, pipMat);
+    p.position.set((k - (tier - 1) / 2) * 0.44, 0, 0);
+    pips.add(p);
+  }
+  // 포탑(경비탑 Lv.3은 y≈2.2까지 올라온다)보다 확실히 위 — 어디서도 안 가려진다
+  pips.position.y = 3.1;
+  b.mesh.add(pips);
+  b.pips = pips;
+
+  // --- 2. 지붕 색 ---
+  const roof = b.mesh.children[1];
+  roof.material.color.setHex(col);
+  if (!roof.material.emissive) roof.material.emissive = new THREE.Color(col);
+  else roof.material.emissive.setHex(col);
+  roof.material.emissiveIntensity = tier === 3 ? 0.5 : tier === 2 ? 0.22 : 0;
+
+  // --- 3. 기하: 등급마다 한 층 (Lv.1은 없음) ---
+  if (b.tiers) { b.mesh.remove(b.tiers); b.tiers.traverse((o) => o.material?.dispose?.()); }
+  const stack = new THREE.Group();
+  const stackMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.65, metalness: 0.25 });
+  for (let k = 1; k < tier; k++) {
+    const s = new THREE.Mesh(tierGeo, stackMat);
+    s.scale.setScalar(1 - (k - 1) * 0.18);
+    s.position.y = 1.3 + (k - 1) * 0.36;
+    s.castShadow = true;
+    stack.add(s);
+  }
+  b.mesh.add(stack);
+  b.tiers = stack;
+
+  // 경비탑 포탑은 등급만큼 커지고 밝아진다
+  if (b.kind === 'tower' && b.mesh.userData.head) {
+    const head = b.mesh.userData.head;
+    head.scale.setScalar(1 + (tier - 1) * 0.3);
+    head.position.y = 1.5 + (tier - 1) * 0.36;
+    const horn = head.children[1];
+    horn.material.emissiveIntensity = 0.5 + (tier - 1) * 0.6;
+    horn.material.color.setHex(tier >= 3 ? 0xffd9a0 : 0xe6e0ff);
+  }
+}
+
 // 앵커 (i,j) 기준 2x2. 실패 사유를 문자열로 돌려줘서 플래시로 안내
 // asOrder=true 면 거리·내 위치를 보지 않는다 (D66) — 명령이 걸어가고 비켜서기 때문.
 // 실제 착공(placeBuilding) 시점에는 asOrder=false로 다시 검사한다.
 function buildingPlacement(i, j, kind, asOrder = false) {
   if (i < 0 || j < 0 || i + 1 >= CELLS || j + 1 >= CELLS) return '맵 밖입니다';
+  // 경비탑은 공방(어떤 tier든)이 실존해야 새로 지을 수 있다 (D82 기술 트리).
+  // 실존 검사라 공방이 부서지면 이 자리에서 즉시 다시 막힌다.
+  if (kind === 'tower' && maxWorkshopTier() < 1) return '공방이 필요합니다';
   const cells = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]];
   for (const [ci, cj] of cells) {
     if (obstacles.has(cellKey(ci, cj))) return '자리가 막혀 있습니다 (2x2 공터 필요)';
@@ -1406,7 +1711,7 @@ function buildingPlacement(i, j, kind, asOrder = false) {
 }
 
 function placeBuilding(kind, i, j, owner = 'p') {
-  const cost = P[kind].cost;
+  const cost = buildCost(kind);
   if (purse(owner) < cost) {
     if (owner === 'p') flashMsg(`치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050');
     return null;
@@ -1418,8 +1723,10 @@ function placeBuilding(kind, i, j, owner = 'p') {
   const mesh = makeBuildingMesh(kind, owner);
   mesh.position.set(cx, 0, cz);
   scene.add(mesh);
-  const b = { kind, i, j, owner, cells: [], hp: P[kind].hp, maxHp: P[kind].hp, store: 0, mesh, cx, cz, bitT: 0,
-              underBuild: false,
+  const hp = buildHp(kind);
+  // tier: 공방·경비탑만 의미가 있다 (제자리 업그레이드, D82). 새로 지으면 항상 1.
+  const b = { kind, i, j, owner, cells: [], hp, maxHp: hp, store: 0, mesh, cx, cz, bitT: 0,
+              underBuild: false, tier: 1,
               bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6) };
   for (const [ci, cj] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
     const key = cellKey(ci, cj);
@@ -1429,6 +1736,7 @@ function placeBuilding(kind, i, j, owner = 'p') {
   buildings.push(b);
   markNavDirty();
   spawnBuildFx(cx, cz);
+  if (kind === 'workshop' || kind === 'tower') applyBuildingTierVisual(b);
   return b;
 }
 
@@ -1460,6 +1768,7 @@ function updateBuildings(dt) {
   minedCount = 0;
   for (const b of buildings) {
     setBar(b.bar, b.hp / b.maxHp, b.cx, 1.9, b.cz, b.hp < b.maxHp - 0.5);
+    updateSelfBuild(b, dt);   // 경비탑은 혼자 지어진다 (D87)
     if (b.kind === 'tower') { updateTower(b, dt); continue; }
     if (b.kind !== 'depot') continue;
     const busy = carriers().some((c) => c.job === 'mine' && c.depot === b);
@@ -1824,14 +2133,20 @@ function roundRectPath(g, x, y, w, h, r) {
   g.closePath();
 }
 
-function makeKeyPrompt(keyLabel, text, accent) {
-  const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 72;
+// 문구 길이에 맞춰 캔버스 폭이 늘어난다 — 업그레이드 안내는 비용·부족한 자원에 따라
+// 문구가 달라지므로(D84) 다시 그릴 수 있게 그리기를 따로 뺐다.
+function drawKeyPrompt(cv, keyLabel, text, accent) {
+  const m = cv.getContext('2d');
+  m.font = 'bold 22px system-ui, sans-serif';
+  const need = Math.ceil(m.measureText(text).width) + 96;
+  if (cv.width !== need) cv.width = need;   // 리사이즈하면 컨텍스트 상태가 초기화된다
   const g = cv.getContext('2d');
+  const W = cv.width;
+  g.clearRect(0, 0, W, cv.height);
   g.fillStyle = 'rgba(16,20,30,0.85)';
-  roundRectPath(g, 3, 3, 250, 66, 14); g.fill();
+  roundRectPath(g, 3, 3, W - 6, 66, 14); g.fill();
   g.strokeStyle = accent; g.lineWidth = 3;
-  roundRectPath(g, 3, 3, 250, 66, 14); g.stroke();
+  roundRectPath(g, 3, 3, W - 6, 66, 14); g.stroke();
   g.fillStyle = accent;
   roundRectPath(g, 18, 15, 42, 42, 8); g.fill();
   g.fillStyle = '#14181f';
@@ -1842,19 +2157,44 @@ function makeKeyPrompt(keyLabel, text, accent) {
   g.font = 'bold 22px system-ui, sans-serif';
   g.textAlign = 'left';
   g.fillText(text, 74, 38);
+}
+
+function makeKeyPrompt(keyLabel, text, accent) {
+  const cv = document.createElement('canvas');
+  cv.height = 72;
+  drawKeyPrompt(cv, keyLabel, text, accent);
+  const tex = new THREE.CanvasTexture(cv);
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false, depthWrite: false,
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
   }));
-  spr.scale.set(2.5, 0.7, 1);
+  spr.scale.set(cv.width / 102, 0.7, 1);   // 102 = 원래 비율(256px ↔ 2.5)
   spr.renderOrder = 1002;
   spr.visible = false;
+  spr.userData = { cv, tex, key: keyLabel, text, accent };
   scene.add(spr);
   return spr;
 }
+
+// 문구가 실제로 바뀔 때만 다시 그린다 — 매 프레임 캔버스를 새로 그리면 비싸다
+function setKeyPrompt(spr, text, accent) {
+  const u = spr.userData;
+  if (u.text === text && u.accent === accent) return;
+  u.text = text; u.accent = accent;
+  drawKeyPrompt(u.cv, u.key, text, accent);
+  u.tex.dispose();
+  u.tex = new THREE.CanvasTexture(u.cv);
+  spr.material.map = u.tex;
+  spr.material.needsUpdate = true;
+  spr.scale.set(u.cv.width / 102, 0.7, 1);
+}
+
 const minePrompt = makeKeyPrompt('E', '채굴 시작', '#f0c040');
 // 볼주머니가 차 있으면 "여기서 더 캘 수 없다"를 그 자리에서 알려준다 (D76).
 // 예전엔 아무것도 안 떠서, 첫 더미에서만 게이지가 차는 것처럼 보였다.
 const fullPrompt = makeKeyPrompt('▣', '볼주머니 가득 — 창고로', '#7fb0ff');
+// 공방·경비탑 제자리 업그레이드 안내 (D82) — 같은 [키] 빌보드 문법.
+// 문구가 상황에 따라 바뀐다 (D84): 비용 안내 / 부품·치즈 부족 / 상위 공방 필요.
+const upgradePrompt = makeKeyPrompt('F', '업그레이드', '#8fd6ff');
 
 // ---- 은신처 표시 (D55-C) ----
 // 쫓기는 중일 때만, 가장 가까운 "고양이가 못 들어오는 칸"을 바닥에 표시한다.
@@ -1907,6 +2247,146 @@ function updateMinePrompt() {
   (full ? fullPrompt : minePrompt).position.set(w.x, y, w.z);
 }
 
+// ---- 공방·경비탑 제자리 업그레이드 (D82) ----
+// 근처(4m)의 tier<3 건물에 [F] 안내가 뜬다. 경비탑은 그 위 tier의 공방이
+// 실존해야 잠금이 풀린다 — 공방 자체는 언제나 올릴 수 있다(상위 건물 요구 없음).
+let upgradeJob = null;   // { b, t, dur, cost }
+
+function nearestUpgradable(x, z, range) {
+  let best = null, bestD = range;
+  for (const b of buildings) {
+    if (b.kind !== 'workshop' && b.kind !== 'tower') continue;
+    if ((b.tier || 1) >= 3) continue;
+    const d = Math.hypot(b.cx - x, b.cz - z);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+
+const towerUpgradeLocked = (b) => b.kind === 'tower' && maxWorkshopTier() < (b.tier || 1) + 1;
+
+// ---- F 키 하나로 두 가지 (D90) ----
+// **수리가 업그레이드보다 우선이다** — 금 간 벽은 시간이 급하고 업그레이드는 안 급하다.
+// 키를 나누지 않은 이유: 둘 다 "근처 내 구조물에 손을 쓴다"라 같은 동작으로 읽힌다.
+function nearestCracked(x, z, range) {
+  let best = null, bestD = range;
+  for (const ob of obstacles.values()) {
+    if (ob.bedrock || ob.bldgRef || !ob.cracks) continue;
+    const w = cellToWorld(ob.i, ob.j);
+    const d = Math.hypot(w.x - x, w.z - z);
+    if (d < bestD) { bestD = d; best = ob; }
+  }
+  return best;
+}
+
+// 지금 F가 무엇을 할지 (없으면 null). 빌보드와 F키가 같은 함수를 본다
+function fAction() {
+  const crack = nearestCracked(player.x, player.z, P.wall.range + CS);
+  if (crack) {
+    const cost = P.wall.repairCost;
+    return { kind: 'repair', ob: crack, cost,
+             x: cellToWorld(crack.i, crack.j).x, z: cellToWorld(crack.i, crack.j).z,
+             label: `벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
+             why: resources < cost ? `치즈 ${cost} 필요` : null };
+  }
+  const b = nearestUpgradable(player.x, player.z, 4.0);
+  if (!b) return null;
+  const s = upgradeSpec(b);
+  return { kind: 'upgrade', b, x: b.cx, z: b.cz,
+           label: `${BLDG_INFO[b.kind].label} Lv.${(b.tier || 1) + 1} — 치즈 ${s.cost}` +
+                  (s.parts > 0 ? ` · 부품 ${s.parts}` : ''),
+           why: upgradeBlockedWhy(b) };
+}
+
+function updateUpgradePrompt() {
+  const show = alive && !playerStunned && !buildJob && !upgradeJob && !wallCast;
+  const a = show ? fAction() : null;
+  upgradePrompt.visible = !!a;
+  if (!a) return;
+  // 못 하면 그 이유를, 할 수 있으면 값을 그대로 보여준다 (D84).
+  // 눌러보고 나서야 아는 게 아니라 서 있는 동안 이미 보이게.
+  setKeyPrompt(upgradePrompt, a.why || a.label, a.why ? '#ff6b6b' : (a.kind === 'repair' ? '#ffb347' : '#8fd6ff'));
+  const y = (a.kind === 'repair' ? 2.4 : 2.9) + Math.sin(performance.now() * 0.0045) * 0.09;
+  upgradePrompt.position.set(a.x, y, a.z);
+}
+
+// 업그레이드 비용/시간 (D82 → 부품은 D84)
+//  공방: 치즈 + **부품** — 부품은 밖에서만 주우므로 기술을 올리려면 반드시 나가야 한다
+//  경비탑: 치즈만
+// 둘 다 단계가 올라갈수록 비싸진다.
+function upgradeSpec(b) {
+  const tier = b.tier || 1;
+  if (b.kind === 'workshop') {
+    return tier === 1
+      ? { cost: cheeseCost(P.workshop.tier2Cost), parts: P.workshop.tier2Parts, time: P.workshop.tier2Time }
+      : { cost: cheeseCost(P.workshop.tier3Cost), parts: P.workshop.tier3Parts, time: P.workshop.tier3Time };
+  }
+  const next = TOWER_TIERS[tier + 1];
+  return { cost: cheeseCost(next.cost()), parts: 0, time: next.time() };
+}
+
+// 지금 이 건물을 못 올리는 이유 (없으면 null). 빌보드 문구와 F키가 같은 함수를 본다 —
+// 화면에 보이는 이유와 실제 거부 사유가 어긋나지 않게.
+function upgradeBlockedWhy(b) {
+  if (towerUpgradeLocked(b)) return `🔒 공방 Lv.${(b.tier || 1) + 1} 필요`;
+  const s = upgradeSpec(b);
+  if (resources < s.cost) return `치즈 ${s.cost} 필요 (지금 ${Math.floor(resources)})`;
+  if (s.parts > 0 && parts < s.parts) return `부품 ${s.parts}개 필요 (지금 ${parts})`;
+  return null;
+}
+
+// F키 — 수리가 우선, 없으면 업그레이드 (D90). 빌보드와 같은 fAction()을 본다
+function tryUpgradeBuilding() {
+  if (upgradeJob || buildJob) return;
+  const a = fAction();
+  if (!a) return;
+  if (a.why) { flashMsg(a.why, '#e05050'); return; }
+  if (a.kind === 'repair') {
+    resources -= a.cost;
+    repairWall(a.ob);
+    spawnBuildFx(a.x, a.z);
+    flashMsg('벽을 수리했다', '#6ee07a');
+    return;
+  }
+  const b = a.b;
+  const { cost, parts: needParts, time } = upgradeSpec(b);
+  resources -= cost;
+  parts -= needParts;
+  // 경비탑 업그레이드는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
+  // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
+  // 그 자리에 묶이면 쓸 수가 없다. 공방 업그레이드는 채널링을 유지한다(기술 결정이니까).
+  if (b.kind === 'tower') {
+    b.tier = (b.tier || 1) + 1;
+    applyBuildingTierVisual(b);
+    spawnBuildFx(b.cx, b.cz);
+    flashMsg(`${BLDG_INFO[b.kind].label} Lv.${b.tier}!`, '#8fd6ff');
+    return;
+  }
+  upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
+  flashMsg(`${BLDG_INFO[b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
+}
+
+function cancelUpgrade(refund = true) {
+  if (!upgradeJob) return;
+  const { cost, parts: spentParts } = upgradeJob;
+  upgradeJob = null;
+  if (refund) { resources += cost; parts += spentParts || 0; }
+  flashMsg('업그레이드 취소', '#ffb347');
+}
+
+function updateUpgradeJob(dt) {
+  if (!upgradeJob) return;
+  const { b, dur } = upgradeJob;
+  if (!buildings.includes(b)) { upgradeJob = null; return; }   // 적이 부숨
+  upgradeJob.t += dt;
+  if (upgradeJob.t >= dur) {
+    b.tier = (b.tier || 1) + 1;
+    applyBuildingTierVisual(b);
+    flashMsg(`${BLDG_INFO[b.kind].label} Lv.${b.tier}!`, '#8fd6ff');
+    upgradeJob = null;
+  }
+}
+
 // ---- 일꾼 햄스터 ----
 // 치즈더미 ↔ 창고를 자동으로 왕복한다. 한 더미에 붙을 수 있는 수가 제한돼 있어서
 // 더 벌려면 새 더미를 확보해야 한다 = 영역 확장 압박 (원작 구조).
@@ -1921,8 +2401,9 @@ function hireWorker(owner = 'p') {
     if (owner === 'p') flashMsg('일꾼이 너무 많습니다', '#e05050');
     return null;
   }
-  if (purse(owner) < P.worker.cost) {
-    if (owner === 'p') flashMsg(`치즈가 부족합니다 (일꾼 ${P.worker.cost})`, '#e05050');
+  const wcost = cheeseCost(P.worker.cost);
+  if (purse(owner) < wcost) {
+    if (owner === 'p') flashMsg(`치즈가 부족합니다 (일꾼 ${wcost})`, '#e05050');
     return null;
   }
   const home = owner === 'a' ? ally : player;
@@ -1931,7 +2412,7 @@ function hireWorker(owner = 'p') {
     if (owner === 'p') flashMsg('내 치즈 창고가 있어야 일꾼을 고용합니다', '#e05050');
     return null;
   }
-  spend(owner, P.worker.cost);
+  spend(owner, wcost);
   const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
   vis.group.scale.setScalar(P.worker.radius);
   const ring = makeSelRing(0xf0c040, 0.85);
@@ -2141,11 +2622,15 @@ function updateWorkers(dt) {
 // 오래 걸리고, 처치하면 치즈를 준다 (D27). 웨이브는 스테이지마다 다시 채워지므로
 // 처치가 압박을 영구히 없애지는 않는다.
 function updateTower(b, dt) {
+  // 짓는 중에는 쏘지 않는다 (D84) — 채널링 3~4초가 진짜 무방비여야 한다.
+  // 예전엔 착공한 프레임부터 바로 사격해서 "짓는 동안 위험하다"가 성립하지 않았다.
+  if (b.underBuild) { b.reload = TOWER_TIERS[b.tier || 1].reload(); return; }
+  const T = TOWER_TIERS[b.tier || 1];
   // 사거리 안에서 체력이 가장 적은(= 곧 정리할 수 있는) 적을 노려 던진다
   let target = null, best = Infinity;
   for (const e of enemies) {
     const d = Math.hypot(e.x - b.cx, e.z - b.cz);
-    if (d > P.tower.range) continue;
+    if (d > T.range()) continue;
     if (e.hp < best) { best = e.hp; target = e; }
   }
   const head = b.mesh.userData.head;
@@ -2153,8 +2638,9 @@ function updateTower(b, dt) {
   if (!target) return;
   if (head) head.rotation.y = Math.atan2(target.x - b.cx, target.z - b.cz) + Math.PI;
   if (b.reload <= 0) {
-    lobProjectile(b.cx, 1.5, b.cz, target, effTowerDmg());
-    b.reload = P.tower.reload;
+    // tier가 오를수록 투사체도 커지고 밝아진다 — "이펙트가 강력해짐"
+    lobProjectile(b.cx, 1.5, b.cz, target, effTowerDmg(b.tier || 1), 1 + ((b.tier || 1) - 1) * 0.5);
+    b.reload = T.reload();
   }
 }
 
@@ -2166,14 +2652,14 @@ function detonate(e) {
   // 반경 안의 플레이어 벽 제거 (지형은 무사)
   const c = worldToCell(e.x, e.z);
   const span = Math.ceil(R) + 1;
-  let broke = 0;
+  let broke = 0, cracked = 0;
   for (let dj = -span; dj <= span; dj++)
     for (let di = -span; di <= span; di++) {
       const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
       if (!ob || ob.bedrock || ob.bldgRef) continue;
       if (distCellToPoint(ob.i, ob.j, e.x, e.z) > R) continue;
-      removeObstacle(ob);
-      broke++;
+      // 벽을 없애는 대신 금을 낸다 (D90) — crackMax를 넘긴 것만 무너진다
+      if (crackWall(ob)) broke++; else cracked++;
     }
   // 반경 안의 건물·햄스터도 피해
   for (const b of [...buildings])
@@ -2194,7 +2680,11 @@ function detonate(e) {
   if (idx >= 0) enemies.splice(idx, 1);
   if (broke) markNavDirty();
   else refreshReach();
-  flashMsg(broke ? `자폭! 벽 ${broke}칸이 날아갔다` : '자폭묘가 터졌다', '#ff8b5e');
+  flashMsg(
+    broke ? `자폭! 벽 ${broke}칸이 무너졌다`
+      : cracked ? `자폭! 벽 ${cracked}칸에 금이 갔다 — F로 수리`
+      : '자폭묘가 터졌다',
+    '#ff8b5e');
 }
 
 // 적 피해 → 처치. 처치하면 치즈를 준다.
@@ -2212,6 +2702,16 @@ function damageEnemy(e, dmg) {
   const idx = enemies.indexOf(e);
   if (idx >= 0) enemies.splice(idx, 1);
   killCount++;
+  // 보스 처치 = 승리 (D83) — "버티기"가 아니라 "실제로 죽이기"가 승리 조건이 된다.
+  // 웨이브 보충·탐욕 서지 대상도 아니다 — 1회성 결전이라 여기서 끝낸다.
+  if (e.type === 'boss') {
+    victory = true;
+    overlayEl.querySelector('h1').textContent = '톰을 막아냈다!';
+    document.getElementById('overlay-sub').textContent =
+      `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
+    overlayEl.classList.remove('hidden');
+    return;
+  }
   flashMsg(`${TYPE_INFO[e.type].label} 처치! 치즈 +${reward}`, '#bfaaff');
   refreshReach();
   // 원작의 탐욕 페널티 — 일정 수를 잡으면 그때 우루루 쏟아진다.
@@ -2229,7 +2729,69 @@ function damageEnemy(e, dmg) {
 
 // 광맥은 시각 전용 — 채굴 주체는 창고다.
 // 잔량이 줄면 위쪽 조각부터 사라져서 "먹히고 있다"가 눈에 보인다.
+// ---- 더미별 일꾼 정원 표시 (D90) ----
+// `1/3` `3/3`. 정원(D36)은 확장 압박을 만드는 핵심 규칙인데 **화면에 안 보여서**
+// 몇 명이 붙었는지 세어 볼 방법이 없었다. 꽉 차면 붉게 — "다음 더미로 가야 한다"가 읽히게.
+const pileLabels = new Map();   // node -> sprite
+
+function pileLabelSprite() {
+  const cv = document.createElement('canvas');
+  cv.width = 96; cv.height = 48;
+  const tex = new THREE.CanvasTexture(cv);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
+  }));
+  spr.scale.set(1.35, 0.68, 1);
+  spr.renderOrder = 1001;
+  scene.add(spr);
+  return { spr, cv, tex, text: '' };
+}
+
+function drawPileLabel(L, text, full) {
+  if (L.text === text) return;
+  L.text = text;
+  const g = L.cv.getContext('2d');
+  g.clearRect(0, 0, 96, 48);
+  g.fillStyle = 'rgba(14,18,28,0.82)';
+  roundRectPath(g, 4, 8, 88, 32, 9); g.fill();
+  g.strokeStyle = full ? '#ff7a5e' : '#7fb0ff'; g.lineWidth = 2.5;
+  roundRectPath(g, 4, 8, 88, 32, 9); g.stroke();
+  g.fillStyle = full ? '#ffc0ae' : '#dfe9ff';
+  g.font = 'bold 22px "SF Mono", Menlo, monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 48, 25);
+  L.tex.dispose();
+  L.tex = new THREE.CanvasTexture(L.cv);
+  L.spr.material.map = L.tex;
+  L.spr.material.needsUpdate = true;
+}
+
+function updatePileLabels() {
+  for (const n of nodes) {
+    let L = pileLabels.get(n);
+    if (!L) { L = pileLabelSprite(); pileLabels.set(n, L); }
+    // 고갈된 더미는 표시하지 않는다 (일꾼이 붙을 수 없으니 정보가 아니다)
+    if (n.amount <= 0) { L.spr.visible = false; continue; }
+    const c = pileCrowd(n);
+    const max = P.worker.perPile;
+    drawPileLabel(L, `${c}/${max}`, c >= max);
+    const w = cellToWorld(n.i, n.j);
+    L.spr.visible = true;
+    L.spr.position.set(w.x, 1.55, w.z);
+  }
+}
+
+function clearPileLabels() {
+  for (const L of pileLabels.values()) {
+    scene.remove(L.spr);
+    L.tex.dispose();
+    L.spr.material.dispose();
+  }
+  pileLabels.clear();
+}
+
 function updateNodes(dt) {
+  updatePileLabels();
   for (const n of nodes) {
     const g = n.mesh;
     const frac = Math.max(n.amount, 0) / (P.res.nodeAmount * (n.mul || 1));
@@ -2343,6 +2905,11 @@ function spawnSpotNear(x, z, r, n = 0) {
 
 function placeGuard(type = 'archer') {
   const T = GUARD_TYPES[type];
+  // 기술 트리 게이트 (D82) — 공방이 그 등급 이상 실존해야 뽑을 수 있다
+  if (maxWorkshopTier() < T.reqTier) {
+    flashMsg(`${T.label}은 공방 Lv.${T.reqTier}이 필요합니다`, '#e05050');
+    return null;
+  }
   const cost = guardCost(type);
   if (resources < cost) { flashMsg(`치즈가 부족합니다 (${T.label} ${cost})`, '#e05050'); return null; }
   if (guards.length >= P.guard.max) { flashMsg(`방어병이 너무 많습니다 (최대 ${P.guard.max})`, '#e05050'); return null; }
@@ -2384,8 +2951,14 @@ function clearGuards() {
 }
 
 // 던지기 — 포물선이라 벽을 넘어간다 (경비탑·방어병 공용)
-function lobProjectile(x, y, z, e, dmg) {
-  const m = new THREE.Mesh(projGeo, projMat);
+// scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
+function lobProjectile(x, y, z, e, dmg, scale = 1) {
+  const m = new THREE.Mesh(projGeo, scale > 1 ? projMat.clone() : projMat);
+  if (scale > 1) {
+    m.material.emissiveIntensity = 0.5 + (scale - 1) * 0.6;
+    m.material.color.setHex(scale > 1.5 ? 0xffb347 : 0xffe9a8);
+  }
+  m.scale.setScalar(scale);
   m.position.set(x, y, z);
   m.castShadow = true;
   scene.add(m);
@@ -2411,6 +2984,7 @@ function updateProjectiles(dt) {
     if (p >= 1) {
       if (q.target && enemies.includes(q.target)) damageEnemy(q.target, q.dmg);
       scene.remove(q.mesh);
+      if (q.mesh.material !== projMat) q.mesh.material.dispose();
       projectiles.splice(k, 1);
     }
   }
@@ -2424,7 +2998,7 @@ function updateGuards(dt) {
     for (const e of enemies) {
       if (Math.hypot(g.x - e.x, g.z - e.z) >= gr + enemyR(e) - 0.02) continue;
       if (g.maxHp <= 0) { removeGuard(g, true); break; }
-      g.hp -= (typeP(e).bldgDps + threatLevel() * P.threat.dpsGain) * dt;
+      g.hp -= (typeP(e).bldgDps + (e.type === 'boss' ? 0 : threatLevel() * P.threat.dpsGain)) * dt;
       if (g.hp <= 0) { removeGuard(g, true); break; }
     }
     if (!guards.includes(g)) continue;
@@ -2492,8 +3066,9 @@ function updateGuards(dt) {
       const dc = Math.max(Math.hypot(tgt.x - g.x, tgt.z - g.z), 0.001);
       g.faceX = (tgt.x - g.x) / dc; g.faceZ = (tgt.z - g.z) / dc;
       if (g.reload <= 0) {
-        if (T.melee) { damageEnemy(tgt, T.dmg()); g.swing = 0.22; }
-        else lobProjectile(g.x, 0.9, g.z, tgt, T.dmg());
+        const dmg = effGuardDmg(g.type);   // 방어병 화력 업그레이드 반영 (D87)
+        if (T.melee) { damageEnemy(tgt, dmg); g.swing = 0.22; }
+        else lobProjectile(g.x, 0.9, g.z, tgt, dmg);
         g.reload = T.reload();
       }
     }
@@ -2621,11 +3196,19 @@ function spawnPickup() {
   pickups.push({ kind: isParts ? 'parts' : 'cheese', x: spot.x, z: spot.z, mesh, t: 0 });
 }
 
+// 후반일수록 부품이 더 자주·더 많이 나온다 (D87) — 적이 단단해지는 만큼 밖에 나갈 값어치가 커진다
+const effPickupInterval = () =>
+  Math.max(P.pickup.interval - (stage - 1) * P.pickup.stageSpeedup, 4);
+const effPickupMax = () =>
+  Math.round(P.pickup.maxOnMap + (stage - 1) * P.pickup.stageOnMap);
+const effPartsEach = () =>
+  P.pickup.partsEach + Math.floor((stage - 1) * P.pickup.stageParts);
+
 function updatePickups(dt) {
   pickupT += dt;
-  if (pickupT >= P.pickup.interval) {
+  if (pickupT >= effPickupInterval()) {
     pickupT = 0;
-    if (pickups.length < P.pickup.maxOnMap) spawnPickup();
+    if (pickups.length < effPickupMax()) spawnPickup();
   }
   for (let k = pickups.length - 1; k >= 0; k--) {
     const u = pickups[k];
@@ -2637,8 +3220,9 @@ function updatePickups(dt) {
       || (ally.active && !ally.stunned && Math.hypot(ally.x - u.x, ally.z - u.z) < 1.1);
     if (!got) continue;
     if (u.kind === 'parts') {
-      parts += P.pickup.partsEach;
-      flashMsg(`부품 +${P.pickup.partsEach} (U: 업그레이드)`, '#8fd6ff');
+      const n = effPartsEach();
+      parts += n;
+      flashMsg(`부품 +${n} (U: 업그레이드)`, '#8fd6ff');
     } else {
       resources += P.pickup.cheeseEach;
       flashMsg(`치즈 +${P.pickup.cheeseEach}`, '#ffd24a');
@@ -2666,7 +3250,12 @@ function clearPickups() {
 //   · 직교로 붙인 두 기둥 사이 틈 = CS - post  (플레이어도 못 지나감 = 벽)
 //   · 대각으로 붙인 두 기둥 사이 틈 = √2 × (CS - post)  (**플레이어만 통과**)
 // 지형(bedrock)과 건물은 예전처럼 셀을 꽉 채운다.
-const obHalf = (ob) => (ob.bedrock || ob.bldgRef ? CS / 2 : P.wall.post / 2);
+// 충돌 반폭. 지형은 셀을 꽉 채우고, 건물은 inset만큼 안으로 들이며(D84 — 대각 틈이
+// 생겨 플레이어만 빠져나간다), 플레이어 벽은 원기둥이라 post/2다 (D57·D59).
+const obHalf = (ob) =>
+  ob.bedrock ? CS / 2
+  : ob.bldgRef ? Math.max(CS / 2 - P.build.inset, 0.1)
+  : P.wall.post / 2;
 
 function collideWithObstacles(ent, r) {
   for (let pass = 0; pass < 3; pass++) {
@@ -2978,9 +3567,29 @@ function planEnemyPath(enemy) {
   enemy.goalX = gx; enemy.goalZ = gz;
   const goal = worldToNav(gx, gz);
 
+  // 근사 도달을 인정할지 판정한다 (D85).
+  // A*가 목표에 못 닿아도 "거의 닿았다"(closestWorld < tol)면 추격으로 쳐 줬는데,
+  // **은신처 밖에서는 이게 영원히 참이었다** — 고양이가 기둥 바로 앞까지는 가니까.
+  // 그 결과 무리가 은신처 둘레에 뭉쳐 선 채 건물 습격으로 넘어가질 않았다.
+  // 이제 근사 도달은 **그 자리에서 실제로 손이 닿을 때만** 인정한다.
+  // (벽에 등을 붙인 플레이어처럼 격자 오차로 경로가 안 잡히는 경우는 그대로 살아난다)
+  //
+  // 그리고 **한 대도 못 때린 채 오래 쫓았으면** 근사 도달을 아예 인정하지 않는다 (D85).
+  // 은신처는 대각선 시야가 뚫려 있어 "닿을 것 같은데 안 닿는" 상태가 계속 성립한다 —
+  // 그 상태로 붙잡혀 있으면 무리 전체가 문 앞에 굳는다. 못 잡겠으면 살림을 뜯으러 간다.
+  const frustrated = (enemy.noHitT || 0) > P.enemy.raidPatience && buildings.length > 0;
+  const nearOk = (r, tol, target) => {
+    if (r.found) return true;
+    if (frustrated) return false;
+    if (r.closestWorld >= tol || !r.path.length) return false;
+    if (!target) return true;                       // 미끼 등 — 예전 동작 유지
+    const near = navToWorld(r.path[r.path.length - 1]);
+    return !segmentBlocked(near.x, near.z, target.x, target.z);
+  };
+
   // ---- 직행 경로 ----
   let res = astar(start, goal, passAll, () => 0);
-  if (res.found || res.closestWorld < 1.3 + (raiding ? enemyR(enemy) : 0)) {
+  if (nearOk(res, 1.3 + (raiding ? enemyR(enemy) : 0), raiding ? null : chased)) {
     // 닿을 수 있었던 마지막 자리를 기억해 둔다 (나중에 길이 끊기면 여기로 온다)
     if (chased) { enemy.lostX = chased.x; enemy.lostZ = chased.z; enemy.lostT = survival; }
     enemy.campT = 0;
@@ -2992,7 +3601,7 @@ function planEnemyPath(enemy) {
   // 여기서 안 되짚으면 멀쩡히 쫓을 수 있는데도 '돌파/습격'으로 새 버린다.
   if (chased && (gx !== chased.x || gz !== chased.z)) {
     const direct = astar(start, worldToNav(chased.x, chased.z), passAll, () => 0);
-    if (direct.found || direct.closestWorld < 1.3) {
+    if (nearOk(direct, 1.3, chased)) {
       enemy.lostX = chased.x; enemy.lostZ = chased.z; enemy.lostT = survival;
       enemy.campT = 0;
       enemy.goalX = chased.x; enemy.goalZ = chased.z;
@@ -3080,7 +3689,10 @@ function planEnemyPath(enemy) {
 // 벽 너머 공격을 막는 데 쓴다 — 몸집이 커서 벽 반대편에 있어도 사거리(2.3m) 안에
 // 들어오는 일이 생겼고, 그때 벽을 뚫고 때리는 것처럼 보였다.
 // 통행 판정(clearance)이 아니라 **셀 점유**로 재는 게 핵심 — 손이 닿느냐의 문제다.
-function segmentBlocked(x0, z0, x1, z1) {
+// ignoreBldg: **그 건물 자신은 시야를 가리지 않는다** (D85).
+// 건물을 때릴 수 있는지 볼 때 목표는 건물 중심인데, 그 선분은 당연히 그 건물의 칸을
+// 지난다. 자기 자신을 장애물로 세면 "건물 앞에 서 있는데 못 때리는" 상태가 된다.
+function segmentBlocked(x0, z0, x1, z1, ignoreBldg = null) {
   const dx = x1 - x0, dz = z1 - z0;
   const len = Math.hypot(dx, dz);
   if (len < 1e-6) return false;
@@ -3097,12 +3709,16 @@ function segmentBlocked(x0, z0, x1, z1) {
         checked.add(key);
         const ob = obstacles.get(key);
         if (!ob) continue;
+        if (ignoreBldg && ob.bldgRef === ignoreBldg) continue;   // 자기 자신은 안 센다
         const w = cellToWorld(ob.i, ob.j);
         // 선분에서 이 장애물 중심까지의 최단 거리
         const proj = clamp((w.x - x0) * ux + (w.z - z0) * uz, 0, len);
         const nx = x0 + ux * proj, nz = z0 + uz * proj;
         if (ob.bedrock || ob.bldgRef) {
-          if (Math.abs(w.x - nx) <= CS / 2 && Math.abs(w.z - nz) <= CS / 2) return true;
+          // 건물도 충돌과 같은 inset을 쓴다 (D84) — 안 그러면 대각 틈에 선 플레이어가
+          // 아무도 못 때리는 무적 지대가 된다 (기둥에서 겪은 D65와 같은 함정)
+          const bh = obHalf(ob);
+          if (Math.abs(w.x - nx) <= bh && Math.abs(w.z - nz) <= bh) return true;
         } else if (Math.hypot(w.x - nx, w.z - nz) < P.wall.post / 2) {
           // 기둥은 **원**이다 (D65). 셀로 재면 기둥 옆 빈틈까지 가려져서,
           // 기둥 두 개 사이에 서 있으면 아무도 못 때리는 무적 지대가 생겼다.
@@ -3188,20 +3804,27 @@ function topUpToCurve() {
   if (added) { refreshReach(); flashMsg(`새 무리가 몰려온다! (+${added})`, '#ff8b5e'); }
 }
 
+// 10스테이지에 다다르면 톰이 쳐들어온다 — 그 뒤로는 시간이 승리를 안 준다 (D83).
+// 보스를 처치해야만 끝난다. 시간이 다 돼도 스테이지는 10에 머물고 전투가 계속될 뿐이다.
+function spawnBoss() {
+  const b = makeEnemy('boss', enemies.length);
+  b.introT = 3.0;   // 등장 경고 후 잠깐 멈춰 있다가 움직이기 시작
+  enemies.push(b);
+  refreshReach();
+}
+
 function advanceStage() {
-  if (stage >= STAGES.length) {
-    victory = true;
-    overlayEl.querySelector('h1').textContent = '10 스테이지 돌파!';
-    document.getElementById('overlay-sub').textContent =
-      `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
-    overlayEl.classList.remove('hidden');
-    return;
-  }
+  if (stage >= STAGES.length) return;   // 보스만이 승리를 결정한다 — 더 이상 진행 없음
   stage++;
   stageT = 0;
   spawnStageAdds(stage - 1);
   topUpToCurve();   // 처치로 줄어든 만큼 보충 — 처치는 한숨 돌릴 시간을 줄 뿐
-  flashMsg(`스테이지 ${stage} — ${stageDur()}초 버티기`, '#6ee07a');
+  if (stage === STAGES.length) {
+    flashMsg('스테이지 10 — 톰이 나타났다!', '#ff4d4d');
+    spawnBoss();
+  } else {
+    flashMsg(`스테이지 ${stage} — ${stageDur()}초 버티기`, '#6ee07a');
+  }
 }
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
@@ -3236,6 +3859,8 @@ function separateEnemies() {
 }
 
 function updateEnemy(enemy, dt) {
+  // 보스 등장 예고 — 잠깐 멈춰 서 있다가 움직이기 시작한다 (D83)
+  if (enemy.introT > 0) { enemy.introT -= dt; return; }
   const er = enemyR(enemy);
   // 체력 아주 느린 자연 회복 (찔끔찔끔 누적으로 죽지 않게 — 처치엔 집중 화력이 필요)
   enemy.hp = Math.min(enemy.hp + enemyMaxHp(enemy) * 0.02 * dt, enemyMaxHp(enemy));
@@ -3306,7 +3931,10 @@ function updateEnemy(enemy, dt) {
       const idx = enemy.path[k].idx;
       const ob = obstacles.get(cellKey(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0));
       if (!ob || ob.bedrock || !ob.bldgRef) continue;  // 벽은 무적, 건물만
-      if (distToObstacle(enemy, ob) <= reach) {
+      // 벽 너머로는 못 때린다 (D88) — 거리만 보면 **벽 뒤의 타워가 맞는다.**
+      // 파괴 경로가 건물을 지나더라도, 지금 서 있는 자리에서 손이 닿아야 때릴 수 있다
+      if (distToObstacle(enemy, ob) <= reach &&
+          !segmentBlocked(enemy.x, enemy.z, ob.bldgRef.cx, ob.bldgRef.cz, ob.bldgRef)) {
         enemy.attackTarget = ob;
         break;
       }
@@ -3358,8 +3986,9 @@ function updateEnemy(enemy, dt) {
       const ob = obstacles.get(key);
       if (ob) dMin = Math.min(dMin, distToObstacle(enemy, ob));
     }
-    // 건물도 벽 너머로는 못 때린다 (D80) — 햄스터 공격(D56)과 같은 규칙
-    if (dMin <= reach && !segmentBlocked(enemy.x, enemy.z, b.cx, b.cz)) bldgTarget = b;
+    // 건물도 벽 너머로는 못 때린다 (D80) — 햄스터 공격(D56)과 같은 규칙.
+    // 단 **그 건물 자신은 빼고** 본다 (D85) — 안 그러면 목표가 스스로를 가린다
+    if (dMin <= reach && !segmentBlocked(enemy.x, enemy.z, b.cx, b.cz, b)) bldgTarget = b;
   }
   // 정체 폴백: 손 닿는 건물은 모든 종류가 공격, 벽은 파괴묘만
   if (!bldgTarget && !enemy.attackTarget && enemy.stallT > stallLimit) {
@@ -3374,15 +4003,22 @@ function updateEnemy(enemy, dt) {
         else { bestWall = ob; bestB = null; }
       }
     }
-    if (bestB && !segmentBlocked(enemy.x, enemy.z, bestB.cx, bestB.cz)) bldgTarget = bestB;
+    if (bestB && !segmentBlocked(enemy.x, enemy.z, bestB.cx, bestB.cz, bestB)) bldgTarget = bestB;
     else if (!bestB) enemy.attackTarget = bestWall;
   }
 
-  if (!bldgTarget && enemy.attackTarget && enemy.attackTarget.bldgRef)
-    bldgTarget = enemy.attackTarget.bldgRef; // 파괴 경로상의 건물 셀
+  // 파괴 경로상의 건물 셀 — 여기도 시야를 본다 (D88).
+  // 예전엔 이 줄에 검사가 없어서 **벽 뒤의 경비탑이 그대로 맞았다.**
+  if (!bldgTarget && enemy.attackTarget && enemy.attackTarget.bldgRef) {
+    const tb = enemy.attackTarget.bldgRef;
+    if (!segmentBlocked(enemy.x, enemy.z, tb.cx, tb.cz, tb)) bldgTarget = tb;
+    else enemy.attackTarget = null;
+  }
 
   if (bldgTarget) {
-    damageBuilding(bldgTarget, (typeP(enemy).bldgDps + threatLevel() * P.threat.dpsGain) * dt);
+    // 보스는 위협 레벨 가산에서 제외 (D83) — 고정 스탯
+    const dpsGain = enemy.type === 'boss' ? 0 : threatLevel() * P.threat.dpsGain;
+    damageBuilding(bldgTarget, (typeP(enemy).bldgDps + dpsGain) * dt);
     enemy.attackTarget = null;
   }
   // 벽은 무적이라 때려서 부술 수 없다 — 자폭묘의 폭발만이 벽을 없앤다
@@ -3398,6 +4034,10 @@ function updateEnemy(enemy, dt) {
     hitTarget = h;
     break;
   }
+  // "쫓고는 있는데 한 대도 못 때린" 시간 (D85). 이게 쌓이면 건물을 뜯으러 간다.
+  // 때리는 데 성공했거나 이미 습격 중이면 0으로 돌아간다.
+  if (hitTarget || enemy.aiMode === '습격' || enemy.aiMode === '파괴') enemy.noHitT = 0;
+  else enemy.noHitT = (enemy.noHitT || 0) + dt;
   enemy.atkT = (enemy.atkT || 0) - dt;
   // 자폭묘는 "앞을 막은 벽"에도 점화한다 — 벽이 무적이라 이게 유일한 돌파 수단
   let blockingWall = null;
@@ -3434,6 +4074,39 @@ function updateEnemy(enemy, dt) {
   } else {
     enemy.windup = 0;
   }
+
+  // 보스는 자폭하지 않고, 쿨다운마다 "막힌 벽 하나"를 강타해 부순다 (D83) —
+  // 자폭묘처럼 일회성이 아니라 반복 가능하지만, 한 번에 딱 하나만 부순다.
+  // 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다. 일반 공격(hitTarget)과 독립적이라
+  // 위 if/else-if 체인 밖에 둔다 — 보스도 평소엔 그냥 물어뜯는다.
+  if (enemy.type === 'boss') {
+    enemy.smashCd = Math.max((enemy.smashCd || 0) - dt, 0);
+    let smashWall = null;
+    if (enemy.smashCd <= 0) {
+      const c = worldToCell(enemy.x, enemy.z);
+      for (let dj = -2; dj <= 2 && !smashWall; dj++)
+        for (let di = -2; di <= 2; di++) {
+          const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+          if (!ob || ob.bedrock || ob.bldgRef) continue;
+          if (distToObstacle(enemy, ob) <= reach) { smashWall = ob; break; }
+        }
+    }
+    if (smashWall) {
+      enemy.smashT = (enemy.smashT || 0) + dt;
+      const f = enemy.smashT / P.boss.smashWindup;
+      enemy.vis.group.scale.setScalar(enemyR(enemy) * (1 + 0.3 * f));
+      if (enemy.smashT >= P.boss.smashWindup) {
+        removeObstacle(smashWall);
+        markNavDirty();
+        spawnBuildFx(enemy.x, enemy.z);
+        flashMsg('톰이 벽을 강타해 부쉈다!', '#ff4d4d');
+        enemy.smashT = 0;
+        enemy.smashCd = P.boss.smashCooldown;
+      }
+    } else {
+      enemy.smashT = Math.max((enemy.smashT || 0) - dt * 2, 0);
+    }
+  }
   // 예비동작·타격 모션 (앞으로 움찔 → 덮침)
   if (enemy.lungeT > 0) {
     enemy.lungeT -= dt;
@@ -3447,7 +4120,9 @@ function updateEnemy(enemy, dt) {
       enemy.vis.group.scale.setScalar(enemyR(enemy) * (1 + w * 0.22));
     } else {
       enemy.windupPull = 0;
-      if (enemy.type !== 'bomber') enemy.vis.group.scale.setScalar(enemyR(enemy));
+      // 자폭묘 점화 중 / 보스 강타 예비동작 중에는 이 리셋이 그 부풀기를 덮으면 안 된다
+      if (enemy.type !== 'bomber' && !(enemy.type === 'boss' && enemy.smashT > 0))
+        enemy.vis.group.scale.setScalar(enemyR(enemy));
     }
   }
 
@@ -3490,15 +4165,20 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') {
     if (menuOpen) setMenu(false);
     else if (buildJob) cancelBuild(true);
+    else if (upgradeJob) cancelUpgrade(true);
     else if (buildOrder) { buildOrder = null; flashMsg('건물 명령 취소', '#9aa3b2'); }
     else if (wallOrders.length) clearWallOrders('벽 명령 취소');
+    else if (removeMode) { removeMode = false; updateHotbar(); }
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (playerOrder) clearMineOrder('채굴 명령 취소');
     else if (selectedUnits.size) selectedUnits.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
+    else if (helpOpen) { helpOpen = false; renderHelp(); }
     else setMenu(true);
   }
   if (e.code === 'KeyE' && alive) toggleMineOrder();
+  // F — 공방·경비탑 제자리 업그레이드 (R은 이미 재시작에 쓰인다)
+  if (e.code === 'KeyF' && alive) tryUpgradeBuilding();
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') startRoll();
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
   if (e.code === 'Tab') {
@@ -3509,18 +4189,26 @@ window.addEventListener('keydown', (e) => {
     else flashMsg('방어병이 없습니다', '#e05050');
   }
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
-  // 숫자키 = 업그레이드 패널이 열려 있으면 구매, 아니면 건설 슬롯 선택
-  for (let k = 0; k < 9; k++) {
+  if (e.code === 'KeyH') { helpOpen = !helpOpen; renderHelp(); }
+  // 숫자키 = **구매 모드(U)일 때만** 개조 구매, 아니면 건설 슬롯 선택.
+  // 공방 옆에서 패널이 저절로 떠도(D88) 숫자키는 핫바를 계속 쓴다 —
+  // 안 그러면 내 공방 옆에서 건물을 못 짓는다
+  for (let k = 0; k < 8; k++) {
     if (e.code === 'Digit' + (k + 1)) {
       if (upgOpen) buyUpgrade(k);
       // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
-      else if (k < BUILD_SLOTS.length) { buildSlot = buildSlot === k ? -1 : k; updateHotbar(); }
+      else if (k < BUILD_SLOTS.length) {
+        removeMode = false;
+        buildSlot = buildSlot === k ? -1 : k;
+        updateHotbar();
+      }
       break;
     }
   }
   if (e.code === 'KeyP') paused = !paused;
   if (e.code === 'KeyR') restart();
-  if (e.code === 'KeyX') { buildSlot = BUILD_SLOTS.findIndex(b => b.key === 'remove'); updateHotbar(); }
+  // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
+  if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
 
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -3898,6 +4586,7 @@ function updatePlayer(dt) {
     ghost.visible = false;
     minePrompt.visible = false;
     fullPrompt.visible = false;
+    upgradePrompt.visible = false;
     safeMark.visible = false;
     return;
   }
@@ -3907,15 +4596,23 @@ function updatePlayer(dt) {
   const wantBuild = keys.has('Space') || mouseDown;
   const buildPressed = wantBuild && !prevWantBuild; // 눌리는 순간 (연사 방지용)
   prevWantBuild = wantBuild;
+  // 유닛 생산은 Enter (D88) — 눌리는 순간에만 한 기
+  const wantSpawn = keys.has('Enter') || keys.has('NumpadEnter');
+  const spawnPressed = wantSpawn && !prevWantSpawn;
+  prevWantSpawn = wantSpawn;
 
   updateBuild(dt);
+  updateUpgradeJob(dt);
 
   // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
   if (rollCd > 0) rollCd -= dt;
   // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
   stamIdle += dt;
-  if (stamIdle > P.player.stamDelay)
-    stamina = Math.min(stamina + P.player.stamRegen * dt, P.player.stamMax);
+  if (stamIdle > P.player.stamDelay) {
+    // 내 영토 위에서는 더 빨리 찬다 (D86) — 영토의 유일한 실이익
+    const mul = inTerritory(player.x, player.z) ? P.player.terrStamMul : 1;
+    stamina = Math.min(stamina + P.player.stamRegen * mul * dt, P.player.stamMax);
+  }
   if (rollT > 0) {
     rollT -= dt;
     rollSpin += dt * 22;
@@ -3927,14 +4624,15 @@ function updatePlayer(dt) {
     playerVis.group.rotation.y = Math.atan2(rollX, rollZ) + Math.PI;
     playerVis.group.rotation.x = -rollSpin;   // 앞으로 구른다
     updateMinePrompt();
+    updateUpgradePrompt();
     updateSafeMark();
     ghost.visible = false;
     return;
   }
   playerVis.group.rotation.x = 0;
 
-  // ---- 이동 (건물을 짓는 동안은 묶인다 = 무방비) ----
-  if (!buildJob) {
+  // ---- 이동 (건물을 짓거나 업그레이드하는 동안은 묶인다 = 무방비) ----
+  if (!buildJob && !upgradeJob) {
     const b = moveBasis();
     let mx = 0, mz = 0;
     const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
@@ -3993,13 +4691,15 @@ function updatePlayer(dt) {
            !playerStunned && playerHp < P.player.hp - 0.5);
     const mining = playerJob === 'mine';
     const building = !!buildJob;
+    const upgrading = !!upgradeJob;
     const casting = !!wallCast;
     setBar(playerWorkBar,
            casting ? wallCast.t / P.wall.castTime
                    : building ? buildJob.t / buildJob.dur
+                   : upgrading ? upgradeJob.t / upgradeJob.dur
                    : (player.mineT || 0) / effMineTime(),
            player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z,
-           mining || building || casting);
+           mining || building || upgrading || casting);
   }
 
   // ---- 건설 고스트: 마우스가 가리키는 타일 + 선택 슬롯의 발자국 ----
@@ -4012,26 +4712,78 @@ function updatePlayer(dt) {
       hasTile = true;
     }
   }
+  // ---- 철거 모드 (X) ---- 핫바 슬롯을 안 쓰고 별도 상태로 둔다 (D88)
+  if (removeMode) {
+    const ob = hasTile ? obstacles.get(cellKey(gi, gj)) : null;
+    // 벽뿐 아니라 **일반 건물(창고·공방·경비탑)도 철거된다** (D90).
+    // 건물은 잘못 놓으면 되돌릴 방법이 아예 없었다 — 자리를 고쳐 잡을 길을 준다.
+    // 되찾는 값(refundRatio)이 있어야 "옮기자"가 실제 선택이 된다.
+    const bldg = ob && ob.bldgRef && ob.bldgRef.owner === 'p' ? ob.bldgRef : null;
+    const isWall = !!ob && !ob.bedrock && !ob.bldgRef;
+    const rc = P.wall.removeCost;
+    const refund = bldg ? Math.round(buildCost(bldg.kind) * P.build.refundRatio) : 0;
+    const ok = (isWall || !!bldg) && resources >= rc;
+    ghostCell = { i: gi, j: gj, valid: ok };
+    ghostWhy = ok ? '' :
+      (!ob ? '철거할 게 없음'
+        : ob.bedrock ? '지형은 못 부순다'
+        : ob.bldgRef ? '동료 건물은 못 부순다'
+        : '치즈 부족');
+    ghost.visible = alive && hasTile;
+    const w0 = cellToWorld(gi, gj);
+    if (bldg) {   // 건물은 발자국 전체를 비춘다
+      ghost.scale.set(CS * 1.98, 1.2, CS * 1.98);
+      ghost.position.set(bldg.cx, 0.6, bldg.cz);
+    } else {
+      ghost.scale.set(P.wall.post, P.wall.height, P.wall.post);
+      ghost.position.set(w0.x, P.wall.height / 2, w0.z);
+    }
+    ghost.material.color.setHex(ok ? 0xffb347 : 0xe05050);
+    buildCooldown -= dt;
+    if (wantBuild && buildCooldown <= 0 && ok) {
+      resources -= rc;
+      if (bldg) {
+        resources += refund;
+        spawnBuildFx(bldg.cx, bldg.cz);
+        destroyBuilding(bldg, false);
+        flashMsg(`${BLDG_INFO[bldg.kind].label} 철거 — 치즈 +${refund} 회수`, '#ffb347');
+        buildCooldown = 0.3;   // 건물은 연타로 지워지지 않게 조금 길게
+      } else {
+        removeObstacle(ob);
+        markNavDirty();
+        spawnBuildFx(w0.x, w0.z);
+        buildCooldown = P.wall.cooldown;
+      }
+    }
+    updateMinePrompt();
+    updateUpgradePrompt();
+    updateSafeMark();
+    return;
+  }
+
   const slot = heldSlot();
   // 아무것도 안 들고 있으면 고스트도 없고 좌클릭도 아무 일을 하지 않는다
   if (!slot) {
     ghostCell = { i: gi, j: gj, valid: false };
     ghost.visible = false;
     updateMinePrompt();
+    updateUpgradePrompt();
     updateSafeMark();
     return;
   }
   const w = cellToWorld(gi, gj);
   const affordable = resources >= slot.cost();
+  const lock = slotLockReason(slot);
   let valid = false;
-  if (hasTile && slot.key === 'remove') {
-    const ob = obstacles.get(cellKey(gi, gj));
-    valid = !!ob && !ob.bedrock && !ob.bldgRef && affordable;
+  if (lock) {
+    ghostWhy = lock;
   } else if (slot.key === 'worker') {
     valid = affordable && !!nearestDepot(player.x, player.z);
+    ghostWhy = !affordable ? '치즈 부족' : (valid ? '' : '창고가 필요합니다');
   } else if (GUARD_TYPES[slot.key]) {
     // 유닛은 내 옆에서 나온다 — 자리를 안 찍으므로 타일 유효성도 없다
     valid = affordable && guards.length < P.guard.max;
+    ghostWhy = !affordable ? '치즈 부족' : (valid ? '' : `방어병 최대 ${P.guard.max}`);
   } else if (hasTile) {
     if (slot.size === 2) {
       const berr = buildingPlacement(gi, gj, slot.key, true);
@@ -4046,14 +4798,11 @@ function updatePlayer(dt) {
   }
   ghostCell = { i: gi, j: gj, valid };
   // 유닛 슬롯은 자리를 안 찍으므로 고스트를 띄우지 않는다
-  const unitSlot = slot.key === 'worker' || !!GUARD_TYPES[slot.key];
+  const unitSlot = isUnitSlot(slot);
   ghost.visible = alive && hasTile && !unitSlot;
   if (slot.size === 2) {
-    ghost.scale.set(CS * 1.98, slot.key === 'wall' ? P.wall.height : 1.2, CS * 1.98);
+    ghost.scale.set(CS * 1.98, 1.2, CS * 1.98);
     ghost.position.set(w.x + CS / 2, 0.6, w.z + CS / 2);
-  } else if (slot.key === 'trap' || slot.key === 'decoy') {
-    ghost.scale.set(CS * 0.9, 0.15, CS * 0.9);
-    ghost.position.set(w.x, 0.08, w.z);
   } else if (slot.key === 'wall') {
     // 고스트도 기둥 크기로 — 세우기 전에 틈이 얼마나 남는지 보여야 한다
     ghost.scale.set(P.wall.post, P.wall.height, P.wall.post);
@@ -4062,12 +4811,10 @@ function updatePlayer(dt) {
     ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
     ghost.position.set(w.x, P.wall.height / 2, w.z);
   }
-  ghost.material.color.setHex(
-    slot.key === 'remove' ? (valid ? 0xffb347 : 0xe05050) : (valid ? 0x6ee07a : 0xe05050)
-  );
+  ghost.material.color.setHex(valid ? 0x6ee07a : 0xe05050);
 
   // ---- 즉시 건설 (선택 슬롯) ----
-  // 벽: 홀드하면 쿨다운마다 연속 설치 / 나머지: 누르는 순간 1회
+  // 벽: 홀드하면 쿨다운마다 연속 설치 / 건물: 클릭 = 명령 / **유닛: Enter** (D88)
   buildCooldown -= dt;
   if (slot.key === 'wall') {
     // 클릭 한 번 = "거기에 지으러 가라" (D60/D73). 사거리는 짧게 두되(D69) 걷는 건 대신해 준다.
@@ -4078,26 +4825,24 @@ function updatePlayer(dt) {
         orderPath.length = 0; orderRepathT = 0;
       }
     }
-  } else if (slot.key === 'remove') {
-    if (wantBuild && buildCooldown <= 0 && valid) {
-      const ob = obstacles.get(cellKey(gi, gj));
-      resources -= P.wall.removeCost;
-      removeObstacle(ob);
-      markNavDirty();
-      spawnBuildFx(w.x, w.z);
-      buildCooldown = P.wall.cooldown;
+  } else if (unitSlot) {
+    // 유닛은 **Enter**로 뽑는다 — 자리를 안 찍는데 클릭을 쓰면
+    // "어딘가를 찍어야 하나?"로 읽힌다. 마우스는 건설·명령에만 쓴다
+    if (spawnPressed) {
+      if (lock) flashMsg(lock, '#e05050');
+      else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
+      else hireWorker('p');
     }
-  } else if (buildPressed && (hasTile || unitSlot)) {
-    if (slot.key === 'depot' || slot.key === 'workshop' || slot.key === 'tower') {
-      buildOrder = { kind: slot.key, i: gi, j: gj };
-      orderPath.length = 0; orderRepathT = 0;
-      if (playerOrder) clearMineOrder();
-    }
-    else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
-    else if (slot.key === 'worker') hireWorker('p');
+  } else if (buildPressed && hasTile && !lock) {
+    buildOrder = { kind: slot.key, i: gi, j: gj };
+    orderPath.length = 0; orderRepathT = 0;
+    if (playerOrder) clearMineOrder();
+  } else if (buildPressed && lock) {
+    flashMsg(lock, '#e05050');
   }
 
   updateMinePrompt();
+  updateUpgradePrompt();
   updateSafeMark();
 }
 
@@ -4112,6 +4857,14 @@ function buildTimeOf(kind) {
     : kind === 'workshop' ? P.build.workshopTime : P.build.towerTime;
 }
 
+// 경비탑만 **혼자 지어진다** (D87) — 찍어 놓으면 알아서 올라가고 플레이어는 자유다.
+// 나머지 건물(창고·공방)은 D44의 채널링(그 자리에 묶임)을 그대로 유지한다.
+// 갈린 이유: 창고·공방은 조용할 때 고르는 **정착 결정**이라 3~4초 무방비가 그 값이지만,
+// 경비탑은 **고양이가 오는 걸 보고 급하게 세우는 것**이다. 그 순간 4초를 묶으면
+// 세우는 행위 자체가 자살이 되어 아무도 안 쓴다.
+// 대신 완성 전에는 못 쏘고(D84) 적에게 두들겨 맞으므로, "제때 세웠는가"는 여전히 값이다.
+const SELF_BUILD = { tower: true };
+
 function startBuild(kind, i, j) {
   if (buildJob) return;
   const b = placeBuilding(kind, i, j, 'p');
@@ -4125,8 +4878,33 @@ function startBuild(kind, i, j) {
     o.material.opacity = 0.45;
   });
   b.mesh.scale.y = 0.25;
-  buildJob = { b, t: 0, dur: buildTimeOf(kind), cost: P[kind].cost };
+  if (SELF_BUILD[kind]) {
+    // 진행도를 건물 자신이 들고 간다 → 여러 개가 동시에 올라갈 수 있다
+    b.selfT = 0;
+    b.selfDur = buildTimeOf(kind);
+    flashMsg(`${BLDG_INFO[kind].label} 건설 시작 — 알아서 지어진다`, '#9fe8a0');
+    return;
+  }
+  buildJob = { b, t: 0, dur: buildTimeOf(kind), cost: buildCost(kind) };
   flashMsg(`${BLDG_INFO[kind].label} 건설 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
+}
+
+// 완성 처리 — 채널링 건물과 자동 건설 건물이 같은 마무리를 쓴다
+function finishBuild(b) {
+  b.underBuild = false;
+  b.mesh.traverse((o) => { if (o.material) { o.material.transparent = false; o.material.opacity = 1; } });
+  b.mesh.scale.y = 1;
+  spawnBuildFx(b.cx, b.cz);
+  flashMsg(`${BLDG_INFO[b.kind].label} 완성`, '#6ee07a');
+}
+
+// 자동 건설 건물의 진행 (매 프레임, updateBuildings에서 호출)
+function updateSelfBuild(b, dt) {
+  if (!b.underBuild || b.selfDur === undefined) return;
+  b.selfT += dt;
+  const f = Math.min(b.selfT / b.selfDur, 1);
+  b.mesh.scale.y = 0.25 + 0.75 * f;
+  if (f >= 1) finishBuild(b);
 }
 
 function cancelBuild(refund = true) {
@@ -4149,14 +4927,7 @@ function updateBuild(dt) {
   buildJob.t += dt;
   const f = Math.min(buildJob.t / dur, 1);
   b.mesh.scale.y = 0.25 + 0.75 * f;
-  if (f >= 1) {
-    b.underBuild = false;
-    b.mesh.traverse((o) => { if (o.material) { o.material.transparent = false; o.material.opacity = 1; } });
-    b.mesh.scale.y = 1;
-    spawnBuildFx(b.cx, b.cz);
-    flashMsg(`${BLDG_INFO[b.kind].label} 완성`, '#6ee07a');
-    buildJob = null;
-  }
+  if (f >= 1) { finishBuild(b); buildJob = null; }
 }
 
 function distCellToPoint(i, j, x, z) {
@@ -4195,6 +4966,8 @@ const gui = new GUI({ title: '튜닝' });
       if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
   });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
+  f.add(P.res, 'costScale', 0.5, 3, 0.1).name('★ 전체 치즈 물가 배율');
+  f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
 
   f.add(P.carry, 'playerLoad', 1, 60, 1).name('한 짐 — 나');
   f.add(P.carry, 'workerLoad', 1, 60, 1).name('한 짐 — 일꾼');
@@ -4219,6 +4992,8 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'stamMax', 20, 400, 10).name('기운 최대');
   f.add(P.player, 'stamRoll', 5, 200, 1).name('구르기 소모');
   f.add(P.player, 'stamRegen', 1, 80, 1).name('기운 회복(초당)');
+  f.add(P.player, 'terrStamMul', 1, 5, 0.1).name('내 영토 위 기운 회복 배율');
+  f.add(terrMesh.material, 'opacity', 0, 1, 0.05).name('영토 색칠 진하기');
   f.add(P.player, 'stamDelay', 0, 4, 0.1).name('회복 시작까지(초)');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('레벨당 적 체력 +');
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('레벨당 적 속도 + (0=고정)');
@@ -4251,6 +5026,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.enemy, 'spread', 0, 20, 0.5).name('스폰 흩어짐 (재시작부터)');
   f.add(P.enemy, 'aggroRange', 0, 16, 0.5).name('건물 어그로 시야');
   f.add(P.enemy, 'aggroChance', 0, 1, 0.05).name('한눈팔 확률');
+  f.add(P.enemy, 'raidPatience', 1, 20, 0.5).name('못 때리면 건물 뜯으러(초)');
   f.add(P.enemy, 'aggroTime', 1, 12, 0.5).name('어그로 지속(초)');
 }
 {
@@ -4319,18 +5095,45 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.build, 'depotTime', 0.5, 12, 0.5).name('창고 건설 시간(초)');
   f.add(P.build, 'workshopTime', 0.5, 12, 0.5).name('공방 건설 시간(초)');
   f.add(P.build, 'towerTime', 0.5, 12, 0.5).name('경비탑 건설 시간(초)');
-  f.add(P.workshop, 'cost', 5, 60, 1).name('공방 비용');
+  f.add(P.build, 'towerUp2Time', 0.5, 15, 0.5).name('경비탑 Lv.2 업그레이드 시간(초)');
+  f.add(P.build, 'towerUp3Time', 0.5, 15, 0.5).name('경비탑 Lv.3 업그레이드 시간(초)');
+  f.add(P.workshop, 'cost', 5, 60, 1).name('공방 비용 (배치)');
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
-  f.add(P.tower, 'cost', 5, 120, 5).name('경비탑 비용');
-  f.add(P.tower, 'hp', 50, 1500, 10).name('경비탑 내구도 (새 건물부터)');
-  f.add(P.tower, 'range', 2, 24, 0.5).name('경비탑 사거리');
-  f.add(P.tower, 'dmg', 2, 120, 1).name('경비탑 투척 피해');
-  f.add(P.tower, 'reload', 0.2, 4, 0.1).name('경비탑 투척 간격');
+  f.add(P.workshop, 'tier2Cost', 10, 400, 5).name('공방 Lv.2 업그레이드 치즈');
+  f.add(P.workshop, 'tier2Parts', 0, 20, 1).name('공방 Lv.2 업그레이드 부품');
+  f.add(P.workshop, 'tier3Cost', 10, 1000, 10).name('공방 Lv.3 업그레이드 치즈');
+  f.add(P.workshop, 'tier3Parts', 0, 20, 1).name('공방 Lv.3 업그레이드 부품');
+  f.add(P.build, 'inset', 0, 0.6, 0.05).name('건물 충돌 들이기 (대각 틈)');
+  f.add(P.tower, 't1Cost', 5, 120, 5).name('경비탑 Lv.1 비용 (배치)');
+  f.add(P.tower, 't1Hp', 20, 800, 10).name('경비탑 Lv.1 내구도');
+  f.add(P.tower, 't1Range', 2, 24, 0.5).name('경비탑 Lv.1 사거리');
+  f.add(P.tower, 't1Dmg', 2, 120, 1).name('경비탑 Lv.1 투척 피해');
+  f.add(P.tower, 't1Reload', 0.2, 4, 0.1).name('경비탑 Lv.1 투척 간격');
+  f.add(P.tower, 't2Cost', 5, 400, 5).name('경비탑 Lv.2 업그레이드 비용');
+  f.add(P.tower, 't2Hp', 20, 1500, 10).name('경비탑 Lv.2 내구도');
+  f.add(P.tower, 't2Range', 2, 24, 0.5).name('경비탑 Lv.2 사거리');
+  f.add(P.tower, 't2Dmg', 2, 150, 1).name('경비탑 Lv.2 투척 피해');
+  f.add(P.tower, 't2Reload', 0.2, 4, 0.1).name('경비탑 Lv.2 투척 간격');
+  f.add(P.tower, 't3Cost', 50, 3000, 25).name('경비탑 Lv.3 업그레이드 비용 (겁나 비쌈)');
+  f.add(P.tower, 't3Hp', 50, 3000, 10).name('경비탑 Lv.3 내구도');
+  f.add(P.tower, 't3Range', 2, 30, 0.5).name('경비탑 Lv.3 사거리');
+  f.add(P.tower, 't3Dmg', 2, 300, 1).name('경비탑 Lv.3 투척 피해 (겁나 쎔)');
+  f.add(P.tower, 't3Reload', 0.1, 4, 0.1).name('경비탑 Lv.3 투척 간격');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('적 체력 증가/레벨');
   f.add(P.threat, 'speedCap', 3, 21, 0.1).name('적 속도 상한');
   f.add(P.tempo, 'moveScale', 0.3, 1.5, 0.05).name('전체 이동 속도 배율');
   f.add(P.threat, 'killsPerSurge', 1, 30, 1).name('N킬마다 우루루');
   f.add(P.threat, 'surgeSize', 1, 10, 1).name('우루루 마릿수');
+}
+{
+  const f = adv.addFolder('보스 "톰" (10스테이지)');
+  f.add(P.boss, 'hp', 500, 30000, 100).name('체력 (위협 레벨 영향 안 받음)');
+  f.add(P.boss, 'speed', 0.5, 12, 0.1).name('이동 속도');
+  f.add(P.boss, 'radius', 0.5, 3, 0.05).name('몸집');
+  f.add(P.boss, 'dmg', 5, 200, 1).name('접촉 피해');
+  f.add(P.boss, 'bldgDps', 5, 200, 1).name('건물 공격력');
+  f.add(P.boss, 'smashCooldown', 1, 30, 0.5).name('벽 강타 쿨다운(초)');
+  f.add(P.boss, 'smashWindup', 0.2, 3, 0.1).name('벽 강타 예비동작(초)');
 }
 {
   const f = adv.addFolder('채굴 명령 (E · 우클릭 · 드래그)');
@@ -4386,6 +5189,19 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.bomber, 'reward', 0, 100, 1).name('자폭묘 처치 보상');
 }
 {
+  // 개조(U 패널) — 후반 화력 대응이 여기 걸려 있다 (D87)
+  const f = adv.addFolder('개조 (U · 부품으로 구매)');
+  f.add(P.upgrade, 'maxLevel', 1, 20, 1).name('최대 레벨');
+  f.add(P.upgrade, 'baseCost', 0, 10, 1).name('1레벨 부품 비용');
+  f.add(P.upgrade, 'costStep', 0, 5, 1).name('레벨당 비용 증가');
+  f.add(P.upgrade, 'towerStep', 0, 60, 1).name('경비탑 화력/레벨');
+  f.add(P.upgrade, 'guardStep', 0, 60, 1).name('방어병 화력/레벨');
+  f.add(P.upgrade, 'wallhpStep', 0, 200, 5).name('벽 내구도/레벨');
+  f.add(P.upgrade, 'mineStep', 0, 3, 0.1).name('채굴 효율/레벨');
+  f.add(P.upgrade, 'speedStep', 0, 3, 0.1).name('이동 속도/레벨');
+  f.add(P.upgrade, 'radiusStep', 0, 1, 0.05).name('채굴 시간 단축/레벨');
+}
+{
   const f = adv.addFolder('적 접근 방식 (우회 시도)');
   f.add(P.enemy, 'flankRadius', 0, 20, 0.5).name('접근 반경');
   f.add(P.enemy, 'probeTurn', 0.2, 3, 0.1).name('막혔을 때 각도 전환');
@@ -4410,6 +5226,9 @@ const adv = gui.addFolder('고급 — 전체 설정');
   const f = adv.addFolder('픽업 (밖에 나갈 이유)');
   f.add(P.pickup, 'interval', 3, 40, 1).name('생성 주기(초)');
   f.add(P.pickup, 'maxOnMap', 1, 12, 1).name('동시 최대 개수');
+  f.add(P.pickup, 'stageSpeedup', 0, 2, 0.1).name('스테이지당 주기 단축(초)');
+  f.add(P.pickup, 'stageOnMap', 0, 2, 0.1).name('스테이지당 동시 개수 +');
+  f.add(P.pickup, 'stageParts', 0, 2, 0.02).name('스테이지당 상자당 부품 +');
   f.add(P.pickup, 'minPlayerDist', 4, 30, 1).name('플레이어 최소 거리');
   f.add(P.pickup, 'partsRatio', 0, 1, 0.05).name('부품 비율');
   f.add(P.pickup, 'partsEach', 1, 5, 1).name('부품 상자당 부품');
@@ -4555,21 +5374,58 @@ buildCamFolder();
 // ============================================================
 const hudEl = document.getElementById('hud');
 const helpEl = document.getElementById('help');
+const resEl = document.getElementById('res');
 const overlayEl = document.getElementById('overlay');
 const flashEl = document.getElementById('flash');
-helpEl.textContent =
-  'WASD 이동 · 기본은 빈손 — 1~9로 들고 클릭/Space 설치, ESC로 내려놓기 · U: 개조\n' +
-  '벽은 **클릭 = 지으러 가라** 명령. 멀어도 OK — 사거리(2m)까지 알아서 간다\n' +
-  '도착하면 0.3초 서서 짓는다 = 무방비. 은신처 안에선 안 닿아 **틈으로 나와야** 한다\n' +
-  '벽은 기둥이다: 직교로 붙이면 아무도 못 지나가고, **대각으로 붙이면 나만 지나간다**\n' +
-  '빈손일 때 좌클릭/드래그 = 유닛 선택 · 우클릭 = 명령 (더미=채굴 / 빈 땅=이동)\n' +
-  '벽은 무적이다 — 자폭묘의 폭발만이 벽을 없앤다 · 건물은 짓는 동안 무방비 (ESC 취소)\n' +
-  '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
-  '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
-  '유닛은 내 옆에서 나온다 (자리 안 찍음) · Tab 방어병 전원 선택 · 적 우클릭 = 집중 공격\n' +
-  '**Shift = 앞구르기** (무적 — 적 예비동작이 끝나기 전에 굴러야 산다). 기운을 쓴다\n' +
-  '파란 링 = 순찰조 · 초록 표시 = 은신처 · Ctrl+드래그 = 선택 · **ESC = 메뉴**\n' +
-  '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
+
+// ---- 도움말 — 기본은 한 줄, H로 펼친다 (D88) ----
+// 예전엔 16줄이 늘 깔려 있어서 **정작 필요한 정보를 가렸다.** 내용이 많다고 다 보여주면
+// 아무것도 안 읽힌다. 접어 두고 필요할 때만 꺼낸다 (ESC 메뉴에서도 열 수 있다).
+let helpOpen = false;
+const HELP_FULL = [
+  '── 조작 ──',
+  'WASD 이동 · Shift 앞구르기(무적, 기운 소모) · C 카메라 · P 일시정지 · R 재시작 · ESC 메뉴',
+  '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
+  '',
+  '── 짓기 ──',
+  '벽·건물: 클릭 = "거기에 지으러 가라" 명령 (멀어도 알아서 걸어간다)',
+  '벽은 도착 후 0.3초 서서 짓는다 = 무방비. 은신처 안에선 안 닿아 관문으로 빼꼼 나와야 한다',
+  '창고·공방은 짓는 동안 그 자리에 묶인다. 경비탑은 찍어 두면 알아서 올라간다 (완성 전엔 못 쏜다)',
+  '유닛(일꾼·병력)은 자리를 안 찍는다 — 숫자로 고르고 **Enter**를 누르면 내 옆에서 나온다',
+  '',
+  '── 코어 규칙 ──',
+  '벽은 기둥이다: 직교로 붙이면 아무도 못 지나가고, **대각으로 붙이면 나만 지나간다**',
+  '건물도 같다 — 대각으로 붙인 두 건물 사이는 나만 통과한다',
+  '벽은 무적이다 — 자폭묘 폭발은 **금만 낸다**(2번까지 버팀). 금 간 벽은 **F로 수리**. 보스의 강타는 한 번에 부순다',
+  '초록 바닥 = 내 영토(고양이가 못 오는 땅). 그 위에선 기운이 빨리 차고, 면적만큼 치즈가 쌓인다',
+  '',
+  '── 경제 · 기술 ──',
+  '치즈더미에 다가가 E(또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소',
+  '더미 위 `1/3` = 붙은 일꾼 / 정원. 꽉 차면(붉게) 다음 더미를 확보해야 한다',
+  '공방을 지어야 경비탑·병력이 열린다 (Lv.1 경비탑·근접병 → Lv.2 사수 → Lv.3 정예병)',
+  '근처(4m) 공방·경비탑을 **F로 제자리 업그레이드**. 공방 업그레이드는 치즈+부품이 든다',
+  '후반 적은 체력이 오른다 → **밖에 떨어지는 부품**을 주워 U 개조로 화력을 올려야 따라간다',
+  '',
+  '── 병력 · 적 ──',
+  '빈손일 때 좌클릭/드래그 = 유닛 선택 · 우클릭 = 명령(더미=채굴 / 빈 땅=이동) · Tab 방어병 전원',
+  '적 우클릭 = 선택한 방어병 집중 공격 · 파란 링 = 순찰조 · 초록 표시 = 은신처',
+  '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다',
+  '오래 못 때리면 목표를 놓고 내 건물을 뜯으러 간다 — 숨는 건 공짜가 아니다',
+  '10스테이지엔 보스 "톰"이 쳐들어온다. **처치해야 클리어**된다',
+].join('\n');
+
+function renderHelp() {
+  helpEl.classList.toggle('open', helpOpen);
+  helpEl.textContent = helpOpen ? HELP_FULL : 'H: 조작법 · ESC: 메뉴';
+}
+renderHelp();
+
+// ---- 자원 — 우측 상단 아이콘 + 수치 (D88) ----
+function updateRes() {
+  resEl.innerHTML =
+    `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(resources)}</div>` +
+    `<div class="r parts"><span class="ic">⚙️</span>${parts}</div>`;
+}
 
 let alive = true;
 let paused = false;
@@ -4627,6 +5483,7 @@ function rebuildWorld(idx) {
   clearWorkers();
   for (const ob of [...obstacles.values()]) removeObstacle(ob);
   obstacles.clear();
+  clearPileLabels();   // 더미가 사라지면 정원 표시도 같이 (D90)
   for (const n of nodes) { scene.remove(n.mesh); n.mesh.userData.mat.dispose(); }
   nodes.length = 0;
   for (const e of enemies) {
@@ -4685,7 +5542,10 @@ function restart() {
   orderPath = [];
   if (menuOpen) setMenu(false);
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
+  removeMode = false;
   buildJob = null;
+  upgradeJob = null;
+  territoryGen = -1;   // 영토를 다시 센다 (세대 카운터라 시간으로 재면 안 된다 — D54의 교훈)
   wallCast = null;
   wallOrders = [];
   buildOrder = null;
@@ -4861,21 +5721,27 @@ function nearWorkshop() {
     Math.hypot(b.cx - player.x, b.cz - player.z) < 4.0);
 }
 
+// 공방 옆에 가면 **저절로 뜬다** (D88) — 개조가 있다는 걸 몰라서 안 쓰는 게 제일 큰 손실이다.
+// 다만 저절로 뜬 상태에서는 **읽기 전용**이고, 숫자키는 계속 핫바를 쓴다.
+// (안 그러면 내 공방 옆에서 건물을 못 짓는다) 구매는 U로 명시적으로 켜야 한다.
 function renderUpgrade() {
-  if (!upgOpen) { upgEl.style.display = 'none'; return; }
-  upgEl.style.display = 'block';
   const ws = nearWorkshop();
+  const show = upgOpen || ws;
+  if (!show) { upgEl.style.display = 'none'; return; }
+  upgEl.style.display = 'block';
   upgEl.innerHTML =
-    `<div class="uhead">개조 (U 닫기) · 부품 ${parts}` +
-    (ws ? '' : ' · <span class="warn">공방 옆으로 가세요</span>') + '</div>' +
+    `<div class="uhead">개조 · 부품 ${parts}` +
+    (!ws ? ' · <span class="warn">공방 옆으로 가세요</span>'
+         : upgOpen ? ' · <span style="color:#6ee07a">숫자키로 구매 (U 닫기)</span>'
+                   : ' · <span class="warn">U를 눌러 구매</span>') + '</div>' +
     UPGRADES.map((u, k) => {
       const lv = upg[u.key];
       const max = lv >= P.upgrade.maxLevel;
       const cost = upgCost(lv);
-      const can = ws && !max && parts >= cost;
+      const can = ws && upgOpen && !max && parts >= cost;
       return `<div class="urow${can ? '' : ' dim'}">` +
         `<b>${k + 1}</b> ${u.label} <span class="lv">Lv.${lv}/${P.upgrade.maxLevel}</span>` +
-        `<span class="cost">${max ? 'MAX' : `부품 ${cost}`}</span>` +
+        `<span class="cost">${max ? 'MAX' : `⚙️${cost}`}</span>` +
         `<span class="eff">${u.unit()}</span></div>`;
     }).join('');
 }
@@ -4883,13 +5749,19 @@ function renderUpgrade() {
 const hotbarEl = document.getElementById('hotbar');
 function updateHotbar() {
   hotbarEl.innerHTML = BUILD_SLOTS.map((sl, k) => {
+    const lock = slotLockReason(sl);
+    // 잠긴 슬롯은 값 대신 **왜 못 쓰는지**를 보여준다 (D88) —
+    // 비활성이라는 사실만 보여주면 뭘 해야 열리는지 알 수 없다
+    if (lock) return `<div class="slot locked"><b>${k + 1}</b>${sl.label}<br><span class="why">${lock}</span></div>`;
     const cost = sl.cost();
     const afford = resources >= cost;
     const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
-    const costTxt = cost > 0 ? `${cost}치즈` : '무료';
-    return `<div class="${cls}"><b>${k + 1}</b>${sl.label}<br>${costTxt}</div>`;
+    const costTxt = cost > 0 ? `${cost}🧀` : '무료';
+    const how = isUnitSlot(sl) ? ' ⏎' : '';
+    return `<div class="${cls}"><b>${k + 1}${how}</b>${sl.label}<br>${costTxt}</div>`;
   }).join('') +
-  `<div class="slot hand${buildSlot < 0 ? ' sel' : ''}"><b>ESC</b>${buildSlot < 0 ? '빈손' : '내려놓기'}<br>—</div>`;
+  `<div class="slot rm${removeMode ? ' sel' : ''}"><b>X</b>철거<br>${P.wall.removeCost}🧀</div>` +
+  `<div class="slot hand${buildSlot < 0 && !removeMode ? ' sel' : ''}"><b>ESC</b>${buildSlot < 0 && !removeMode ? '빈손' : '내려놓기'}<br>—</div>`;
 }
 
 function flashMsg(text, color = '#6ee07a') {
@@ -4927,6 +5799,7 @@ function buildMapList() {
 
 document.getElementById('m-resume').onclick = () => setMenu(false);
 document.getElementById('m-restart').onclick = () => { setMenu(false); restart(); };
+document.getElementById('m-help').onclick = () => { setMenu(false); helpOpen = true; renderHelp(); };
 document.getElementById('m-maps').onclick = () => { buildMapList(); mapListEl.classList.add('on'); };
 document.getElementById('m-quit').onclick = () => {
   setMenu(false);
@@ -5193,33 +6066,53 @@ function updateHUD() {
   const nextIn = P.threat.interval - ((survival - P.enemy.spawnDelay) % P.threat.interval);
   const waiting = !enemyActive();
   const attacking = enemies.filter((e) => e.isAttacking).length;
+  // ---- 좌상단 — 지금 벌어지는 일만 (D88) ----
+  // 예전엔 8줄에 모든 걸 쏟아부어서 아무것도 안 읽혔다. 자원은 우상단으로,
+  // 조작 설명은 H로 옮기고, 여기는 **상태**만 남긴다:
+  //  스테이지 / 적 / 체력·기운 / 영토 / 지금 하는 일.
+  const bar = (v, max, on, off) => {
+    const n = Math.max(0, Math.min(10, Math.round((v / max) * 10)));
+    return on.repeat(n) + off.repeat(10 - n);
+  };
+  // "지금 하는 일" — 하나만 뜬다. 여러 개가 동시에 참인 경우는 없다
+  const doing =
+    buildJob ? `🏗 ${BLDG_INFO[buildJob.b.kind].label} 건설 ${Math.round(buildJob.t / buildJob.dur * 100)}% — 움직일 수 없다 (ESC)`
+    : upgradeJob ? `⬆ ${BLDG_INFO[upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
+    : buildOrder ? `🏗 ${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중`
+    : wallOrders.length ? `🧱 벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ''}`
+    : playerOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
+    : playerJob === 'mine' ? '⛏ 채굴'
+    : playerJob === 'drop' ? '📦 하역'
+    : removeMode ? '✖ 철거 모드 (X로 끄기)'
+    : '';
+  const warn = (removeMode || buildSlot >= 0) && !ghostCell.valid && ghostWhy ? `⚠ ${ghostWhy}` : '';
+
   hudEl.textContent =
-    `카메라: ${mode.name}\n` +
+    `[스테이지 ${stage}/${STAGES.length}]` +
+    (victory ? ' 돌파!' : ` 다음 웨이브 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) +
+    (waiting ? '' : ` · 위협 Lv.${lvl}`) + '\n' +
     (waiting
-      ? `적 ${enemies.length}마리 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
-      : `적 ${enemies.length}마리: ${enemyModeSummary()}\n`) +
-    `[${MAPS[mapIndex].name}] 스테이지 ${stage}/${STAGES.length}` +
-    (victory ? ' · 돌파!' : ` — 다음 웨이브까지 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) + '\n' +
-    `치즈: ${resources.toFixed(0)} · 부품: ${parts} (U 개조) · 창고 ${depotCount()}개 · 일꾼 ${workers.length}` +
-    (workers.filter((w) => w.idle).length ? ` (대기 ${workers.filter((w) => w.idle).length})` : '') +
-    (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') +
+      ? `적 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
+      : `적 ${enemies.length}마리${attacking ? ` · ${attacking}마리 공격 중!` : ''}\n`) +
+    `체력 ${bar(playerHp, P.player.hp, '█', '░')} ${Math.ceil(playerHp)}\n` +
+    `기운 ${bar(stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(stamina)}` +
+    (inTerritory(player.x, player.z) ? '  🌿내 땅' : '') + '\n' +
+    // 영토 (D86) — 벽으로 감싸 고양이가 못 오게 만든 땅의 넓이
+    `영토 ${territoryArea.toFixed(0)}㎡` +
+    (wallCount ? ` · 벽 ${wallCount}개` : '') +
+    (territoryArea > 0 && P.res.terrIncome > 0
+      ? ` · +${(territoryArea * P.res.terrIncome).toFixed(1)}/s` : '') + '\n' +
+    `공방 ${maxWorkshopTier() > 0 ? `Lv.${maxWorkshopTier()}` : '없음(4)'}` +
+    ` · 일꾼 ${workers.length} · 방어병 ${guards.length}` +
     ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
-    (buildJob ? ` · 건설 중 ${Math.round(buildJob.t / buildJob.dur * 100)}% (무방비! ESC 취소)` : '') +
-    (buildOrder ? ` · 🏗${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중 — 움직이면 취소` : '') +
-    (wallOrders.length ? ` · 🧱벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ' (가는 중)'}` : '') +
-    (buildSlot >= 0 && !ghostCell.valid && ghostWhy ? ` · ⚠ ${ghostWhy}` : '') +
-    (playerOrder ? ' 🔁자동채굴(움직이면 취소)' : '') +
-    (playerJob === 'mine' ? ' ⛏채굴' : playerJob === 'drop' ? ' 📦하역' : '') +
-    (hasWorkshop() ? ' · 공방 ✓' : ' · 공방 없음(3)') +
-    (guards.length ? ` · 방어병 ${guards.length}` : '') +
-    (killCount ? ` · 처치 ${killCount}` : '') + '\n' +
-    (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
-    `체력: ${'█'.repeat(Math.max(0, Math.round(playerHp / P.player.hp * 10)))}${'░'.repeat(10 - Math.max(0, Math.round(playerHp / P.player.hp * 10)))} ${Math.ceil(playerHp)}/${P.player.hp}\n` +
-    `기운: ${'▰'.repeat(Math.max(0, Math.round(stamina / P.player.stamMax * 10)))}${'▱'.repeat(10 - Math.max(0, Math.round(stamina / P.player.stamMax * 10)))} ${Math.ceil(stamina)}  (Shift 구르기 ${P.player.stamRoll})\n` +
-    (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : `${ally.mode} · 치즈 ${Math.round(allyRes)}`}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
-    `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
-    (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
-    (paused ? '\n⏸ 일시정지 (P)' : '');
+    (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') + '\n' +
+    (doing ? doing + '\n' : '') +
+    (warn ? warn + '\n' : '') +
+    (ally.active && ally.stunned ? '동료 기절 — 구하러 가자!\n' : '') +
+    (playerStunned ? '나: 기절!\n' : '') +
+    (paused ? '⏸ 일시정지 (P)' : '');
+  updateRes();
+  renderUpgrade();   // 공방 근처 여부가 걸음마다 바뀌므로 여기서 같이 갱신 (D88)
 }
 
 // ============================================================
@@ -5290,6 +6183,13 @@ function tick(dt) {
     updateCheeseBits(dt);
       updatePickups(dt);
     updateWallPops(dt);
+    // 영토 (D86) — 둘 다 세대 카운터로 캐시되어 있어서 바뀔 때만 실제 작업을 한다
+    refreshTerritory();
+    paintTerritory();
+    // 영토 면적당 치즈 수입 (D88 실험) — 치즈더미 없이 숨어 있어도 소량은 모인다.
+    // **면적에 비례**하므로 "숨어 있으면 번다"가 아니라 "넓혀야 번다"가 된다.
+    // 채굴 왕복(D36)을 대체하지 않도록 일부러 작게 뒀다 (기본값 근거는 P.res.terrIncome 주석).
+    if (P.res.terrIncome > 0) resources += territoryArea * P.res.terrIncome * dt;
   }
   updateFx(dt);
   updateCamera(dt);
@@ -5332,6 +6232,8 @@ window.__game = {
   // 채굴 명령 (E · 우클릭 · 드래그 선택)
   nearestPile, setMineOrder, clearMineOrder, toggleMineOrder, nearestSafeSpot, aimPoint, isCutoff,
   refreshReach, get safeField() { return safeField; }, get safeGen() { return safeGen; },
+  refreshTerritory, inTerritory,
+  get territory() { return territory; }, get territoryArea() { return territoryArea; },
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
   selWorkers, selGuards, GUARD_TYPES,
@@ -5352,7 +6254,14 @@ window.__game = {
   get stageT() { return stageT; },
   get victory() { return victory; },
   set stageT(v) { stageT = v; },
-  advanceStage, stageDur, hasWorkshop, depotCount,
+  advanceStage, stageDur, hasWorkshop, depotCount, maxWorkshopTier, TOWER_TIERS, spawnBoss,
+  effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, effPartsEach, SELF_BUILD,
+  tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
+  applyBuildingTierVisual, cheeseCost, slotLockReason, BUILD_SLOTS,
+  get removeMode() { return removeMode; }, set removeMode(v) { removeMode = v; },
+  get upgradePromptText() { return upgradePrompt.userData.text; },
+  get upgradePromptVisible() { return upgradePrompt.visible; },
+  get upgradeJob() { return upgradeJob; },
   pickups, spawnPickup, upg, UPGRADES, buyUpgrade,
   guards, projectiles, placeGuard, damageEnemy, topUpToCurve,
   get killCount() { return killCount; },
