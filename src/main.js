@@ -8,12 +8,15 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 const P = {
   // 한 방에 죽지 않는다 — 공격을 맞아 체력이 다 깎여야 잡힌다 (원작 프로브가
   // 울트라 두 방을 버티던 것). 죽음이 "한순간의 실수"가 아니라 "누적된 실수"가 된다.
-  player: { speed: 9.0, radius: 0.35, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1,
+  player: { speed: 9.0, radius: 0.26, graceTime: 1.5, hp: 100, regen: 5, regenDelay: 4, wipeOnCatch: 1,
             // 이 거리 안에 고양이가 있으면 가장 가까운 은신처를 바닥에 표시한다 (D55-C)
             safeMarkRange: 18,
             // 은신처로 인정하려면 적 도달 영역에서 이만큼 떨어져 있어야 한다(m).
             // 대략 공격 사거리(hr+attackRange)만큼 — 벽 옆 한 칸이 은신처로 잡히면 안 된다
-            safeMargin: 1.8 },
+            safeMargin: 1.8,
+            // 앞구르기 (D77) — Shift. 구르는 동안 **무적**이라, 적의 예비동작이
+            // 끝나기 전에 쓰면 회피가 된다. 쿨다운이 회피의 값이다.
+            rollDist: 4.2, rollTime: 0.28, rollCool: 1.1 },
   enemy: {
     count: 3,              // 시작 마릿수 (전부 순찰묘)
     attackRange: 0.9, repath: 0.35,
@@ -38,7 +41,8 @@ const P = {
     cutoffLead: 3.3,       // 차단조가 목표보다 얼마나 앞(은신처 쪽)을 잡는가(m)
     giveUpProbes: 3,       // 이만큼 시도해도 막히면 포기하고 서성인다
     prowlTime: 4.0,        // 서성이는 시간 — 플레이어가 확장을 시도할 틈
-    attackWindup: 0.45,    // 공격 예비동작 (피할 수 있는 시간)
+    attackWindup: 0.6,     // 공격 예비동작 — 이 동안 몸을 뒤로 빼며 부푼다.
+                           //  Shift 구르기로 피할 수 있는 창이다 (D77·D78)
     attackCooldown: 1.3,   // 공격 간격
   },
   // 순찰조 (D52) — 웨이브와 별개로 **맵에 상주하는** 고양이.
@@ -70,6 +74,10 @@ const P = {
   },
   // ---- 적 3종 ----
   // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
+  // **크기 기준선 (D74)**: 기둥을 1칸 띄워 세우면 틈이 2.0m다.
+  //   순찰묘 지름 1.9 → **들어온다.** 촘촘히(붙여) 세워야 진짜 벽이 된다
+  //   날쌘묘 1.26  → 대각 관문(1.12)은 못 지나지만 그 외엔 거의 다 통과
+  //   자폭묘 2.3   → 1칸 띄움도 막힌다. 대신 벽을 부순다
   //  순찰묘: 크고 벽 못 부숨 → 벽이 완전한 안전을 줌. 처음부터 등장
   //  날쌘묘: 작고 빠름, 벽 못 부숨 → 2칸 틈을 통과! 넓은 틈의 안전이 깨짐
   //  파괴묘: 제일 크고 느림, 유일하게 벽을 부숨 → 밀폐도 시한부가 됨
@@ -78,19 +86,21 @@ const P = {
   // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
   // reward = 처치 시 주는 치즈.
   // dmg = 플레이어/동료에게 한 방에 주는 피해
-  chaser: { radius: 2.03, speed: 7.5, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
-  runner: { radius: 1.28, speed: 10.2, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
+  chaser: { radius: 0.95, speed: 7.5, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
+  runner: { radius: 0.63, speed: 10.2, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
-  bomber: { radius: 2.25, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
+  bomber: { radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
             blastRadius: 2.55, fuse: 0.9 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
-  // post = 벽 **원기둥의 지름** (D57·D59). 셀(1.5)보다 작아서 틈이 생긴다:
-  //   직교로 붙이면 틈 1.5-0.9 = 0.6   → 플레이어(지름 0.7)도 못 지나감 = 진짜 벽
-  //   대각으로 붙이면 √2×1.5-0.9 = 1.22 → **플레이어만 통과** (순찰묘 4.1·날쌘묘 2.6 불가)
-  // post는 셀 크기에 비례하지 않는다 — **플레이어 지름에 묶여 있다.**
-  //   틈(CS-post) < 0.7 < 관문(√2·CS-post) → post ∈ (CS-0.7, √2·CS-0.7)
+  // post = 벽 **원기둥의 지름** (D57·D59·D74). 셀(1.5)보다 작아서 틈이 생긴다:
+  //   직교로 붙이면 틈 1.5-1.0 = 0.5    → 플레이어(지름 0.52)도 못 지나감 = 진짜 벽
+  //   대각으로 붙이면 √2×1.5-1.0 = 1.12 → **플레이어만 통과**. 여유가 양쪽 0.30m씩
+  //   1칸 띄워 세우면 3.0-1.0 = 2.0     → **순찰묘(2.0)도 비집고 들어온다** (D74)
+  // post는 셀 크기가 아니라 **플레이어 지름에 묶여 있다**:
+  //   틈(CS-post) < 몸 < 관문(√2·CS-post) → post ∈ (CS-몸, √2·CS-몸)
+  // 몸을 줄이면 관문/몸 비율이 커져서 **틈 통과가 수월해진다** — 그래서 0.35→0.26.
   // 원작 파일런의 성질이 여기서 나온다: 벽은 문이 아니라 체(sieve)다.
   // 벽은 **가서·바라보고·잠깐 서서** 짓는다 (D58, 원작 프로브).
   //  range 2.0 = 이 안에서만 지어진다 (D69). **자동 이동은 접었다.**
@@ -100,7 +110,7 @@ const P = {
   //   자리 잡는 건 플레이어가 WASD로 한다. 자동으로 걸어가 주지 않는다.
   //  castTime 0.3초 = 아주 짧지만 **무방비인 시간**. 이동하면 즉시 취소된다.
   //  벽 뒤에서 잠깐 나와야 하므로, 컨트롤을 놓치면 그 틈에 맞는다 — 그게 목적이다.
-  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 0.9,
+  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 1.0,
           castTime: 0.3 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
@@ -483,154 +493,32 @@ function layoutTools() {
 
 const MAPS = [
   {
+    // 단일 맵으로 간다 (D75). 여러 맵은 컨셉만 다르고 실제 플레이가 갈리지 않았다.
+    // 넓이는 1.5배(56→84칸 = 126m). 지형은 최소 — 벽을 직접 쌓는 게 이 게임이다.
     name: '허허벌판',
-    size: 56,
+    size: 84,
     floor: 0x2b3040, gridColor: 0x4a5268,
-    desc: '원작 기본형. 지형이 거의 없어 벽을 전부 직접 쌓아야 한다',
-    playerSpawn: [28, 28], enemySpawn: [28, 4],
-    // 성긴 교보재 두 벽 + 낱개 기둥. 나머지는 완전 개활지.
+    desc: '넓은 개활지. 지형은 거의 없고 방어선은 전부 내가 세운다',
+    playerSpawn: [42, 46], enemySpawn: [42, 8],
     build(t) {
-      // 나란한 두 벽: 왼쪽 1칸 틈(플레이어만) / 오른쪽 3칸 틈(순찰묘도 통과)
-      t.vLine(18, 14, 26, [20]);
-      t.vLine(38, 14, 26, [19, 20, 21]);
-      // 아래쪽 가로 벽 — 2칸 틈 (날쌘묘만 통과)
-      t.hLine(16, 32, 38, [24, 25]);
-      // 흩어진 낱개 기둥
-      for (const [i, j] of [[10, 10], [46, 10], [10, 46], [46, 46],
-                            [28, 28], [30, 8], [8, 30], [48, 30], [30, 48]])
+      // 교보재 — 틈 폭이 다른 짧은 벽 세 개. 어느 크기가 뚫는지 눈으로 배운다
+      t.vLine(26, 22, 34, [28]);            // 1칸 틈 (나만)
+      t.vLine(58, 22, 34, [27, 28]);        // 2칸 틈 (날쌘묘까지)
+      t.hLine(34, 50, 58, [41, 42, 43]);    // 3칸 틈 (전부)
+      // 낱개 바위 — 시야 가리개 겸 이정표. 드문드문
+      for (const [i, j] of [[14, 14], [70, 14], [14, 70], [70, 70],
+                            [42, 26], [42, 62], [22, 44], [62, 44],
+                            [30, 12], [54, 74], [12, 54], [74, 30]])
         t.put(i, j);
     },
-    // [i, j] 또는 [i, j, 배율]. 멀리 있을수록 뭉쳐 있고 매장량이 크다
-    nodes: [[11, 19], [26, 10], [45, 19], [26, 31], [44, 35],
-            [12, 33], [38, 45], [15, 45],
-            // 원거리 군집 — 스폰에서 가장 먼 두 귀퉁이
-            [6, 49, 1.8], [8, 51, 1.8], [5, 46, 1.8],
-            [50, 50, 1.8], [48, 47, 1.8], [51, 46, 1.8]],
-  },
-  {
-    name: '협곡',
-    size: 56,
-    floor: 0x322b2b, gridColor: 0x5c4a44,
-    desc: '남북으로 뻗은 능선들. 틈 폭이 1·2·3·4칸으로 달라 어느 종류가 뚫는지가 갈린다',
-    playerSpawn: [28, 44], enemySpawn: [28, 5],
-    build(t) {
-      // 평행 능선 5줄 — 간격 8칸이라 미로가 아니라 회랑으로 읽힌다.
-      // 위아래 끝(j<12, j>43)은 열려 있어 언제나 우회 가능.
-      t.vLine(10, 12, 43, [27]);              // 1칸 틈 — 플레이어 전용
-      t.vLine(19, 12, 43, [26, 27]);          // 2칸 — 날쌘묘까지
-      t.vLine(28, 12, 43, [26, 27, 28]);      // 3칸 — 순찰묘까지
-      t.vLine(37, 12, 43, [25, 26, 27, 28]);  // 4칸 — 전부 통과
-      t.vLine(46, 12, 43, [27]);              // 1칸
-      // 회랑을 가로지르는 짧은 턱 (완전 개활 회랑이 되지 않게, 전부 짧고 끝이 열림)
-      t.hLine(12, 17, 18);
-      t.hLine(30, 35, 36);
-      t.hLine(39, 44, 20);
-      t.hLine(21, 26, 40);
-    },
-    nodes: [[14, 24], [23, 33], [32, 21], [41, 33],
-            [14, 38], [32, 44], [50, 24], [50, 40],
-            // 협곡 남쪽 끝 — 능선을 전부 지나야 닿는 곳
-            [6, 50, 1.8], [9, 48, 1.8], [5, 46, 1.8],
-            [50, 50, 1.8], [47, 48, 1.8], [51, 45, 1.8]],
-  },
-  {
-    name: '폐허',
-    size: 56,
-    floor: 0x2a3230, gridColor: 0x46605a,
-    desc: '무너진 담장 조각과 기둥이 흩어진 곳. 엄폐가 많아 시야 싸움이 된다',
-    playerSpawn: [28, 30], enemySpawn: [6, 6],
-    build(t) {
-      // 짧게 끊긴 담장 조각들 (전부 3~6칸, 서로 떨어져 있음)
-      t.hLine(8, 13, 14);   t.vLine(16, 9, 13);
-      t.hLine(22, 27, 10);  t.vLine(31, 12, 17);
-      t.hLine(38, 44, 15);  t.vLine(47, 18, 23);
-      t.hLine(9, 14, 26);   t.vLine(20, 27, 32);
-      t.hLine(26, 31, 36);  t.vLine(36, 30, 35);
-      t.hLine(41, 46, 33);  t.vLine(12, 38, 43);
-      t.hLine(19, 24, 46);  t.vLine(29, 41, 46);
-      t.hLine(36, 41, 44);
-      // 무너진 대각 조각 (중간에 틈)
-      t.diag(42, 38, 7, 1, 1, [3]);
-      t.diag(6, 20, 6, 1, -1, [2]);
-      // 낱개 기둥
-      for (const [i, j] of [[24, 20], [34, 24], [17, 35], [44, 27],
-                            [8, 32], [50, 44], [24, 52], [46, 8]])
-        t.put(i, j);
-    },
-    nodes: [[13, 20], [27, 16], [42, 21], [24, 27],
-            [46, 50], [16, 30], [33, 44], [50, 34],
-            // 폐허 남서 / 북동 끝
-            [6, 47, 1.8], [8, 50, 1.8], [5, 44, 1.8],
-            [50, 8, 1.8], [48, 5, 1.8], [51, 11, 1.8]],
-  },
-  {
-    name: '네 마당',
-    size: 56,
-    floor: 0x2b3244, gridColor: 0x4c5a7a,
-    desc: '십자로 갈린 네 구역. 어느 마당을 차지하느냐가 첫 결정이다',
-    playerSpawn: [28, 40], enemySpawn: [28, 8],
-    build(t) {
-      // 십자 격벽 — 가운데는 넓게 열려 있고, 각 팔에 넉넉한 틈이 하나씩
-      t.vLine(28, 4, 22, [12, 13, 14]);
-      t.vLine(28, 34, 52, [42, 43, 44]);
-      t.hLine(4, 22, 28, [12, 13, 14]);
-      t.hLine(34, 52, 28, [42, 43, 44]);
-    },
-    nodes: [[14, 14], [42, 14], [14, 42], [42, 42],
-            [28, 20], [28, 36], [20, 28], [36, 28],
-            [6, 6, 1.8], [9, 5, 1.8], [50, 50, 1.8], [47, 51, 1.8]],
-  },
-  {
-    name: '두 섬',
-    size: 56,
-    floor: 0x263038, gridColor: 0x44606c,
-    desc: '지형이 거의 없다. 넓은 개활지에서 벽만으로 살아야 한다',
-    playerSpawn: [40, 40], enemySpawn: [16, 16],
-    build(t) {
-      // 작은 바위 무리 두 덩이뿐 — 나머지는 완전 개활
-      for (const [i, j] of [[20, 22], [21, 22], [20, 23], [22, 21]]) t.put(i, j);
-      for (const [i, j] of [[35, 34], [36, 34], [35, 35], [34, 36]]) t.put(i, j);
-      for (const [i, j] of [[10, 40], [46, 14], [28, 28], [12, 12], [44, 46]]) t.put(i, j);
-    },
-    nodes: [[13, 27], [27, 13], [43, 29], [29, 43], [19, 45], [45, 19],
-            [6, 6, 1.8], [8, 9, 1.8], [5, 10, 1.8],
-            [50, 50, 1.8], [48, 47, 1.8], [51, 45, 1.8]],
-  },
-  {
-    name: '긴 회랑',
-    size: 56,
-    floor: 0x33302a, gridColor: 0x60594a,
-    desc: '남북으로 뻗은 회랑 하나. 적이 오는 방향이 뻔한 대신 넓게 못 펼친다',
-    playerSpawn: [28, 46], enemySpawn: [28, 6],
-    build(t) {
-      // 회랑 벽 두 줄 — 양끝이 열려 있어 완전 봉쇄는 아니다
-      t.vLine(19, 10, 46, [26, 27, 28, 29]);
-      t.vLine(37, 10, 46, [26, 27, 28, 29]);
-    },
-    nodes: [[28, 16], [24, 26], [32, 36], [28, 42],
-            [10, 24], [46, 32], [12, 44], [44, 14],
-            [6, 6, 1.8], [9, 8, 1.8], [50, 50, 1.8], [47, 48, 1.8]],
-  },
-  {
-    name: '원형 광장',
-    size: 56,
-    floor: 0x2f2a36, gridColor: 0x584c66,
-    desc: '가운데 둥근 담장. 안은 안전해 보이지만 치즈는 전부 밖에 있다',
-    playerSpawn: [28, 28], enemySpawn: [28, 6],
-    build(t) {
-      // 중앙 원형 담장 — 네 방향에 문
-      const R = 9, C = 28;
-      for (let a = 0; a < 360; a += 4) {
-        const rad = (a * Math.PI) / 180;
-        const i = Math.round(C + Math.cos(rad) * R), j = Math.round(C + Math.sin(rad) * R);
-        const doorway = (a > 82 && a < 98) || (a > 172 && a < 188)
-          || (a > 262 && a < 278) || a < 8 || a > 352;
-        if (!doorway) t.put(i, j);
-      }
-    },
-    nodes: [[12, 20], [44, 20], [12, 36], [44, 36], [28, 12], [28, 44],
-            [6, 6, 1.8], [8, 9, 1.8], [50, 50, 1.8], [48, 47, 1.8],
-            [6, 50, 1.8], [50, 6, 1.8]],
+    // 가까운 더미는 작고, 먼 귀퉁이 군집은 크다 — 나갈수록 벌이가 좋다
+    nodes: [[34, 38], [50, 38], [34, 52], [50, 52],
+            [20, 30], [64, 30], [20, 58], [64, 58],
+            [42, 18], [42, 70], [16, 44], [68, 44],
+            [8, 8, 1.8], [11, 6, 1.8], [6, 11, 1.8],
+            [76, 8, 1.8], [73, 6, 1.8], [78, 11, 1.8],
+            [8, 76, 1.8], [11, 78, 1.8], [6, 73, 1.8],
+            [76, 76, 1.8], [73, 78, 1.8], [78, 73, 1.8]],
   },
 ];
 let mapIndex = 0;
@@ -1915,24 +1803,24 @@ function roundRectPath(g, x, y, w, h, r) {
   g.closePath();
 }
 
-function makeKeyPrompt() {
+function makeKeyPrompt(keyLabel, text, accent) {
   const cv = document.createElement('canvas');
   cv.width = 256; cv.height = 72;
   const g = cv.getContext('2d');
   g.fillStyle = 'rgba(16,20,30,0.85)';
   roundRectPath(g, 3, 3, 250, 66, 14); g.fill();
-  g.strokeStyle = '#f0c040'; g.lineWidth = 3;
+  g.strokeStyle = accent; g.lineWidth = 3;
   roundRectPath(g, 3, 3, 250, 66, 14); g.stroke();
-  g.fillStyle = '#f0c040';
+  g.fillStyle = accent;
   roundRectPath(g, 18, 15, 42, 42, 8); g.fill();
   g.fillStyle = '#14181f';
-  g.font = 'bold 28px Menlo, monospace';
+  g.font = 'bold 26px Menlo, monospace';
   g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('E', 39, 37);
+  g.fillText(keyLabel, 39, 37);
   g.fillStyle = '#f4e7c0';
-  g.font = 'bold 25px system-ui, sans-serif';
+  g.font = 'bold 22px system-ui, sans-serif';
   g.textAlign = 'left';
-  g.fillText('채굴 시작', 74, 38);
+  g.fillText(text, 74, 38);
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({
     map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false, depthWrite: false,
   }));
@@ -1942,7 +1830,10 @@ function makeKeyPrompt() {
   scene.add(spr);
   return spr;
 }
-const minePrompt = makeKeyPrompt();
+const minePrompt = makeKeyPrompt('E', '채굴 시작', '#f0c040');
+// 볼주머니가 차 있으면 "여기서 더 캘 수 없다"를 그 자리에서 알려준다 (D76).
+// 예전엔 아무것도 안 떠서, 첫 더미에서만 게이지가 차는 것처럼 보였다.
+const fullPrompt = makeKeyPrompt('▣', '볼주머니 가득 — 창고로', '#7fb0ff');
 
 // ---- 은신처 표시 (D55-C) ----
 // 쫓기는 중일 때만, 가장 가까운 "고양이가 못 들어오는 칸"을 바닥에 표시한다.
@@ -1986,10 +1877,13 @@ function updateSafeMark() {
 function updateMinePrompt() {
   const show = alive && !playerStunned && !playerOrder && !buildJob;
   const n = show ? nearestPile(player.x, player.z, P.command.promptRange) : null;
-  minePrompt.visible = !!n;
+  const full = !!n && player.carry > 0;
+  minePrompt.visible = !!n && !full;
+  fullPrompt.visible = full;
   if (!n) return;
   const w = cellToWorld(n.i, n.j);
-  minePrompt.position.set(w.x, 2.1 + Math.sin(performance.now() * 0.004) * 0.09, w.z);
+  const y = 2.4 + Math.sin(performance.now() * 0.004) * 0.09;
+  (full ? fullPrompt : minePrompt).position.set(w.x, y, w.z);
 }
 
 // ---- 일꾼 햄스터 ----
@@ -3521,9 +3415,12 @@ function updateEnemy(enemy, dt) {
     enemy.vis.group.position.y = 0;
     if (enemy.windup > 0) {
       const w = enemy.windup / P.enemy.attackWindup;
-      enemy.vis.group.scale.setScalar(enemyR(enemy) * (1 - 0.08 * w));  // 웅크림
-    } else if (enemy.type !== 'bomber') {
-      enemy.vis.group.scale.setScalar(enemyR(enemy));
+      // 뒤로 빼며 부푼다 = "지금 온다"는 신호 (D78). 완료 직전이 가장 크다
+      enemy.windupPull = w;
+      enemy.vis.group.scale.setScalar(enemyR(enemy) * (1 + w * 0.22));
+    } else {
+      enemy.windupPull = 0;
+      if (enemy.type !== 'bomber') enemy.vis.group.scale.setScalar(enemyR(enemy));
     }
   }
 
@@ -3542,7 +3439,11 @@ function updateEnemy(enemy, dt) {
 
   setBar(enemy.bar, enemy.hp / enemyMaxHp(enemy), enemy.x, barY(enemy.vis), enemy.z,
          enemy.hp < enemyMaxHp(enemy) - 0.5);
-  enemy.vis.group.position.set(enemy.x, 0, enemy.z);
+  // 예비동작 중이면 몸을 뒤로 뺀다 (D78) — 위치 반영은 여기서 한 번에
+  const pull = enemy.windupPull || 0;
+  enemy.vis.group.position.set(enemy.x - enemy.dirX * pull * 0.55,
+                               enemy.vis.group.position.y,
+                               enemy.z - enemy.dirZ * pull * 0.55);
   if (dl > 0.05) {
     enemy.dirX = dx; enemy.dirZ = dz;
     enemy.vis.group.rotation.y = Math.atan2(dx, dz) + Math.PI;
@@ -3571,6 +3472,7 @@ window.addEventListener('keydown', (e) => {
     else setMenu(true);
   }
   if (e.code === 'KeyE' && alive) toggleMineOrder();
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') startRoll();
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
   if (e.code === 'Tab') {
     e.preventDefault();
@@ -3621,17 +3523,19 @@ function drawSelBox() {
   selBoxEl.style.height = Math.abs(selDrag.y1 - selDrag.y0) + 'px';
 }
 
-// 좌드래그가 선택 상자가 되는 조건 (D51):
+// 좌드래그가 선택 상자가 되는 조건 (D51 · D77에서 보조키를 Ctrl로 옮김):
 //  · **빈손이면 언제나** (빈손 = 선택 커서. 건설할 게 손에 없으니 충돌하지 않는다)
-//  · 손에 뭘 들고 있어도 Shift를 누르거나 유닛 위에서 시작하면 선택
+//  · 손에 뭘 들고 있어도 Ctrl을 누르거나 유닛 위에서 시작하면 선택
+//  (Shift는 구르기에 줬다 — 전투 중에 가장 급한 키라 단독으로 쓴다)
 function beginSelectDrag(e) {
   if (!alive) return false;
+  const mod = e.ctrlKey || e.metaKey;
   const onUnit = unitAtScreen(e.clientX, e.clientY);
-  if (!e.shiftKey && buildSlot >= 0 && !onUnit) return false;
+  if (!mod && buildSlot >= 0 && !onUnit) return false;
   // 드래그를 시작한 유닛은 항상 포함한다 — 기준점이 상자 모서리 밖으로
   // 삐져나가 "잡은 놈이 안 잡히는" 일이 없게
   selDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY,
-              add: e.shiftKey, moved: false, seed: onUnit || null };
+              add: mod, moved: false, seed: onUnit || null };
   selBoxEl.style.display = 'block';
   drawSelBox();
   return true;
@@ -3966,6 +3870,7 @@ function updatePlayer(dt) {
     playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
     ghost.visible = false;
     minePrompt.visible = false;
+    fullPrompt.visible = false;
     safeMark.visible = false;
     return;
   }
@@ -3977,6 +3882,25 @@ function updatePlayer(dt) {
   prevWantBuild = wantBuild;
 
   updateBuild(dt);
+
+  // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
+  if (rollCd > 0) rollCd -= dt;
+  if (rollT > 0) {
+    rollT -= dt;
+    rollSpin += dt * 22;
+    const spd = P.player.rollDist / Math.max(P.player.rollTime, 0.01);
+    player.x += rollX * spd * dt;
+    player.z += rollZ * spd * dt;
+    collideWithObstacles(player, P.player.radius);
+    playerVis.group.position.set(player.x, 0.18 + Math.sin((1 - rollT / P.player.rollTime) * Math.PI) * 0.22, player.z);
+    playerVis.group.rotation.y = Math.atan2(rollX, rollZ) + Math.PI;
+    playerVis.group.rotation.x = -rollSpin;   // 앞으로 구른다
+    updateMinePrompt();
+    updateSafeMark();
+    ghost.visible = false;
+    return;
+  }
+  playerVis.group.rotation.x = 0;
 
   // ---- 이동 (건물을 짓는 동안은 묶인다 = 무방비) ----
   if (!buildJob) {
@@ -4254,6 +4178,13 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
   f.add(P.chaser, 'reward', 0, 60, 1).name('처치 보상 (순찰묘)');
   f.add(P.enemy, 'attackRange', 0, 4, 0.1).name('적 공격 사거리(+몸)');
+  f.add(P.enemy, 'attackWindup', 0.1, 2, 0.05).name('적 예비동작(피할 시간)');
+  f.add(P.chaser, 'radius', 0.3, 3, 0.05).name('순찰묘 몸집');
+  f.add(P.player, 'radius', 0.1, 0.8, 0.02).name('내 몸집')
+    .onChange((v) => playerVis.group.scale.setScalar(v));
+  f.add(P.player, 'rollDist', 0, 10, 0.2).name('구르기 거리');
+  f.add(P.player, 'rollTime', 0.1, 1, 0.02).name('구르기 시간(무적)');
+  f.add(P.player, 'rollCool', 0, 5, 0.1).name('구르기 쿨다운');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('레벨당 적 체력 +');
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('레벨당 적 속도 + (0=고정)');
 
@@ -4601,7 +4532,8 @@ helpEl.textContent =
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
   '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
   '유닛은 내 옆에서 나온다 (자리 안 찍음) · Tab 방어병 전원 선택 · 적 우클릭 = 집중 공격\n' +
-  '파란 링 = 순찰조 · 초록 표시 = 고양이가 못 들어오는 은신처 · **ESC = 메뉴**\n' +
+  '**Shift = 앞구르기** (구르는 동안 무적 — 적의 예비동작이 끝나기 전에 굴러야 산다)\n' +
+  '파란 링 = 순찰조 · 초록 표시 = 은신처 · Ctrl+드래그 = 선택 · **ESC = 메뉴**\n' +
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
 
 let alive = true;
@@ -4609,6 +4541,29 @@ let paused = false;
 let survival = 0;
 let hudT = 0;
 let caughtCount = 0;
+// 구르기 상태 (D77): rollT>0 이면 구르는 중 = 무적
+let rollT = 0, rollCd = 0, rollX = 0, rollZ = 0, rollSpin = 0;
+
+function startRoll() {
+  if (!alive || playerStunned || buildJob || rollT > 0 || rollCd > 0) return;
+  const b = moveBasis();
+  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  let dx = b.fx * f + b.rx * r, dz = b.fz * f + b.rz * r;
+  const l = Math.hypot(dx, dz);
+  if (l > 1e-4) { dx /= l; dz /= l; } else { dx = player.faceX; dz = player.faceZ; }
+  rollX = dx; rollZ = dz;
+  rollT = P.player.rollTime;
+  rollCd = P.player.rollCool;
+  rollSpin = 0;
+  player.faceX = dx; player.faceZ = dz;
+  // 구르면 걸어둔 명령은 전부 풀린다 (직접 이동과 같은 취급)
+  clearMineOrder();
+  if (wallOrders.length) clearWallOrders();
+  buildOrder = null;
+  wallCast = null;
+}
+
 let playerStunned = false; // 동료 모드에서 잡힌 상태 — 동료가 와서 깨워야 함
 let playerHp = 100;
 let allyHp = 100;
@@ -4695,6 +4650,7 @@ function restart() {
   wallCast = null;
   wallOrders = [];
   buildOrder = null;
+  rollT = 0; rollCd = 0;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
   ally.buildCd = 0;
@@ -4753,6 +4709,8 @@ function restart() {
 function hurtHamster(who, dmg) {
   if (who === player) {
     if (grace > 0 || playerStunned) return;
+    // 구르는 중이면 **회피** (D77) — 예비동작이 끝나기 전에 굴러야 한다
+    if (rollT > 0) { flashMsg('회피!', '#8fd6ff'); return; }
     playerHp -= dmg;
     playerHurtT = 0;
     grace = 0.35;                 // 아주 짧은 피격 무적 — 연타로 순삭되지 않게
