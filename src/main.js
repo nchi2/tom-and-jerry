@@ -16,10 +16,16 @@ const P = {
             safeMargin: 1.8,
             // 앞구르기 (D77) — Shift. 구르는 동안 **무적**이라, 적의 예비동작이
             // 끝나기 전에 쓰면 회피가 된다. 쿨다운이 회피의 값이다.
-            rollDist: 4.2, rollTime: 0.28, rollCool: 1.1 },
+            // 구르기는 **스태미너**로 산다 (D81). 쿨다운만 있으면 리듬만 맞추면
+            // 무한히 구를 수 있었다. 총량이 있으면 "언제 쓸지"가 결정이 된다.
+            rollDist: 4.2, rollTime: 0.28, rollCool: 0.35,
+            stamMax: 100, stamRoll: 34, stamRegen: 13, stamDelay: 0.9 },
   enemy: {
     count: 3,              // 시작 마릿수 (전부 순찰묘)
     attackRange: 0.9, repath: 0.35,
+    // A* 한 번에 펼칠 수 있는 최대 칸 수 (D79). 도달 불가 목표는 맵 전체를
+    // 훑으므로 상한이 없으면 후반에 프레임이 무너진다. 넘으면 최선 근사 경로를 쓴다
+    pathBudget: 5000,
     spawnDelay: 12,
     spread: 7.5,           // 스폰 지점 주변에 흩어지는 반경
     aggroRange: 10.5,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
@@ -670,25 +676,41 @@ const DIRS = [
   [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2],
 ];
 
-function astar(start, goal, passFn, extraCostFn) {
-  const g = new Float32Array(NAV * NAV).fill(Infinity);
-  const parent = new Int32Array(NAV * NAV).fill(-1);
-  const closed = new Uint8Array(NAV * NAV);
+// A* 스크래치 버퍼 (D79).
+// 예전엔 호출마다 NAV²짜리 배열 3개를 새로 만들고 fill()까지 했다.
+// 맵이 84칸(NAV 168 = 28k칸)이 되면서 호출당 ~250KB 할당 + 전체 초기화가 됐고,
+// 초당 20여 회 호출되니 GC 압력으로 **시간이 갈수록 느려졌다.**
+// 세대 도장(stamp)을 찍어 재사용하면 할당도 초기화도 없다.
+let asG = null, asParent = null, asStampG = null, asStampC = null, asGen = 0;
+function ensureAstarBuffers() {
+  const n = NAV * NAV;
+  if (asG && asG.length === n) return;
+  asG = new Float32Array(n);
+  asParent = new Int32Array(n);
+  asStampG = new Int32Array(n);
+  asStampC = new Int32Array(n);
+  asGen = 0;
+}
+
+function astar(start, goal, passFn, extraCostFn, maxIter = P.enemy.pathBudget) {
+  ensureAstarBuffers();
+  const gen = ++asGen;
   const gx = goal % NAV, gz = (goal / NAV) | 0;
   const h = (idx) => {
     const x = idx % NAV, z = (idx / NAV) | 0;
     const dx = Math.abs(x - gx), dz = Math.abs(z - gz);
     return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
   };
+  const gOf = (i) => (asStampG[i] === gen ? asG[i] : Infinity);
   const heap = new MinHeap();
-  g[start] = 0;
+  asG[start] = 0; asStampG[start] = gen; asParent[start] = -1;
   heap.push({ i: start, f: h(start) });
   let best = start, bestH = h(start);
   let found = false, iter = 0;
-  while (heap.size && iter++ < 30000) {
+  while (heap.size && iter++ < maxIter) {
     const { i: cur } = heap.pop();
-    if (closed[cur]) continue;
-    closed[cur] = 1;
+    if (asStampC[cur] === gen) continue;
+    asStampC[cur] = gen;
     const hh = h(cur);
     if (hh < bestH) { bestH = hh; best = cur; }
     if (cur === goal) { found = true; break; }
@@ -697,21 +719,20 @@ function astar(start, goal, passFn, extraCostFn) {
       const nx = cx + dx, nz = cz + dz;
       if (nx < 0 || nz < 0 || nx >= NAV || nz >= NAV) continue;
       const ni = nz * NAV + nx;
-      if (closed[ni] || !passFn(ni)) continue;
+      if (asStampC[ni] === gen || !passFn(ni)) continue;
       if (dx !== 0 && dz !== 0) {
         if (!passFn(cz * NAV + nx) || !passFn(nz * NAV + cx)) continue;
       }
-      const ng = g[cur] + c + extraCostFn(ni);
-      if (ng < g[ni]) {
-        g[ni] = ng;
-        parent[ni] = cur;
+      const ng = gOf(cur) + c + extraCostFn(ni);
+      if (ng < gOf(ni)) {
+        asG[ni] = ng; asStampG[ni] = gen; asParent[ni] = cur;
         heap.push({ i: ni, f: ng + h(ni) });
       }
     }
   }
   const end = found ? goal : best;
   const path = [];
-  for (let n = end; n !== -1; n = parent[n]) path.push(n);
+  for (let n = end; n !== -1 && asStampG[n] === gen; n = asParent[n]) path.push(n);
   path.reverse();
   return { path, found, closestWorld: bestH * navRes };
 }
@@ -2998,8 +3019,13 @@ function planEnemyPath(enemy) {
   }
 
   // ---- 뚫을 수도 없음 → 도달 가능한 건물이라도 (습격) ----
+  // 건물마다 A*를 돌리면 건물이 늘수록 재계산이 선형으로 무거워진다 (D79).
+  // 가까운 세 개만 본다 — 어차피 먼 건물로는 안 간다.
   let raidBest = null, raidPath = null, raidD = Infinity;
-  for (const b of buildings) {
+  const raidCands = buildings
+    .map((b) => ({ b, d: Math.hypot(b.cx - enemy.x, b.cz - enemy.z) }))
+    .sort((a, c) => a.d - c.d).slice(0, 3).map((o) => o.b);
+  for (const b of raidCands) {
     const bres = astar(start, worldToNav(b.cx, b.cz), passAll, () => 0);
     if (bres.closestWorld < 1.6 + enemyR(enemy)) {
       const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
@@ -3332,7 +3358,8 @@ function updateEnemy(enemy, dt) {
       const ob = obstacles.get(key);
       if (ob) dMin = Math.min(dMin, distToObstacle(enemy, ob));
     }
-    if (dMin <= reach) bldgTarget = b;
+    // 건물도 벽 너머로는 못 때린다 (D80) — 햄스터 공격(D56)과 같은 규칙
+    if (dMin <= reach && !segmentBlocked(enemy.x, enemy.z, b.cx, b.cz)) bldgTarget = b;
   }
   // 정체 폴백: 손 닿는 건물은 모든 종류가 공격, 벽은 파괴묘만
   if (!bldgTarget && !enemy.attackTarget && enemy.stallT > stallLimit) {
@@ -3347,8 +3374,8 @@ function updateEnemy(enemy, dt) {
         else { bestWall = ob; bestB = null; }
       }
     }
-    if (bestB) bldgTarget = bestB;
-    else enemy.attackTarget = bestWall;
+    if (bestB && !segmentBlocked(enemy.x, enemy.z, bestB.cx, bestB.cz)) bldgTarget = bestB;
+    else if (!bestB) enemy.attackTarget = bestWall;
   }
 
   if (!bldgTarget && enemy.attackTarget && enemy.attackTarget.bldgRef)
@@ -3885,6 +3912,10 @@ function updatePlayer(dt) {
 
   // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
   if (rollCd > 0) rollCd -= dt;
+  // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
+  stamIdle += dt;
+  if (stamIdle > P.player.stamDelay)
+    stamina = Math.min(stamina + P.player.stamRegen * dt, P.player.stamMax);
   if (rollT > 0) {
     rollT -= dt;
     rollSpin += dt * 22;
@@ -4185,6 +4216,10 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.player, 'rollDist', 0, 10, 0.2).name('구르기 거리');
   f.add(P.player, 'rollTime', 0.1, 1, 0.02).name('구르기 시간(무적)');
   f.add(P.player, 'rollCool', 0, 5, 0.1).name('구르기 쿨다운');
+  f.add(P.player, 'stamMax', 20, 400, 10).name('기운 최대');
+  f.add(P.player, 'stamRoll', 5, 200, 1).name('구르기 소모');
+  f.add(P.player, 'stamRegen', 1, 80, 1).name('기운 회복(초당)');
+  f.add(P.player, 'stamDelay', 0, 4, 0.1).name('회복 시작까지(초)');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('레벨당 적 체력 +');
   f.add(P.threat, 'speedGain', 0, 2, 0.05).name('레벨당 적 속도 + (0=고정)');
 
@@ -4532,7 +4567,7 @@ helpEl.textContent =
   '치즈더미에 다가가 E (또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소\n' +
   '방어병 3종: 6 사수(닿으면 즉사, 벽 뒤에) · 7 근접병(붙어서 버팀) · 8 정예병(잘 안 죽음)\n' +
   '유닛은 내 옆에서 나온다 (자리 안 찍음) · Tab 방어병 전원 선택 · 적 우클릭 = 집중 공격\n' +
-  '**Shift = 앞구르기** (구르는 동안 무적 — 적의 예비동작이 끝나기 전에 굴러야 산다)\n' +
+  '**Shift = 앞구르기** (무적 — 적 예비동작이 끝나기 전에 굴러야 산다). 기운을 쓴다\n' +
   '파란 링 = 순찰조 · 초록 표시 = 은신처 · Ctrl+드래그 = 선택 · **ESC = 메뉴**\n' +
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다 · C 카메라 · R 재시작';
 
@@ -4543,9 +4578,13 @@ let hudT = 0;
 let caughtCount = 0;
 // 구르기 상태 (D77): rollT>0 이면 구르는 중 = 무적
 let rollT = 0, rollCd = 0, rollX = 0, rollZ = 0, rollSpin = 0;
+let stamina = 100, stamIdle = 0;   // 스태미너와 '마지막 사용 후 경과' (D81)
 
 function startRoll() {
   if (!alive || playerStunned || buildJob || rollT > 0 || rollCd > 0) return;
+  if (stamina < P.player.stamRoll) { flashMsg('숨이 찼다', '#e0a050'); return; }
+  stamina -= P.player.stamRoll;
+  stamIdle = 0;
   const b = moveBasis();
   const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
   const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
@@ -4650,7 +4689,7 @@ function restart() {
   wallCast = null;
   wallOrders = [];
   buildOrder = null;
-  rollT = 0; rollCd = 0;
+  rollT = 0; rollCd = 0; stamina = P.player.stamMax; stamIdle = 99;
   allyRes = P.ally.startWalls * P.wall.cost;
   ally.shelter = null;
   ally.buildCd = 0;
@@ -5176,6 +5215,7 @@ function updateHUD() {
     (killCount ? ` · 처치 ${killCount}` : '') + '\n' +
     (waiting ? '' : `위협 Lv.${lvl} (다음 강화 ${nextIn.toFixed(0)}s)\n`) +
     `체력: ${'█'.repeat(Math.max(0, Math.round(playerHp / P.player.hp * 10)))}${'░'.repeat(10 - Math.max(0, Math.round(playerHp / P.player.hp * 10)))} ${Math.ceil(playerHp)}/${P.player.hp}\n` +
+    `기운: ${'▰'.repeat(Math.max(0, Math.round(stamina / P.player.stamMax * 10)))}${'▱'.repeat(10 - Math.max(0, Math.round(stamina / P.player.stamMax * 10)))} ${Math.ceil(stamina)}  (Shift 구르기 ${P.player.stamRoll})\n` +
     (ally.active ? `동료: ${ally.stunned ? '기절 — 구하러 가자!' : `${ally.mode} · 치즈 ${Math.round(allyRes)}`}${playerStunned ? ' · 나: 기절!' : ''}\n` : '') +
     `생존: ${survival.toFixed(1)}s · 벽 ${wallCount}개 · 잡힘 ${caughtCount}회` +
     (grace > 0 ? ` · 무적 ${grace.toFixed(1)}s` : '') +
@@ -5317,6 +5357,7 @@ window.__game = {
   guards, projectiles, placeGuard, damageEnemy, topUpToCurve,
   get killCount() { return killCount; },
   get playerHp() { return playerHp; },
+  get stamina() { return stamina; }, set stamina(v) { stamina = v; },
   set playerHp(v) { playerHp = v; },
   get allyHp() { return allyHp; },
   hurtHamster, detonate, lobProjectile,
