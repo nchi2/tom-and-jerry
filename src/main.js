@@ -1248,6 +1248,9 @@ for (const p of players) {
   // 두 사람이 서로 다른 카메라 모드를 써도 시뮬은 영향을 안 받는다
   p.in = { mx: 0, mz: 0 };
   p.harvestPulse = 0;      // 치즈 조각이 도착할 때 튀는 정도 (표현 전용)
+  // 원격 구르기 관용 (D92-7단계). 호스트가 ROLL을 받은 시점은 이미 RTT/2 늦었으므로,
+  // 그만큼 회피 판정을 더 열어 준다 — 아래 applyCommand 주석 참고
+  p.rollGrace = 0;
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -4776,6 +4779,7 @@ function updateActor(p, dt) {
 
   // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
   if (p.rollCd > 0) p.rollCd -= dt;
+  if (p.rollGrace > 0) p.rollGrace -= dt;
   // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
   p.stamIdle += dt;
   if (p.stamIdle > P.player.stamDelay) {
@@ -4925,7 +4929,15 @@ function applyCommand(p, c) {
   }
   if (!alive) return;
   switch (c.t) {
-    case 'roll':   startRoll(p); break;
+    case 'roll':
+      startRoll(p);
+      // **구르기 무적은 클라를 믿는다** (D92-7단계).
+      // 명령이 도착한 시점은 그쪽에서 누른 시점보다 RTT/2 늦다. 그 차이만큼
+      // 회피 창을 앞뒤로 늘려 주지 않으면 P2의 구르기는 "가끔 안 먹는" 기술이 된다.
+      // 치팅이 가능하지만 방 코드로 친구랑 하는 협동 게임이라 무의미하고,
+      // 몇 줄로 손맛이 가장 크게 좋아진다.
+      if (!p.local && p.rollT > 0) p.rollGrace = P.player.rollTime + net.rtt / 2000;
+      break;
     case 'wall':   queueWall(p, c.i, c.j); break;
     case 'build':
       p.buildOrder = { kind: c.kind, i: c.i, j: c.j };
@@ -4976,8 +4988,13 @@ function applyCommand(p, c) {
 
 // 로컬에서 만든 명령을 시뮬로 보낸다. 솔로·호스트면 바로, 클라이언트면 호스트로 (5단계).
 function issueCommand(c, p = localPlayer()) {
-  if (net.isHost) applyCommand(p, c);
-  else net.send({ k: 'CMD', c });
+  if (net.isHost) { applyCommand(p, c); return; }
+  // 클라는 **구르기만** 미리 돌린다 (D92-7단계).
+  // 구르기는 0.28초짜리 회피 기술이라 왕복을 기다리면 이미 늦다 — 눌렀는데 아무 일도
+  // 안 일어나는 0.1초가 그대로 "안 먹었다"로 읽힌다. 호스트는 rollGrace로 이 시차를 인정한다.
+  // 나머지(치즈 소비·건설)는 절대 예측하지 않는다 — 이중 지불 고무줄이 지연보다 나쁘다.
+  if (c.t === 'roll') startRoll(p);
+  net.send({ k: 'CMD', c });
 }
 
 // 로컬 UI — 고스트·프롬프트·레이캐스트·핫바 클릭.
@@ -5758,6 +5775,13 @@ const HELP_FULL = [
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다',
   '오래 못 때리면 목표를 놓고 내 건물을 뜯으러 간다 — 숨는 건 공짜가 아니다',
   '10스테이지엔 보스 "톰"이 쳐들어온다. **처치해야 클리어**된다',
+  '',
+  '── 2P 협동 (D92) ──',
+  'ESC 메뉴 → **친구 초대**로 방을 열면 여섯 글자 방 코드가 뜬다. 친구는 **방 코드로 참가**',
+  '방을 연 쪽이 갈색 햄스터, 들어온 쪽이 회색 햄스터. 살림은 따로다 — 치즈·부품·창고·일꾼·병력 전부 각자',
+  '**한쪽이 잡히면 그 사람 것만 무너진다.** 상대는 그대로니까, 가서 몸으로 터치해 구출하면 된다',
+  '둘 다 기절하면 전멸. 고양이는 둘 사이에서 목표를 바꾼다 — 한쪽이 끌고 한쪽이 짓는 게 통한다',
+  '방을 만든 쪽 화면이 기준이다. 상대가 나가면 그 자리는 AI 동료가 이어받는다',
 ].join('\n');
 
 function renderHelp() {
@@ -5888,7 +5912,7 @@ function restart() {
   territoryGen = -1;   // 영토를 다시 센다 (세대 카운터라 시간으로 재면 안 된다 — D54의 교훈)
   for (const q of players) { q.wallOrders = []; q.wallCast = null; }
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
-  for (const p of players) { p.rollT = 0; p.rollCd = 0; p.stamina = P.player.stamMax; p.stamIdle = 99; }
+  for (const p of players) { p.rollT = 0; p.rollCd = 0; p.rollGrace = 0; p.stamina = P.player.stamMax; p.stamIdle = 99; }
   // 솔로 동료는 '벽 N개분'만 갖는다 (D64) — 벽만 짓는 AI라 그게 예산의 의미다.
   // 2P에서는 사람이 모는 자리이므로 플레이어와 같은 시작 자금을 준다 (D92-6단계).
   // 안 그러면 **재시작할 때마다 P2만 창고를 못 짓는 상태로 돌아간다.**
@@ -5954,8 +5978,9 @@ function restart() {
 function hurtHamster(who, dmg) {
   if (!who.active && who !== player) return;   // 동료가 꺼져 있으면 무시
   if (who.grace > 0 || who.stunned) return;
-  // 구르는 중이면 **회피** (D77) — 예비동작이 끝나기 전에 굴러야 한다
-  if (who.rollT > 0) { if (who.local) flashMsg('회피!', '#8fd6ff'); return; }
+  // 구르는 중이면 **회피** (D77) — 예비동작이 끝나기 전에 굴러야 한다.
+  // rollGrace는 원격 플레이어의 지연 보정분이다 (D92-7단계)
+  if (who.rollT > 0 || who.rollGrace > 0) { flashFor(who, '회피!', '#8fd6ff'); return; }
   who.hp -= dmg;
   who.hurtT = 0;
   who.grace = 0.35;               // 아주 짧은 피격 무적 — 연타로 순삭되지 않게
@@ -6220,6 +6245,7 @@ function applyFull(f) {
 const netHooks = {
   onStatus: renderNet,
   onOpen() {
+    net.fakeLag = P.net.fakeLag;
     if (net.isHost) {
       // 2P 시작 — 동료 슬롯을 사람에게 넘긴다
       ally.ai = false;
