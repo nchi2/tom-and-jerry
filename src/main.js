@@ -2144,8 +2144,9 @@ function updateWallOrder(dt, p = player) {
     if (p.wallCast.t >= P.wall.castTime) {
       p.cheese -= P.wall.cost;
       const ob = addObstacle(o.i, o.j, false, false, p.owner);
-      refreshClearance();
-      repathAll();
+      // 프레임당 한 번으로 몰아서 계산한다 (D70). 여기서 직접 부르면 둘이 벽을 도배할 때
+      // 같은 프레임에 두 번 도는데, refreshClearance는 28,224칸을 네 번 훑는 함수다.
+      markNavDirty();
       ob.mesh.scale.y = 0.02;
       ob.mesh.position.y = 0.01;
       popping.push({ ob, t: 0 });
@@ -5698,6 +5699,11 @@ for (const sub of adv.folders) sub.close();
 // 좌측 상단 개발 정보는 백쿼트(`)로 끈다 — 스크린샷·플레이테스트용.
 let guiOpen = false;
 function setGui(on) {
+  // 2P 참가자는 튜닝 패널을 못 연다 (D92-6단계).
+  // P는 접속할 때 호스트 것으로 통째로 맞춰 놓는데(HELLO), 참가자가 슬라이더를 만지면
+  // 그 순간부터 두 사람이 **다른 규칙**으로 같은 세계를 보게 된다.
+  // 값을 바꾸고 싶으면 방을 연 쪽에서 바꾸면 양쪽에 적용된다.
+  if (on && net.role === 'client') { flashMsg('튜닝은 방을 연 쪽에서 (설정이 어긋난다)', '#e05050'); return; }
   guiOpen = on;
   gui.domElement.style.display = on ? '' : 'none';
   document.body.classList.toggle('gui-on', on);
@@ -6011,14 +6017,18 @@ function caught(who) {
   // 솔로 동료는 지은 게 없으므로 여기서 아무 일도 안 일어난다.
   if (P.player.wipeOnCatch && !who.ai) {
     let lost = 0;
+    // 벽 300칸이 한 프레임에 사라진다. 개별 이벤트 300개를 보내지 않고
+    // **소유자 하나짜리 소멸 이벤트**로 대신한다 (D92-6단계)
+    wallEvMute++;
     for (const ob of [...obstacles.values()])
       if (!ob.bedrock && !ob.bldgRef && ob.owner === who.owner) { removeObstacle(ob); lost++; }
+    wallEvMute--;
+    wallEv({ a: 3, o: who.owner });
     for (const b of [...buildings]) if (b.owner === who.owner) destroyBuilding(b, false);
     clearGuards(who.owner);
     clearWorkers(who.owner);
     who.carry = 0;
-    refreshClearance();
-    repathAll();
+    markNavDirty();
     if (lost) flashFor(who, `잡혔다! 지은 것이 전부 무너졌다 (벽 ${lost}칸)`, '#ff4d4d');
   }
   const soloMode = !ally.active;
@@ -6279,6 +6289,7 @@ function onNetMessage(m) {
     case 'CMD':    applyCommand(ally, m.c); break;
     case 'SNAP':   applySnapshot(m); break;
     case 'MSG':    flashMsg(m.t, m.c); break;
+    case 'SET':    applySettings(m.s); break;
   }
 }
 
@@ -6300,6 +6311,18 @@ const jobName = (c) => (c === 1 ? 'mine' : c === 2 ? 'drop' : null);
 // 스폰·재시작·스테이지 진행을 이걸로 막는다. 클라가 자기 멋대로 적을 만들면
 // id가 충돌해서 **물리 버그처럼 보이는 증상**이 난다.
 const netAuthoring = () => net.role !== 'client';
+
+// 호스트가 튜닝 패널을 열고 있는 동안은 P를 계속 흘려 보낸다 (D92-6단계).
+// 슬라이더를 만지는 그 순간부터 두 사람이 다른 규칙으로 보게 되므로,
+// 열려 있을 때만 0.5초마다 통째로 덮어쓴다. 닫혀 있으면 한 바이트도 안 나간다.
+let setT = 0;
+function sendSettings(dt) {
+  if (net.role !== 'host' || !net.connected || !guiOpen) return;
+  setT -= dt;
+  if (setT > 0) return;
+  setT = 0.5;
+  net.send({ k: 'SET', s: snapshotSettings() });
+}
 
 let snapT = 0;
 function sendSnapshot(dt) {
@@ -6437,6 +6460,13 @@ function applySnapshot(m) {
     } else if (e.a === 2 && ob) {
       ob.cracks = e.c;
       applyCrackVisual(ob);
+    } else if (e.a === 3) {
+      // 소유자 하나의 벽을 통째로 (잡힘 소멸)
+      wallEvMute++;
+      for (const w of [...obstacles.values()])
+        if (!w.bedrock && !w.bldgRef && w.owner === e.o) removeObstacle(w);
+      wallEvMute--;
+      markNavDirty();
     }
   }
 }
@@ -6844,6 +6874,7 @@ function tickClient(dt) {
     for (const o of list) if (o.netX !== undefined) pullTo(o, o.netX, o.netZ, dt);
 
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) flashEl.style.opacity = '0'; }
+  flushNavDirty();   // 스냅샷이 벽을 바꿨으면 영토·은신처 계산도 따라가야 한다
   presentWorld(dt);
   updateActorVis(player, dt);
   updateActorVis(ally, dt);
@@ -6979,6 +7010,7 @@ function tick(dt) {
   hudT -= dt;
   if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
   sendSnapshot(dt);
+  sendSettings(dt);
 }
 
 let prevT = performance.now();
