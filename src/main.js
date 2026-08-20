@@ -1222,6 +1222,10 @@ for (const p of players) {
   p.buildCooldown = 0;
   p.upgradeJob = null;     // { b, t, dur, cost, parts } — 제자리 업그레이드 채널링 (D82)
   p.parts = 0;             // 부품 (D92-1e). 치즈와 같은 이유로 각자 살림이다 (D43)
+  // 이동 입력 — **월드 좌표 단위벡터**다 (D92-1f). 카메라 기준 축이 아니라서
+  // 두 사람이 서로 다른 카메라 모드를 써도 시뮬은 영향을 안 받는다
+  p.in = { mx: 0, mz: 0 };
+  p.harvestPulse = 0;      // 치즈 조각이 도착할 때 튀는 정도 (표현 전용)
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -1558,10 +1562,9 @@ const bitMat = new THREE.MeshStandardMaterial({
   color: 0xffd24a, roughness: 0.45,
   emissive: new THREE.Color(0xf0b429), emissiveIntensity: 0.4,
 });
-let harvestPulse = 0;   // 치즈가 도착할 때 플레이어가 튀는 정도
-
-// target: null이면 플레이어에게, {x,z}면 그 지점(창고)으로 날아간다
-function spawnCheeseBit(x, z, target = null) {
+// target: null이면 캔 햄스터에게, {x,z}면 그 지점(창고)으로 날아간다.
+// who는 target이 null일 때 **누구에게 날아가는지** (D92-1f)
+function spawnCheeseBit(x, z, target = null, who = player) {
   const m = new THREE.Mesh(bitGeo, bitMat);
   m.scale.setScalar(0.12 + Math.random() * 0.06);
   m.position.set(x, 0.5, z);
@@ -1570,7 +1573,7 @@ function spawnCheeseBit(x, z, target = null) {
   cheeseBits.push({
     mesh: m, t: 0,
     dur: 0.55 + Math.random() * 0.25,
-    x0: x, z0: z, target,
+    x0: x, z0: z, target, who,
     ax: x + (Math.random() - 0.5) * 2.4,
     az: z + (Math.random() - 0.5) * 2.4,
     spin: (Math.random() - 0.5) * 12,
@@ -1585,11 +1588,11 @@ function updateCheeseBits(dt) {
     if (p >= 1) {
       scene.remove(b.mesh);
       cheeseBits.splice(k, 1);
-      if (!b.target) harvestPulse = Math.min(harvestPulse + 0.35, 1); // 플레이어 도착 → 반응
+      if (!b.target) b.who.harvestPulse = Math.min(b.who.harvestPulse + 0.35, 1); // 도착 → 반응
       continue;
     }
-    const gx = b.target ? b.target.x : player.x;
-    const gz = b.target ? b.target.z : player.z;
+    const gx = b.target ? b.target.x : b.who.x;
+    const gz = b.target ? b.target.z : b.who.z;
     // 출발 → (튀어오른 지점) → 목적지 로 이어지는 2차 베지어
     const q = 1 - p;
     const tx = b.x0 * q * q + b.ax * 2 * q * p + gx * p * p;
@@ -4665,14 +4668,144 @@ function updateWallPops(dt) {
   }
 }
 
-function updatePlayer(dt) {
+// ============================================================
+// 시뮬 · 표현 · 로컬 UI 분리 (D92-1f)
+//  updateActor(p, dt)  — 시뮬. **p 와 p.in 만 본다.** keys·mouseDown·activeCam() 금지
+//  updateActorVis(p)   — 그 햄스터의 모델과 바
+//  updateLocalUI(dt)   — 고스트·프롬프트·레이캐스트·핫바. 이 기계의 로컬 플레이어 기준
+// 예전엔 셋이 updatePlayer 하나에 섞여 있었고, 그래서 "두 번째 햄스터를 돌린다"가
+// 곧 "두 번째 마우스와 두 번째 카메라를 만든다"는 뜻이 됐다.
+// ============================================================
+const visOf = (p) => (p === ally ? allyVis : playerVis);
+const barOf = (p) => (p === ally ? allyBar : playerBar);
+const workBarOf = (p) => (p === ally ? allyWorkBar : playerWorkBar);
+const radiusOf = (p) => (p === ally ? P.ally.radius : P.player.radius);
+
+// 로컬 입력 표본. **카메라와 키보드를 읽는 유일한 곳이다.**
+// 카메라 기준 축(moveBasis)을 여기서 월드 좌표 단위벡터로 풀어서 넘기므로,
+// 시뮬은 어느 카메라 모드인지 알 필요가 없다 (네트워크로도 이 두 숫자만 간다).
+function sampleLocalInput(p = player) {
+  const b = moveBasis();
+  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  let mx = b.fx * f + b.rx * r, mz = b.fz * f + b.rz * r;
+  const ml = Math.hypot(mx, mz);
+  if (ml > 1e-4) { mx /= ml; mz /= ml; } else { mx = 0; mz = 0; }
+  p.in.mx = mx; p.in.mz = mz;
+}
+
+function updateActor(p, dt) {
   // ---- 기절: 조작 불능, 누워서 동료를 기다린다 ----
-  if (player.stunned) {
-    clearMineOrder();
-    playerVis.group.position.set(player.x, 0.25, player.z);
-    playerVis.group.rotation.x = -Math.PI / 2;
-    playerVis.mats?.forEach?.(() => {});
-    playerVis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
+  if (p.stunned) { clearMineOrder(undefined, p); return; }
+
+  updateBuild(dt, p);
+  updateUpgradeJob(dt, p);
+
+  // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
+  if (p.rollCd > 0) p.rollCd -= dt;
+  // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
+  p.stamIdle += dt;
+  if (p.stamIdle > P.player.stamDelay) {
+    // 내 영토 위에서는 더 빨리 찬다 (D86) — 영토의 유일한 실이익
+    const mul = inTerritory(p.x, p.z) ? P.player.terrStamMul : 1;
+    p.stamina = Math.min(p.stamina + P.player.stamRegen * mul * dt, P.player.stamMax);
+  }
+  if (p.rollT > 0) {
+    p.rollT -= dt;
+    p.rollSpin += dt * 22;
+    const spd = P.player.rollDist / Math.max(P.player.rollTime, 0.01);
+    p.x += p.rollX * spd * dt;
+    p.z += p.rollZ * spd * dt;
+    collideWithObstacles(p, radiusOf(p));
+    return;
+  }
+
+  // ---- 이동 (건물을 짓거나 업그레이드하는 동안은 묶인다 = 무방비) ----
+  if (!p.buildJob && !p.upgradeJob) {
+    const mx = p.in.mx, mz = p.in.mz;
+    if (mx || mz) {
+      // 직접 움직이면 걸어둔 명령은 전부 풀린다 — 개입이 항상 우선이다
+      if (p.mineOrder) clearMineOrder('직접 이동 — 채굴 명령 취소', p);
+      if (p.wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소', p);
+      if (p.buildOrder) { p.buildOrder = null; flashMsg('직접 이동 — 건물 명령 취소', '#9aa3b2'); }
+      p.wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
+      p.x += mx * effPlayerSpeed(p) * dt;
+      p.z += mz * effPlayerSpeed(p) * dt;
+      p.faceX = mx; p.faceZ = mz;
+    } else if (p.buildOrder) {
+      updateBuildOrder(dt, p);    // 건물 명령이 최우선 (하나뿐이고 비싸다)
+    } else if (p.wallOrders.length) {
+      updateWallOrder(dt, p);     // 벽 명령이 채굴보다 우선 (방금 내린 지시니까)
+    } else if (p.mineOrder) {
+      updateMineOrder(dt, p);
+    }
+  }
+  collideWithObstacles(p, radiusOf(p));
+}
+
+// 표현 — 위치·자세·채굴 리액션·바. 시뮬 값을 읽기만 한다
+function updateActorVis(p, dt) {
+  const vis = visOf(p);
+  const R = radiusOf(p);
+
+  if (p.stunned) {
+    vis.group.position.set(p.x, 0.25, p.z);
+    vis.group.rotation.x = -Math.PI / 2;
+    vis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
+    setBar(barOf(p), 0, 0, 0, 0, false);
+    setBar(workBarOf(p), 0, 0, 0, 0, false);
+    return;
+  }
+  vis.setOpacity(1);
+
+  if (p.rollT > 0) {
+    vis.group.position.set(p.x, 0.18 + Math.sin((1 - p.rollT / P.player.rollTime) * Math.PI) * 0.22, p.z);
+    vis.group.rotation.y = Math.atan2(p.rollX, p.rollZ) + Math.PI;
+    vis.group.rotation.x = -p.rollSpin;   // 앞으로 구른다
+    return;
+  }
+  vis.group.rotation.x = 0;
+  vis.group.position.set(p.x, 0, p.z);
+  vis.group.rotation.y = Math.atan2(p.faceX, p.faceZ) + Math.PI;
+
+  // ---- 채굴 리액션 ----
+  // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
+  // 위아래로 통통 튀면서 두 손을 흔든다 = "내가 지금 캐고 있다"
+  p.harvestPulse = Math.max(p.harvestPulse - dt * 1.6, 0);
+  const t = performance.now() * 0.012;
+  const bounce = p.harvestPulse * Math.abs(Math.sin(t * 1.4));
+  vis.group.position.y = bounce * 0.18;
+  vis.group.scale.set(R * (1 + bounce * 0.06), R * (1 - bounce * 0.08), R * (1 + bounce * 0.06));
+  if (vis.handL) {
+    const swing = p.harvestPulse * 0.9;
+    vis.armL.position.y = 1.38 + Math.sin(t * 2.2) * swing * 0.22;
+    vis.armR.position.y = 1.38 - Math.sin(t * 2.2) * swing * 0.22;
+    vis.handL.position.y = 0.98 + Math.sin(t * 2.2) * swing * 0.34;
+    vis.handR.position.y = 0.98 - Math.sin(t * 2.2) * swing * 0.34;
+  }
+
+  // ---- 체력 / 작업 진행 바 ----
+  const bar = barOf(p), y = barY(vis);
+  setBar(bar, p.hp / P.player.hp, p.x, y, p.z, p.hp < P.player.hp - 0.5);
+  const mining = p.job === 'mine';
+  const building = !!p.buildJob;
+  const upgrading = !!p.upgradeJob;
+  const casting = !!p.wallCast;
+  setBar(workBarOf(p),
+         casting ? p.wallCast.t / P.wall.castTime
+                 : building ? p.buildJob.t / p.buildJob.dur
+                 : upgrading ? p.upgradeJob.t / p.upgradeJob.dur
+                 : (p.mineT || 0) / effMineTime(),
+         p.x, y + (bar && bar.visible ? 0.26 : 0), p.z,
+         mining || building || upgrading || casting);
+}
+
+// 로컬 UI — 고스트·프롬프트·레이캐스트·핫바 클릭.
+// 시뮬 상태를 **읽기만** 하는 게 아니라 여기서 명령도 건다 (3단계에서 applyCommand로 정리한다).
+function updateLocalUI(dt) {
+  const me = localPlayer();
+
+  if (me.stunned) {
     ghost.visible = false;
     minePrompt.visible = false;
     fullPrompt.visible = false;
@@ -4680,8 +4813,6 @@ function updatePlayer(dt) {
     safeMark.visible = false;
     return;
   }
-  playerVis.group.rotation.x = 0;
-  playerVis.setOpacity(1);
 
   const wantBuild = keys.has('Space') || mouseDown;
   const buildPressed = wantBuild && !prevWantBuild; // 눌리는 순간 (연사 방지용)
@@ -4691,105 +4822,10 @@ function updatePlayer(dt) {
   const spawnPressed = wantSpawn && !prevWantSpawn;
   prevWantSpawn = wantSpawn;
 
-  updateBuild(dt);
-  updateUpgradeJob(dt);
+  const prompts = () => { updateMinePrompt(); updateUpgradePrompt(); updateSafeMark(); };
 
-  // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
-  if (player.rollCd > 0) player.rollCd -= dt;
-  // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
-  player.stamIdle += dt;
-  if (player.stamIdle > P.player.stamDelay) {
-    // 내 영토 위에서는 더 빨리 찬다 (D86) — 영토의 유일한 실이익
-    const mul = inTerritory(player.x, player.z) ? P.player.terrStamMul : 1;
-    player.stamina = Math.min(player.stamina + P.player.stamRegen * mul * dt, P.player.stamMax);
-  }
-  if (player.rollT > 0) {
-    player.rollT -= dt;
-    player.rollSpin += dt * 22;
-    const spd = P.player.rollDist / Math.max(P.player.rollTime, 0.01);
-    player.x += player.rollX * spd * dt;
-    player.z += player.rollZ * spd * dt;
-    collideWithObstacles(player, P.player.radius);
-    playerVis.group.position.set(player.x, 0.18 + Math.sin((1 - player.rollT / P.player.rollTime) * Math.PI) * 0.22, player.z);
-    playerVis.group.rotation.y = Math.atan2(player.rollX, player.rollZ) + Math.PI;
-    playerVis.group.rotation.x = -player.rollSpin;   // 앞으로 구른다
-    updateMinePrompt();
-    updateUpgradePrompt();
-    updateSafeMark();
-    ghost.visible = false;
-    return;
-  }
-  playerVis.group.rotation.x = 0;
-
-  // ---- 이동 (건물을 짓거나 업그레이드하는 동안은 묶인다 = 무방비) ----
-  if (!player.buildJob && !player.upgradeJob) {
-    const b = moveBasis();
-    let mx = 0, mz = 0;
-    const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-    const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-    mx = b.fx * f + b.rx * r;
-    mz = b.fz * f + b.rz * r;
-    const ml = Math.hypot(mx, mz);
-    if (ml > 1e-4) {
-      // 직접 움직이면 걸어둔 명령은 전부 풀린다 — 개입이 항상 우선이다
-      if (player.mineOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
-      if (player.wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소');
-      if (player.buildOrder) { player.buildOrder = null; flashMsg('직접 이동 — 건물 명령 취소', '#9aa3b2'); }
-      player.wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
-      mx /= ml; mz /= ml;
-      player.x += mx * effPlayerSpeed() * dt;
-      player.z += mz * effPlayerSpeed() * dt;
-      player.faceX = mx; player.faceZ = mz;
-    } else if (player.buildOrder) {
-      updateBuildOrder(dt);       // 건물 명령이 최우선 (하나뿐이고 비싸다)
-    } else if (player.wallOrders.length) {
-      updateWallOrder(dt);        // 벽 명령이 채굴보다 우선 (방금 내린 지시니까)
-    } else if (player.mineOrder) {
-      updateMineOrder(dt);
-    }
-  }
-  collideWithObstacles(player, P.player.radius);
-
-  playerVis.group.position.set(player.x, 0, player.z);
-  playerVis.group.rotation.y = Math.atan2(player.faceX, player.faceZ) + Math.PI;
-
-  // ---- 채굴 리액션 ----
-  // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
-  // 위아래로 통통 튀면서 두 손을 흔든다 = "내가 지금 캐고 있다"
-  harvestPulse = Math.max(harvestPulse - dt * 1.6, 0);
-  const t = performance.now() * 0.012;
-  const bounce = harvestPulse * Math.abs(Math.sin(t * 1.4));
-  playerVis.group.position.y = bounce * 0.18;
-  playerVis.group.scale.set(
-    P.player.radius * (1 + bounce * 0.06),
-    P.player.radius * (1 - bounce * 0.08),
-    P.player.radius * (1 + bounce * 0.06)
-  );
-  if (playerVis.handL) {
-    const swing = harvestPulse * 0.9;
-    playerVis.armL.position.y = 1.38 + Math.sin(t * 2.2) * swing * 0.22;
-    playerVis.armR.position.y = 1.38 - Math.sin(t * 2.2) * swing * 0.22;
-    playerVis.handL.position.y = 0.98 + Math.sin(t * 2.2) * swing * 0.34;
-    playerVis.handR.position.y = 0.98 - Math.sin(t * 2.2) * swing * 0.34;
-  }
-
-  // ---- 체력 / 채굴 진행 바 ----
-  {
-    const y = barY(playerVis);
-    setBar(playerBar, player.hp / P.player.hp, player.x, y, player.z,
-           !player.stunned && player.hp < P.player.hp - 0.5);
-    const mining = player.job === 'mine';
-    const building = !!player.buildJob;
-    const upgrading = !!player.upgradeJob;
-    const casting = !!player.wallCast;
-    setBar(playerWorkBar,
-           casting ? player.wallCast.t / P.wall.castTime
-                   : building ? player.buildJob.t / player.buildJob.dur
-                   : upgrading ? player.upgradeJob.t / player.upgradeJob.dur
-                   : (player.mineT || 0) / effMineTime(),
-           player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z,
-           mining || building || upgrading || casting);
-  }
+  // 구르는 동안은 아무것도 못 찍는다 (조작이 안 먹는 구간이라 고스트도 숨긴다)
+  if (me.rollT > 0) { prompts(); ghost.visible = false; return; }
 
   // ---- 건설 고스트: 마우스가 가리키는 타일 + 선택 슬롯의 발자국 ----
   let gi = ghostCell.i, gj = ghostCell.j, hasTile = false;
@@ -4807,11 +4843,11 @@ function updatePlayer(dt) {
     // 벽뿐 아니라 **일반 건물(창고·공방·경비탑)도 철거된다** (D90).
     // 건물은 잘못 놓으면 되돌릴 방법이 아예 없었다 — 자리를 고쳐 잡을 길을 준다.
     // 되찾는 값(refundRatio)이 있어야 "옮기자"가 실제 선택이 된다.
-    const bldg = ob && ob.bldgRef && ob.bldgRef.owner === 'p' ? ob.bldgRef : null;
+    const bldg = ob && ob.bldgRef && ob.bldgRef.owner === me.owner ? ob.bldgRef : null;
     const isWall = !!ob && !ob.bedrock && !ob.bldgRef;
     const rc = P.wall.removeCost;
     const refund = bldg ? Math.round(buildCost(bldg.kind) * P.build.refundRatio) : 0;
-    const ok = (isWall || !!bldg) && player.cheese >= rc;
+    const ok = (isWall || !!bldg) && me.cheese >= rc;
     ghostCell = { i: gi, j: gj, valid: ok };
     ghostWhy = ok ? '' :
       (!ob ? '철거할 게 없음'
@@ -4828,25 +4864,23 @@ function updatePlayer(dt) {
       ghost.position.set(w0.x, P.wall.height / 2, w0.z);
     }
     ghost.material.color.setHex(ok ? 0xffb347 : 0xe05050);
-    player.buildCooldown -= dt;
-    if (wantBuild && player.buildCooldown <= 0 && ok) {
-      player.cheese -= rc;
+    me.buildCooldown -= dt;
+    if (wantBuild && me.buildCooldown <= 0 && ok) {
+      me.cheese -= rc;
       if (bldg) {
-        player.cheese += refund;
+        me.cheese += refund;
         spawnBuildFx(bldg.cx, bldg.cz);
         destroyBuilding(bldg, false);
         flashMsg(`${BLDG_INFO[bldg.kind].label} 철거 — 치즈 +${refund} 회수`, '#ffb347');
-        player.buildCooldown = 0.3;   // 건물은 연타로 지워지지 않게 조금 길게
+        me.buildCooldown = 0.3;   // 건물은 연타로 지워지지 않게 조금 길게
       } else {
         removeObstacle(ob);
         markNavDirty();
         spawnBuildFx(w0.x, w0.z);
-        player.buildCooldown = P.wall.cooldown;
+        me.buildCooldown = P.wall.cooldown;
       }
     }
-    updateMinePrompt();
-    updateUpgradePrompt();
-    updateSafeMark();
+    prompts();
     return;
   }
 
@@ -4855,19 +4889,17 @@ function updatePlayer(dt) {
   if (!slot) {
     ghostCell = { i: gi, j: gj, valid: false };
     ghost.visible = false;
-    updateMinePrompt();
-    updateUpgradePrompt();
-    updateSafeMark();
+    prompts();
     return;
   }
   const w = cellToWorld(gi, gj);
-  const affordable = player.cheese >= slot.cost();
+  const affordable = me.cheese >= slot.cost();
   const lock = slotLockReason(slot);
   let valid = false;
   if (lock) {
     ghostWhy = lock;
   } else if (slot.key === 'worker') {
-    valid = affordable && !!nearestDepot(player.x, player.z);
+    valid = affordable && !!nearestDepot(me.x, me.z, me.owner);
     ghostWhy = !affordable ? '치즈 부족' : (valid ? '' : '창고가 필요합니다');
   } else if (GUARD_TYPES[slot.key]) {
     // 유닛은 내 옆에서 나온다 — 자리를 안 찍으므로 타일 유효성도 없다
@@ -4880,7 +4912,7 @@ function updatePlayer(dt) {
       ghostWhy = !affordable ? '치즈 부족' : (berr || '');
     } else {
       // 거리는 보지 않는다 — 명령이 걸어간다 (D73). "거기에 지을 수 있느냐"만 본다
-      const err = wallSpotOk(gi, gj);
+      const err = wallSpotOk(gi, gj, me);
       valid = !err && affordable;
       ghostWhy = !affordable ? '치즈 부족' : (err || '');
     }
@@ -4894,7 +4926,7 @@ function updatePlayer(dt) {
   if (unitSlot) {
     const r = GUARD_TYPES[slot.key] ? GUARD_TYPES[slot.key].radius() : P.worker.radius;
     const n = GUARD_TYPES[slot.key] ? guards.length : workers.length;
-    const sp = spawnSpotNear(player.x, player.z, r, n);
+    const sp = spawnSpotNear(me.x, me.z, r, n);
     unitGhostAt.set(sp.x, sp.z);
     ghost.visible = alive;
     ghost.scale.set(r * 2, r * 2.6, r * 2);
@@ -4902,31 +4934,31 @@ function updatePlayer(dt) {
     ghost.material.color.setHex(valid ? 0x6ee07a : 0xe05050);
     // 아래 공통 처리를 건너뛴다 (타일 기반 고스트가 위치를 덮어쓰지 않게)
   } else {
-  ghost.visible = alive && hasTile;
-  if (slot.size === 2) {
-    ghost.scale.set(CS * 1.98, 1.2, CS * 1.98);
-    ghost.position.set(w.x + CS / 2, 0.6, w.z + CS / 2);
-  } else if (slot.key === 'wall') {
-    // 고스트도 기둥 크기로 — 세우기 전에 틈이 얼마나 남는지 보여야 한다
-    ghost.scale.set(P.wall.post, P.wall.height, P.wall.post);
-    ghost.position.set(w.x, P.wall.height / 2, w.z);
-  } else {
-    ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
-    ghost.position.set(w.x, P.wall.height / 2, w.z);
-  }
-  ghost.material.color.setHex(valid ? 0x6ee07a : 0xe05050);
+    ghost.visible = alive && hasTile;
+    if (slot.size === 2) {
+      ghost.scale.set(CS * 1.98, 1.2, CS * 1.98);
+      ghost.position.set(w.x + CS / 2, 0.6, w.z + CS / 2);
+    } else if (slot.key === 'wall') {
+      // 고스트도 기둥 크기로 — 세우기 전에 틈이 얼마나 남는지 보여야 한다
+      ghost.scale.set(P.wall.post, P.wall.height, P.wall.post);
+      ghost.position.set(w.x, P.wall.height / 2, w.z);
+    } else {
+      ghost.scale.set(CS * 0.98, P.wall.height, CS * 0.98);
+      ghost.position.set(w.x, P.wall.height / 2, w.z);
+    }
+    ghost.material.color.setHex(valid ? 0x6ee07a : 0xe05050);
   }
 
   // ---- 즉시 건설 (선택 슬롯) ----
   // 벽: 홀드하면 쿨다운마다 연속 설치 / 건물: 클릭 = 명령 / **유닛: Enter** (D88)
-  player.buildCooldown -= dt;
+  me.buildCooldown -= dt;
   if (slot.key === 'wall') {
     // 클릭 한 번 = "거기에 지으러 가라" (D60/D73). 사거리는 짧게 두되(D69) 걷는 건 대신해 준다.
     if (buildPressed && valid && hasTile) {
-      if (!player.wallOrders.some((o) => o.i === gi && o.j === gj)) {
-        player.wallOrders.push({ i: gi, j: gj });
-        if (player.mineOrder) clearMineOrder();
-        player.orderPath.length = 0; player.orderRepathT = 0;
+      if (!me.wallOrders.some((o) => o.i === gi && o.j === gj)) {
+        me.wallOrders.push({ i: gi, j: gj });
+        if (me.mineOrder) clearMineOrder(undefined, me);
+        me.orderPath.length = 0; me.orderRepathT = 0;
       }
     }
   } else if (unitSlot) {
@@ -4935,19 +4967,26 @@ function updatePlayer(dt) {
     if (spawnPressed || buildPressed) {
       if (lock) flashMsg(lock, '#e05050');
       else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
-      else hireWorker('p');
+      else hireWorker(me.owner);
     }
   } else if (buildPressed && hasTile && !lock) {
-    player.buildOrder = { kind: slot.key, i: gi, j: gj };
-    player.orderPath.length = 0; player.orderRepathT = 0;
-    if (player.mineOrder) clearMineOrder();
+    me.buildOrder = { kind: slot.key, i: gi, j: gj };
+    me.orderPath.length = 0; me.orderRepathT = 0;
+    if (me.mineOrder) clearMineOrder(undefined, me);
   } else if (buildPressed && lock) {
     flashMsg(lock, '#e05050');
   }
 
-  updateMinePrompt();
-  updateUpgradePrompt();
-  updateSafeMark();
+  prompts();
+}
+
+// 기존 이름은 "이 프레임의 플레이어 처리 한 묶음"으로 남긴다 (호출부 그대로).
+// 솔로에서는 로컬 플레이어가 player 하나뿐이라 순서가 예전과 같다.
+function updatePlayer(dt) {
+  sampleLocalInput(player);
+  updateActor(player, dt);
+  updateActorVis(player, dt);
+  updateLocalUI(dt);
 }
 
 // ---- 건물 건설 (시간 소요 · 무방비) ----
@@ -5556,27 +5595,26 @@ let hudT = 0;
 let caughtCount = 0;
 // 구르기 상태 (D77): player.rollT>0 이면 구르는 중 = 무적
 
-function startRoll() {
-  if (!alive || player.stunned || player.buildJob || player.rollT > 0 || player.rollCd > 0) return;
-  if (player.stamina < P.player.stamRoll) { flashMsg('숨이 찼다', '#e0a050'); return; }
-  player.stamina -= P.player.stamRoll;
-  player.stamIdle = 0;
-  const b = moveBasis();
-  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-  let dx = b.fx * f + b.rx * r, dz = b.fz * f + b.rz * r;
-  const l = Math.hypot(dx, dz);
-  if (l > 1e-4) { dx /= l; dz /= l; } else { dx = player.faceX; dz = player.faceZ; }
-  player.rollX = dx; player.rollZ = dz;
-  player.rollT = P.player.rollTime;
-  player.rollCd = P.player.rollCool;
-  player.rollSpin = 0;
-  player.faceX = dx; player.faceZ = dz;
+function startRoll(p = player) {
+  if (!alive || p.stunned || p.buildJob || p.rollT > 0 || p.rollCd > 0) return;
+  if (p.stamina < P.player.stamRoll) { flashMsg('숨이 찼다', '#e0a050'); return; }
+  p.stamina -= P.player.stamRoll;
+  p.stamIdle = 0;
+  // 방향은 **입력 표본**에서 온다 (D92-1f). 키를 누른 그 프레임에 굴러도 어긋나지
+  // 않도록 로컬 플레이어는 여기서 한 번 더 표본을 뜬다 (네트워크 쪽은 p.in이 이미 최신이다).
+  if (p.local) sampleLocalInput(p);
+  let dx = p.in.mx, dz = p.in.mz;
+  if (!dx && !dz) { dx = p.faceX; dz = p.faceZ; }
+  p.rollX = dx; p.rollZ = dz;
+  p.rollT = P.player.rollTime;
+  p.rollCd = P.player.rollCool;
+  p.rollSpin = 0;
+  p.faceX = dx; p.faceZ = dz;
   // 구르면 걸어둔 명령은 전부 풀린다 (직접 이동과 같은 취급)
-  clearMineOrder();
-  if (player.wallOrders.length) clearWallOrders();
-  player.buildOrder = null;
-  player.wallCast = null;
+  clearMineOrder(undefined, p);
+  if (p.wallOrders.length) clearWallOrders(undefined, p);
+  p.buildOrder = null;
+  p.wallCast = null;
 }
 
 // 화면 흔들림은 **카메라의 상태**지 햄스터의 상태가 아니다 (D92-1e).
@@ -5646,7 +5684,7 @@ function restart() {
   popping.length = 0;
   for (const b of cheeseBits) scene.remove(b.mesh);
   cheeseBits.length = 0;
-  harvestPulse = 0;
+  for (const p of players) p.harvestPulse = 0;
   for (const n of nodes) n.bitT = 0;
   player.cheese = startResources();
   for (const n of nodes) {
@@ -6352,6 +6390,7 @@ window.__game = {
   refreshTerritory, inTerritory,
   net, byId, get entSeq() { return entSeq; },
   get territory() { return territory; }, get territoryArea() { return territoryArea; },
+  sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
@@ -6402,7 +6441,7 @@ window.__game = {
   enemyR, unlockedTypes,
   get fxCount() { return fx.length; },
   get cheeseBitCount() { return cheeseBits.length; },
-  get harvestPulse() { return harvestPulse; },
+  get harvestPulse() { return player.harvestPulse; },
   setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
   threatLevel, enemySpeedOf, enemyDpsOf,
   step(seconds, dt = 1 / 60) {
