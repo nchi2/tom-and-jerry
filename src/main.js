@@ -6249,8 +6249,10 @@ function applyFull(f) {
   allyVis.group.scale.setScalar(P.ally.radius);
   ally.active = true; ally.ai = false; ally.local = true;
   player.local = false;
-  flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a');
+  // 재시작 때도 같은 HELLO가 오므로 인사는 처음 한 번만 (안 그러면 매번 화면을 덮는다)
+  if (!greeted) { greeted = true; flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a'); }
 }
+let greeted = false;
 
 const netHooks = {
   onStatus: renderNet,
@@ -6273,6 +6275,7 @@ const netHooks = {
     renderNet();
   },
   onClose() {
+    greeted = false;
     // 상대가 나가면 동료 자리를 AI에게 돌려준다 (게임이 안 끊긴다)
     if (ally.local) { ally.local = false; player.local = true; }
     ally.ai = true;
@@ -6372,14 +6375,24 @@ function pullTo(o, x, z, dt, rate = 18) {
 }
 
 let lastSnap = null;
+let overlayWasVictory = false;
 function applySnapshot(m) {
   lastSnap = m;
   survival = m.t; stage = m.st; stageT = m.sT; killCount = m.ki;
   territoryArea = m.tr; victory = !!m.vi;
-  if (!!m.al !== alive) {
+  // 게임의 끝은 호스트가 정한다. 클라는 오버레이 문구만 맞춰 준다
+  const won = !!m.vi;
+  if (!!m.al !== alive || won !== overlayWasVictory) {
     alive = !!m.al;
-    overlayEl.classList.toggle('hidden', alive);
-    if (!alive) overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
+    overlayWasVictory = won;
+    const done = won || !alive;
+    overlayEl.classList.toggle('hidden', !done);
+    if (done) {
+      overlayEl.querySelector('h1').textContent = won ? '톰을 막아냈다!' : '모두 잡혔다!';
+      document.getElementById('overlay-sub').textContent = won
+        ? `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 — R 키로 처음부터`
+        : `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — R 키로 다시 시작`;
+    }
   }
 
   // ---- 플레이어 둘 ----
