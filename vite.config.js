@@ -5,4 +5,7 @@ import { defineConfig } from 'vite';
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? '/tom-and-jerry/' : '/',
   build: { outDir: 'dist' },
+  // tools/ 는 검증 하니스다. 여기를 고칠 때마다 페이지가 리로드되면
+  // 진행 중인 헤드리스 런이 날아가므로 감시에서 뺀다.
+  server: { watch: { ignored: ['**/tools/**'] } },
 }));

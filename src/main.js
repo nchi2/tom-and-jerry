@@ -1206,6 +1206,8 @@ for (const p of players) {
   // 구르기·기운 (D81 → D92-1d). rollT>0 이면 구르는 중 = 무적
   p.rollT = 0; p.rollCd = 0; p.rollX = 0; p.rollZ = 0; p.rollSpin = 0;
   p.stamina = P.player.stamMax; p.stamIdle = 0;
+  // 지금 하고 있는 나르기 일 (D92-1e). 일꾼이 이미 w.job을 쓰고 있어 이름을 맞췄다
+  p.job = null;   // 'mine' | 'drop' | null
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -1388,7 +1390,6 @@ let killCount = 0;  // 처치한 적 수 (HUD용)
 const purse = (o) => ownerOf(o).cheese;
 const spend = (o, v) => { ownerOf(o).cheese -= v; };
 const earn = (o, v) => { ownerOf(o).cheese += v; };
-let playerJob = null; // 'mine' | 'drop' | null
 
 // 적 도달 가능 영역 (내비 격자 flood fill, 적 반지름 기준)
 //  → 노드가 이 영역 밖이면 "확보됨"
@@ -4766,7 +4767,7 @@ function updatePlayer(dt) {
     const y = barY(playerVis);
     setBar(playerBar, player.hp / P.player.hp, player.x, y, player.z,
            !player.stunned && player.hp < P.player.hp - 0.5);
-    const mining = playerJob === 'mine';
+    const mining = player.job === 'mine';
     const building = !!buildJob;
     const upgrading = !!upgradeJob;
     const casting = !!wallCast;
@@ -6182,8 +6183,8 @@ function updateHUD() {
     : buildOrder ? `🏗 ${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중`
     : wallOrders.length ? `🧱 벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ''}`
     : playerOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
-    : playerJob === 'mine' ? '⛏ 채굴'
-    : playerJob === 'drop' ? '📦 하역'
+    : player.job === 'mine' ? '⛏ 채굴'
+    : player.job === 'drop' ? '📦 하역'
     : removeMode ? '✖ 철거 모드 (X로 끄기)'
     // 유닛 슬롯을 들고 있으면 **무엇을 눌러야 하는지** 말해 준다 (D91).
     // 숫자만 눌러 놓고 다음 동작을 모르겠다는 지적이 있었다
@@ -6282,7 +6283,7 @@ function tick(dt) {
     }
     if (camShake > 0) camShake -= dt * 2;
     updateStageTimer(dt);
-    playerJob = player.stunned ? null : doCarryWork(player, dt, P.carry.playerLoad, 'p');
+    player.job = player.stunned ? null : doCarryWork(player, dt, P.carry.playerLoad, 'p');
     updateWorkers(dt);
     updateGuards(dt);
     updateProjectiles(dt);
@@ -6343,6 +6344,7 @@ window.__game = {
   refreshTerritory, inTerritory,
   net, byId, get entSeq() { return entSeq; },
   get territory() { return territory; }, get territoryArea() { return territoryArea; },
+  worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
   selWorkers, selGuards, GUARD_TYPES,
@@ -6350,7 +6352,7 @@ window.__game = {
   get minePromptVisible() { return minePrompt.visible; },
   get safeMarkVisible() { return safeMark.visible; },
   get safeMarkPos() { return { x: safeMark.position.x, z: safeMark.position.z }; },
-  get playerJob() { return playerJob; },
+  get playerJob() { return player.job; },
   get allyRes() { return ally.cheese; }, set allyRes(v) { ally.cheese = v; },
   get buildJob() { return buildJob; },
   get wallCast() { return wallCast; },
