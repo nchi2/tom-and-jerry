@@ -2321,10 +2321,11 @@ const safeMark = (() => {
 })();
 
 function updateSafeMark() {
+  const me = localPlayer();
   let near = Infinity;
-  for (const e of enemies) near = Math.min(near, Math.hypot(e.x - player.x, e.z - player.z));
-  const chased = alive && !player.stunned && enemyActive() && near < P.player.safeMarkRange;
-  const spot = chased ? nearestSafeSpot(player.x, player.z, P.player.radius) : null;
+  for (const e of enemies) near = Math.min(near, Math.hypot(e.x - me.x, e.z - me.z));
+  const chased = alive && !me.stunned && enemyActive() && near < P.player.safeMarkRange;
+  const spot = chased ? nearestSafeSpot(me.x, me.z, P.player.radius) : null;
   safeMark.visible = !!spot;
   if (!spot) return;
   safeMark.position.set(spot.x, 0, spot.z);
@@ -2332,9 +2333,10 @@ function updateSafeMark() {
 }
 
 function updateMinePrompt() {
-  const show = alive && !player.stunned && !player.mineOrder && !player.buildJob;
-  const n = show ? nearestPile(player.x, player.z, P.command.promptRange) : null;
-  const full = !!n && player.carry > 0;
+  const me = localPlayer();
+  const show = alive && !me.stunned && !me.mineOrder && !me.buildJob;
+  const n = show ? nearestPile(me.x, me.z, P.command.promptRange) : null;
+  const full = !!n && me.carry > 0;
   minePrompt.visible = !!n && !full;
   fullPrompt.visible = full;
   if (!n) return;
@@ -2393,8 +2395,9 @@ function fAction(p = player) {
 }
 
 function updateUpgradePrompt() {
-  const show = alive && !player.stunned && !player.buildJob && !player.upgradeJob && !player.wallCast;
-  const a = show ? fAction() : null;
+  const me = localPlayer();
+  const show = alive && !me.stunned && !me.buildJob && !me.upgradeJob && !me.wallCast;
+  const a = show ? fAction(me) : null;
   upgradePrompt.visible = !!a;
   if (!a) return;
   // 못 하면 그 이유를, 할 수 있으면 값을 그대로 보여준다 (D84).
@@ -4580,7 +4583,10 @@ function updateCamera(dt) {
   const mode = CAM_MODES[camIndex];
   const p = mode.params;
   const k = 1 - Math.exp(-p.lerp * dt);
-  camTarget.lerp(new THREE.Vector3(player.x, 0, player.z), k);
+  // **로컬 플레이어**를 따라간다 (D92-6단계). 클라에서는 그게 동료 슬롯이다 —
+  // player를 그대로 두면 P2 화면이 P1을 따라다닌다
+  const me = localPlayer();
+  camTarget.lerp(new THREE.Vector3(me.x, 0, me.z), k);
 
   if (mode.type === 'ortho') {
     const aspect = viewAspect();
@@ -4599,7 +4605,7 @@ function updateCamera(dt) {
 
   if (mode.key === 'chase') {
     // 플레이어 진행 방향 뒤에서 따라감
-    const targetYaw = Math.atan2(player.faceX, player.faceZ);
+    const targetYaw = Math.atan2(me.faceX, me.faceZ);
     let diff = targetYaw - chaseYaw;
     while (diff > Math.PI) diff -= 2 * Math.PI;
     while (diff < -Math.PI) diff += 2 * Math.PI;
@@ -6107,8 +6113,10 @@ function flashMsg(text, color = '#6ee07a') {
 // 안 그러면 P2가 치즈가 모자라 벽을 못 세울 때마다 P1 화면에 빨간 글씨가 뜬다.
 // p가 null이면(주인 없는 사건) 그냥 띄운다.
 function flashFor(p, text, color = '#6ee07a') {
-  if (p && !p.local) return;
-  flashMsg(text, color);
+  if (!p || p.local) { flashMsg(text, color); return; }
+  // 호스트가 원격 플레이어 대신 판정하므로, 그 결과는 **그쪽 화면으로 보내야** 한다.
+  // 안 보내면 P2는 벽이 안 세워지는 이유를 영영 못 본다.
+  if (net.role === 'host' && net.connected) net.send({ k: 'MSG', t: text, c: color });
 }
 
 
@@ -6244,6 +6252,7 @@ function onNetMessage(m) {
     case 'IN':     ally.in.mx = m.mx; ally.in.mz = m.mz; break;
     case 'CMD':    applyCommand(ally, m.c); break;
     case 'SNAP':   applySnapshot(m); break;
+    case 'MSG':    flashMsg(m.t, m.c); break;
   }
 }
 
@@ -6732,20 +6741,22 @@ function updateHUD() {
       : `적 ${enemies.length}마리${attacking ? ` · ${attacking}마리 공격 중!` : ''}\n`) +
     `체력 ${bar(me.hp, P.player.hp, '█', '░')} ${Math.ceil(me.hp)}\n` +
     `기운 ${bar(me.stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(me.stamina)}` +
-    (inTerritory(player.x, player.z) ? '  🌿내 땅' : '') + '\n' +
+    (inTerritory(me.x, me.z) ? '  🌿내 땅' : '') + '\n' +
     // 영토 (D86) — 벽으로 감싸 고양이가 못 오게 만든 땅의 넓이
     `영토 ${territoryArea.toFixed(0)}㎡` +
     (wallCount ? ` · 벽 ${wallCount}개` : '') +
     (territoryArea > 0 && P.res.terrIncome > 0
       ? ` · +${(territoryArea * P.res.terrIncome).toFixed(1)}/s` : '') + '\n' +
     `공방 ${maxWorkshopTier() > 0 ? `Lv.${maxWorkshopTier()}` : '없음(4)'}` +
-    ` · 일꾼 ${workers.length} · 방어병 ${guards.length}` +
-    ` · 볼주머니 ${player.carry ? player.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
+    ` · 일꾼 ${workers.filter((w) => w.owner === me.owner).length}` +
+    ` · 방어병 ${guardsOf(me.owner).length}` +
+    ` · 볼주머니 ${me.carry ? me.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') + '\n' +
     (doing ? doing + '\n' : '') +
     (warn ? warn + '\n' : '') +
-    (ally.active && ally.stunned ? '동료 기절 — 구하러 가자!\n' : '') +
-    (player.stunned ? '나: 기절!\n' : '') +
+    // '동료'는 **상대편 햄스터**다 — 클라에서는 그게 player 쪽이다
+    ((me === player ? ally.active && ally.stunned : player.stunned) ? '동료 기절 — 구하러 가자!\n' : '') +
+    (me.stunned ? '나: 기절!\n' : '') +
     (paused ? '⏸ 일시정지 (P)' : '');
   updateRes();
   renderUpgrade();   // 공방 근처 여부가 걸음마다 바뀌므로 여기서 같이 갱신 (D88)
