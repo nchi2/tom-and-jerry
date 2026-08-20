@@ -104,15 +104,32 @@ export const net = {
       else this._fail(`연결 오류: ${t || err}`);
     });
 
+    // 브로커와의 연결이 끊기면 **방 코드가 조용히 죽는다.**
+    // 친구를 기다리는 동안(탭을 옮겨 두면 특히) 실제로 일어난다 — 화면은 계속
+    // "친구를 기다리는 중"인데 상대에게는 "그런 방이 없습니다"가 뜬다.
+    // P2P 데이터 채널은 살아 있으므로, 이미 붙어 있으면 게임은 안 끊긴다.
+    peer.on('disconnected', () => {
+      if (peer.destroyed) return;
+      this.status = this.connected ? this.status : '방 서버와 끊김 — 다시 붙는 중…';
+      if (hooks.onStatus) hooks.onStatus();
+      try { peer.reconnect(); } catch { /* 이미 파괴됨 */ }
+    });
+
+    // 브로커에 다시 붙으면 'open'이 **또** 온다. 리스너를 그때마다 달면
+    // 접속 하나에 _bind가 두 번 돌아 메시지가 이중 처리된다 — 한 번만 단다.
+    let wired = false;
     peer.on('open', () => {
       if (role === 'host') {
-        this.status = `방 ${code} — 친구를 기다리는 중`;
+        this.status = this.connected ? `연결됨 (방 ${code})` : `방 ${code} — 친구를 기다리는 중`;
         if (hooks.onStatus) hooks.onStatus();
+        if (wired) return;
+        wired = true;
         peer.on('connection', (c) => {
           if (this._conn && this._conn.open) { c.close(); return; }   // 2인만 (D92)
           this._bind(c);
         });
-      } else {
+      } else if (!wired) {
+        wired = true;
         this._bind(peer.connect(PREFIX + code, { reliable: true }));
       }
     });
