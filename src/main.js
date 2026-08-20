@@ -1208,6 +1208,11 @@ for (const p of players) {
   p.stamina = P.player.stamMax; p.stamIdle = 0;
   // 지금 하고 있는 나르기 일 (D92-1e). 일꾼이 이미 w.job을 쓰고 있어 이름을 맞췄다
   p.job = null;   // 'mine' | 'drop' | null
+  // 채굴 명령과 그 경로 캐시 (D92-1e). 경로는 명령 종류를 안 가리고 공유한다 —
+  // 채굴·벽·건물 명령은 동시에 살아 있지 않기 때문이다 (stepToward 주석 참조)
+  p.mineOrder = null;      // { pile }
+  p.orderPath = [];
+  p.orderRepathT = 0;
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -1904,29 +1909,25 @@ function doCarryWork(c, dt, load, owner = 'p') {
 // **WASD로 움직이는 순간 취소**돼 자유 이동으로 돌아온다.
 // 실제 채굴/하역은 doCarryWork가 그대로 하고, 여기는 발만 대신 움직여 준다.
 // 즉 "맡겨두고 다른 걸 하다가, 위험하면 직접 개입해 빼낸다"가 조작의 뼈대다.
-let playerOrder = null;    // { pile }
-let orderPath = [];
-let orderRepathT = 0;
-
-function setMineOrder(pile) {
+function setMineOrder(pile, p = player) {
   if (!pile || pile.amount <= 0) { flashMsg('캘 수 있는 치즈더미가 아닙니다', '#e05050'); return; }
-  playerOrder = { pile };
-  orderPath = []; orderRepathT = 0;
+  p.mineOrder = { pile };
+  p.orderPath = []; p.orderRepathT = 0;
   flashMsg('자동 채굴 시작 — 움직이면 취소', '#f0c040');
 }
 
-function clearMineOrder(msg) {
-  if (!playerOrder) return;
-  playerOrder = null;
-  orderPath = [];
+function clearMineOrder(msg, p = player) {
+  if (!p.mineOrder) return;
+  p.mineOrder = null;
+  p.orderPath = [];
   if (msg) flashMsg(msg, '#9aa3b2');
 }
 
-function toggleMineOrder() {
-  if (playerOrder) { clearMineOrder('채굴 명령 취소'); return; }
-  const n = nearestPile(player.x, player.z, P.command.promptRange);
+function toggleMineOrder(p = player) {
+  if (p.mineOrder) { clearMineOrder('채굴 명령 취소', p); return; }
+  const n = nearestPile(p.x, p.z, P.command.promptRange);
   if (!n) { flashMsg('가까운 곳에 치즈더미가 없습니다', '#e05050'); return; }
-  setMineOrder(n);
+  setMineOrder(n, p);
 }
 
 // 명령 수행 — 볼주머니가 비었으면 더미로, 찼으면 창고로 걸어간다
@@ -1960,27 +1961,27 @@ function steerAroundPosts(x, z, dx, dz, r) {
 
 // 목표까지 A*로 한 걸음 걷는다 (명령 수행용 공용 이동). 도착했으면 true.
 // 채굴 명령과 벽 명령이 같은 경로 캐시를 쓴다 — 둘은 동시에 살아 있지 않다.
-function stepToward(gx, gz, stopAt, dt) {
-  if (Math.hypot(gx - player.x, gz - player.z) <= stopAt) { orderPath.length = 0; return true; }
-  orderRepathT -= dt;
-  if (orderRepathT <= 0 || !orderPath.length) {
-    orderRepathT = 0.45;
+function stepToward(gx, gz, stopAt, dt, p = player) {
+  if (Math.hypot(gx - p.x, gz - p.z) <= stopAt) { p.orderPath.length = 0; return true; }
+  p.orderRepathT -= dt;
+  if (p.orderRepathT <= 0 || !p.orderPath.length) {
+    p.orderRepathT = 0.45;
     const pass = (i) => canPass(clearHam, i, P.player.radius);
-    const res = astar(nearestPassableNav(player.x, player.z, pass), worldToNav(gx, gz), pass, () => 0);
-    orderPath = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+    const res = astar(nearestPassableNav(p.x, p.z, pass), worldToNav(gx, gz), pass, () => 0);
+    p.orderPath = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   }
-  while (orderPath.length && Math.hypot(player.x - orderPath[0].x, player.z - orderPath[0].z) < navRes * 0.9)
-    orderPath.shift();
-  const tx = orderPath.length ? orderPath[0].x : gx;
-  const tz = orderPath.length ? orderPath[0].z : gz;
-  let dx = tx - player.x, dz = tz - player.z;
+  while (p.orderPath.length && Math.hypot(p.x - p.orderPath[0].x, p.z - p.orderPath[0].z) < navRes * 0.9)
+    p.orderPath.shift();
+  const tx = p.orderPath.length ? p.orderPath[0].x : gx;
+  const tz = p.orderPath.length ? p.orderPath[0].z : gz;
+  let dx = tx - p.x, dz = tz - p.z;
   const dl = Math.hypot(dx, dz);
   if (dl > 0.03) {
     dx /= dl; dz /= dl;
-    const st = steerAroundPosts(player.x, player.z, dx, dz, P.player.radius);
-    player.x += st.x * effPlayerSpeed() * dt;
-    player.z += st.z * effPlayerSpeed() * dt;
-    player.faceX = st.x; player.faceZ = st.z;
+    const st = steerAroundPosts(p.x, p.z, dx, dz, P.player.radius);
+    p.x += st.x * effPlayerSpeed(p) * dt;
+    p.z += st.z * effPlayerSpeed(p) * dt;
+    p.faceX = st.x; p.faceZ = st.z;
   }
   return false;
 }
@@ -2155,22 +2156,22 @@ function updateBuildOrder(dt) {
   buildOrder = null;
 }
 
-function updateMineOrder(dt) {
-  const dep = nearestDepot(player.x, player.z, 'p');
+function updateMineOrder(dt, p = player) {
+  const dep = nearestDepot(p.x, p.z, p.owner);
   let gx, gz, stopAt;
-  if (player.carry > 0) {
-    if (!dep) { clearMineOrder('부릴 창고가 없다 — 명령 종료'); return; }
+  if (p.carry > 0) {
+    if (!dep) { clearMineOrder('부릴 창고가 없다 — 명령 종료', p); return; }
     gx = dep.cx; gz = dep.cz; stopAt = P.depot.dropRange * 0.7;
   } else {
-    const pile = playerOrder.pile;
+    const pile = p.mineOrder.pile;
     if (!nodes.includes(pile) || pile.amount <= 0) {
-      clearMineOrder('치즈더미가 바닥났다 — 명령 종료');
+      clearMineOrder('치즈더미가 바닥났다 — 명령 종료', p);
       return;
     }
     const w = cellToWorld(pile.i, pile.j);
     gx = w.x; gz = w.z; stopAt = P.carry.range * 0.7;
   }
-  stepToward(gx, gz, stopAt, dt);
+  stepToward(gx, gz, stopAt, dt, p);
 }
 
 // ---- 'E' 안내 빌보드 ----
@@ -2289,7 +2290,7 @@ function updateSafeMark() {
 }
 
 function updateMinePrompt() {
-  const show = alive && !player.stunned && !playerOrder && !buildJob;
+  const show = alive && !player.stunned && !player.mineOrder && !buildJob;
   const n = show ? nearestPile(player.x, player.z, P.command.promptRange) : null;
   const full = !!n && player.carry > 0;
   minePrompt.visible = !!n && !full;
@@ -4247,7 +4248,7 @@ window.addEventListener('keydown', (e) => {
     else if (wallOrders.length) clearWallOrders('벽 명령 취소');
     else if (removeMode) { removeMode = false; updateHotbar(); }
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
-    else if (playerOrder) clearMineOrder('채굴 명령 취소');
+    else if (player.mineOrder) clearMineOrder('채굴 명령 취소');
     else if (selectedUnits.size) selectedUnits.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
     else if (helpOpen) { helpOpen = false; renderHelp(); }
@@ -4720,7 +4721,7 @@ function updatePlayer(dt) {
     const ml = Math.hypot(mx, mz);
     if (ml > 1e-4) {
       // 직접 움직이면 걸어둔 명령은 전부 풀린다 — 개입이 항상 우선이다
-      if (playerOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
+      if (player.mineOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
       if (wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소');
       if (buildOrder) { buildOrder = null; flashMsg('직접 이동 — 건물 명령 취소', '#9aa3b2'); }
       wallCast = null;
@@ -4733,7 +4734,7 @@ function updatePlayer(dt) {
       updateBuildOrder(dt);       // 건물 명령이 최우선 (하나뿐이고 비싸다)
     } else if (wallOrders.length) {
       updateWallOrder(dt);        // 벽 명령이 채굴보다 우선 (방금 내린 지시니까)
-    } else if (playerOrder) {
+    } else if (player.mineOrder) {
       updateMineOrder(dt);
     }
   }
@@ -4914,8 +4915,8 @@ function updatePlayer(dt) {
     if (buildPressed && valid && hasTile) {
       if (!wallOrders.some((o) => o.i === gi && o.j === gj)) {
         wallOrders.push({ i: gi, j: gj });
-        if (playerOrder) clearMineOrder();
-        orderPath.length = 0; orderRepathT = 0;
+        if (player.mineOrder) clearMineOrder();
+        player.orderPath.length = 0; player.orderRepathT = 0;
       }
     }
   } else if (unitSlot) {
@@ -4928,8 +4929,8 @@ function updatePlayer(dt) {
     }
   } else if (buildPressed && hasTile && !lock) {
     buildOrder = { kind: slot.key, i: gi, j: gj };
-    orderPath.length = 0; orderRepathT = 0;
-    if (playerOrder) clearMineOrder();
+    player.orderPath.length = 0; player.orderRepathT = 0;
+    if (player.mineOrder) clearMineOrder();
   } else if (buildPressed && lock) {
     flashMsg(lock, '#e05050');
   }
@@ -5644,8 +5645,7 @@ function restart() {
   clearPickups();
   clearGuards();
   clearWorkers();
-  playerOrder = null;
-  orderPath = [];
+  for (const q of players) { q.mineOrder = null; q.orderPath = []; q.orderRepathT = 0; }
   if (menuOpen) setMenu(false);
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   removeMode = false;
@@ -6182,7 +6182,7 @@ function updateHUD() {
     : upgradeJob ? `⬆ ${BLDG_INFO[upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
     : buildOrder ? `🏗 ${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중`
     : wallOrders.length ? `🧱 벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ''}`
-    : playerOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
+    : player.mineOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
     : player.job === 'mine' ? '⛏ 채굴'
     : player.job === 'drop' ? '📦 하역'
     : removeMode ? '✖ 철거 모드 (X로 끄기)'
@@ -6348,7 +6348,7 @@ window.__game = {
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
   selWorkers, selGuards, GUARD_TYPES,
-  get playerOrder() { return playerOrder; },
+  get playerOrder() { return player.mineOrder; },
   get minePromptVisible() { return minePrompt.visible; },
   get safeMarkVisible() { return safeMark.visible; },
   get safeMarkPos() { return { x: safeMark.position.x, z: safeMark.position.z }; },
