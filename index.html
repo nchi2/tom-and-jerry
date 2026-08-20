@@ -41,6 +41,46 @@
     #res .parts { border-color: #2f5570; }
     body.gui-on #res, body.gui-on #net { right: 268px; }
     body.hud-off #hud { display: none; }
+    /* 시작 화면 (D93) — 몇 명이 할지부터 고르고 들어간다.
+       예전에는 페이지를 열면 곧장 솔로가 굴러가서, 멀티로 넘어가는 게
+       "이미 돌아가는 판 위에 접속을 얹는" 모양이 됐다. */
+    #start {
+      position: fixed; inset: 0; z-index: 30;
+      display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(circle at 50% 35%, #232a3d 0%, #12151d 70%);
+      font-family: system-ui, sans-serif; color: #e8ecf4;
+    }
+    #start.hidden { display: none; }
+    #start .panel { width: 380px; max-width: 88vw; text-align: center; }
+    #start h1 { font-size: 34px; margin: 0 0 4px; letter-spacing: -0.5px; }
+    #start .sub { color: #8b94a8; font-size: 13px; margin-bottom: 22px; }
+    #start button {
+      display: block; width: 100%; margin: 8px 0; padding: 14px 16px;
+      background: #2a3350; color: #e8ecf4; border: 1px solid #3f4a6b; border-radius: 10px;
+      font-size: 16px; font-weight: 600; cursor: pointer; text-align: left;
+      font-family: inherit; transition: background .12s, border-color .12s;
+    }
+    #start button:hover:not(:disabled) { background: #37456b; border-color: #6ee07a; }
+    #start button .k { color: #8b94a8; font-size: 12px; font-weight: 400; display: block; margin-top: 3px; }
+    #start button:disabled { opacity: .45; cursor: default; }
+    #start .back {
+      background: none; border: none; color: #8b94a8; font-size: 13px;
+      width: auto; margin: 14px auto 0; padding: 6px; text-align: center;
+    }
+    #start input {
+      width: 100%; box-sizing: border-box; margin: 8px 0; padding: 13px 14px;
+      background: #171c28; color: #e8ecf4; border: 1px solid #3f4a6b; border-radius: 10px;
+      font-family: "SF Mono", Menlo, monospace; font-size: 20px; letter-spacing: 5px;
+      text-transform: uppercase; text-align: center;
+    }
+    #start .code {
+      font-family: "SF Mono", Menlo, monospace; font-size: 34px; font-weight: 700;
+      letter-spacing: 8px; color: #6ee07a; padding: 14px 0 6px;
+    }
+    #start .msg { color: #8fd6ff; font-size: 13px; min-height: 18px; margin-top: 10px; }
+    #start .msg.bad { color: #ff8b8b; }
+    #start .step { display: none; }
+    #start .step.on { display: block; }
     #overlay {
       position: fixed; inset: 0; z-index: 20;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -143,6 +183,18 @@
       padding: 4px 10px; color: #9aa3b2; pointer-events: none; display: none;
     }
     #net.on { display: block; }
+    /* 접속 개발 패널 (D93, F9) — "렉이 심하다"를 숫자로 바꾼다 */
+    #netdev {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 14;
+      background: rgba(10, 13, 20, 0.92); border: 1px solid #3a4054; border-radius: 8px;
+      padding: 8px 12px; color: #c3cbdb; pointer-events: none; display: none;
+      font-family: "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.55;
+      white-space: pre; min-width: 300px;
+    }
+    #netdev.on { display: block; }
+    #netdev b { color: #8fd6ff; }
+    #netdev .warn { color: #ffb347; }
+    #netdev .bad { color: #ff6b6b; }
     #net b { color: #6ee07a; letter-spacing: 2px; }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
@@ -156,6 +208,7 @@
 <body>
   <div id="hud"></div>
   <div id="net"></div>
+  <div id="netdev"></div>
   <div id="res"></div>
   <div id="help"></div>
   <div id="flash"></div>
@@ -172,15 +225,45 @@
     <button id="m-quit">종료</button>
     <div class="maps" id="m-maplist"></div>
     <div class="net">
-      <button id="m-host">친구 초대 (방 만들기)</button>
-      <div class="code" id="m-code"></div>
-      <input id="m-join-code" maxlength="6" placeholder="방 코드" />
-      <button id="m-join">방 코드로 참가</button>
-      <button id="m-leave">멀티 끊기</button>
+      <button id="m-invite">2인 협동 — 방 만들기 / 참가</button>
+      <button id="m-leave">멀티 끊기 (혼자 하기)</button>
       <div class="netmsg" id="m-netmsg"></div>
     </div>
     <div class="hint">ESC로 닫기</div>
   </div></div>
+  <div id="start">
+    <div class="panel">
+      <h1>톰과 제리</h1>
+      <div class="sub">작은 햄스터, 큰 고양이. 틈이 좁으면 못 지나간다</div>
+
+      <div class="step on" id="s-mode">
+        <button id="s-solo">1인 플레이<span class="k">혼자. AI 동료가 은신처를 짓고 구하러 온다</span></button>
+        <button id="s-two">2인 협동<span class="k">방 코드로 친구와. 살림은 따로, 잡히면 서로 구한다</span></button>
+        <button id="s-four" disabled>3~4인 협동<span class="k">예정 — 아직 안 됩니다</span></button>
+      </div>
+
+      <div class="step" id="s-two-menu">
+        <button id="s-create">방 만들기<span class="k">코드가 나오면 친구에게 불러 주세요</span></button>
+        <button id="s-joinform">방 코드로 참가<span class="k">친구가 부른 여섯 글자를 입력</span></button>
+        <button class="back" id="s-back1">← 뒤로</button>
+      </div>
+
+      <div class="step" id="s-hosting">
+        <div class="sub">친구에게 이 코드를 불러 주세요</div>
+        <div class="code" id="s-code">······</div>
+        <div class="msg" id="s-hostmsg">방 여는 중…</div>
+        <button class="back" id="s-back2">← 취소</button>
+      </div>
+
+      <div class="step" id="s-joining">
+        <div class="sub">친구가 불러 준 코드</div>
+        <input id="s-code-in" maxlength="6" placeholder="ABC123" autocomplete="off" />
+        <button id="s-connect">접속</button>
+        <div class="msg" id="s-joinmsg"></div>
+        <button class="back" id="s-back3">← 뒤로</button>
+      </div>
+    </div>
+  </div>
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
     <p id="overlay-sub">R 키로 다시 시작</p>

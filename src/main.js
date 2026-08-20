@@ -608,7 +608,9 @@ const obstacles = new Map();
 // (건물은 12채뿐이라 그냥 스냅샷에 통째로 싣는다 — 이벤트를 둘 만들 이유가 없다)
 let wallEvents = [];
 let wallEvMute = 0;   // 초기 생성·맵 재구성처럼 통째로 다시 보낼 때는 개별 이벤트를 막는다
-const wallEv = (e) => { if (!wallEvMute && netAuthoring()) wallEvents.push(e); };
+// **접속돼 있을 때만** 쌓는다. 예전엔 솔로에서도 쌓기만 하고 비우는 곳이 없어서
+// 벽을 세울 때마다 배열이 자랐다 (아무도 안 읽는 쓰레기).
+const wallEv = (e) => { if (!wallEvMute && net.role === 'host' && net.connected) wallEvents.push(e); };
 const wallGeo = new THREE.BoxGeometry(1, 1, 1);
 // 플레이어 벽은 **원기둥**이다 (D59). 사각 기둥이면 대각 관문이 코너-코너 거리라
 // √2×(틈)밖에 안 나오는데, 원이면 중심거리 자체가 √2배로 벌어져 관문이 훨씬 넓다.
@@ -4324,6 +4326,8 @@ function updateEnemy(enemy, dt) {
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
+  // 시작 화면 위에서는 게임 단축키를 받지 않는다 (D93) — 코드 입력칸이 R·P·G를 먹히면 안 된다
+  if (!started) return;
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
   // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
@@ -4360,6 +4364,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
   if (e.code === 'KeyH') { helpOpen = !helpOpen; renderHelp(); }
   if (e.code === 'KeyG') setGui(!guiOpen);            // 튜닝 패널 (D91)
+  if (e.code === 'F9') { netDevOn = !netDevOn; netDevEl.classList.toggle('on', netDevOn); renderNetDev(); }
   if (e.code === 'Backquote') setHud(!hudOn);         // 좌상단 개발 정보 (D91)
   // 숫자키 = **구매 모드(U)일 때만** 개조 구매, 아니면 건설 슬롯 선택.
   // 공방 옆에서 패널이 저절로 떠도(D88) 숫자키는 핫바를 계속 쓴다 —
@@ -4569,7 +4574,10 @@ const CAM_MODES = [
     params: { pitch: 22, dist: 6, fov: 72, lerp: 10 },
   },
 ];
-let camIndex = 1; // 기본 = 쿼터뷰 (2번)
+// 판이 시작될 때마다 여기로 되돌린다 (D93) — 시점이 판마다 달라지면
+// "어째서인지 시점이 바뀐다"가 된다. C로 바꾼 건 그 판 안에서만 유지된다.
+const DEFAULT_CAM = 1;   // 쿼터뷰 (스타크래프트풍)
+let camIndex = DEFAULT_CAM;
 let chaseYaw = Math.PI; // 플레이어 시선 따라가는 요
 const camTarget = new THREE.Vector3(player.x, 0, player.z);
 
@@ -5910,7 +5918,8 @@ function restart() {
   clearPickups();
   clearGuards();
   clearWorkers();
-  for (const q of players) { q.mineOrder = null; q.orderPath = []; q.orderRepathT = 0; }
+  for (const q of players) { q.mineOrder = null; q.orderPath = []; q.orderRepathT = 0; q.buf = null; }
+  renderT = 0; lastSnapT = -1;   // 보간 시계도 새 판에서 다시 맞춘다 (D93)
   if (menuOpen) setMenu(false);
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   removeMode = false;
@@ -6204,19 +6213,113 @@ document.getElementById('m-quit').onclick = () => {
 // ============================================================
 const netEl = document.getElementById('net');
 const netMsgEl = document.getElementById('m-netmsg');
-const netCodeEl = document.getElementById('m-code');
+
+// ---- 시작 화면 (D93) ----
+// 페이지를 열면 곧장 솔로가 굴러가던 것을 멈췄다. 그게 멀티를 "이미 돌아가는 판 위에
+// 접속을 얹는" 모양으로 만들었고, 실제로 그 때문에 참가자 화면이 안 넘어갔다.
+// 이제 **몇 명이 할지 고르기 전에는 시뮬이 시작되지 않는다.**
+const startEl = document.getElementById('start');
+let started = false;
+
+function showStep(id) {
+  for (const el of startEl.querySelectorAll('.step')) el.classList.toggle('on', el.id === id);
+}
+
+function openStart(step = 's-mode') {
+  started = false;
+  paused = true;
+  startEl.classList.remove('hidden');
+  showStep(step);
+}
+
+// 실제로 판을 시작한다. 여기 한 곳만 지나면 되도록 모아 뒀다 —
+// 솔로도 2P도 **같은 출발선**(재시작 + 기본 시점)에서 시작해야
+// "어째서인지 시점이 바뀐다" 같은 게 안 생긴다.
+function beginMatch() {
+  startEl.classList.add('hidden');
+  started = true;
+  setMenu(false);
+  setCamera(DEFAULT_CAM);
+  restart();
+}
 
 function renderNet() {
-  const on = net.role !== 'solo' || !!net.status;
+  const on = net.role !== 'solo';
   netEl.classList.toggle('on', on);
   if (on) {
-    const who = net.role === 'host' ? '호스트' : net.role === 'client' ? '참가' : '';
+    const who = net.role === 'host' ? '호스트' : '참가';
     netEl.innerHTML = net.connected
       ? `${who} · 방 <b>${net.code}</b> · ${net.rtt}ms`
       : `${net.status}`;
   }
-  netMsgEl.textContent = net.status;
-  netCodeEl.textContent = net.role === 'host' ? net.code : '';
+  netMsgEl.textContent = net.role === 'solo' ? '' : net.status;
+  const hm = document.getElementById('s-hostmsg');
+  const jm = document.getElementById('s-joinmsg');
+  if (net.role === 'host' && !started) {
+    document.getElementById('s-code').textContent = net.code || '······';
+    hm.textContent = net.status;
+    hm.classList.toggle('bad', !net.code);
+  }
+  if (net.role !== 'host' && !started && jm) {
+    jm.textContent = net.connected ? '' : net.status;
+    jm.classList.toggle('bad', /못|없|막|오류|끊/.test(net.status));
+  }
+}
+
+// ============================================================
+// 접속 개발 패널 (D93) — F9
+//  멀티가 붙고 나서 "렉이 심하다"는 지적을 받았는데, 그게 프레임 문제인지
+//  스냅샷이 안 오는 건지 보간이 뒤처지는 건지 **화면만 봐서는 구분이 안 됐다.**
+//  그래서 원인별로 숫자를 하나씩 띄운다. 여기 뜨는 값의 이름이 곧 의심 목록이다.
+// ============================================================
+const netDevEl = document.getElementById('netdev');
+let netDevOn = false;
+// 프레임 시간과 스냅샷 도착을 굴러가는 창으로 센다
+const frameMs = [];
+let snapTimes = [];
+let lastFrameAt = performance.now();
+
+function noteFrame() {
+  const now = performance.now();
+  frameMs.push(now - lastFrameAt);
+  lastFrameAt = now;
+  if (frameMs.length > 120) frameMs.shift();
+}
+function noteSnap() {
+  const now = performance.now();
+  snapTimes.push(now);
+  snapTimes = snapTimes.filter((t) => now - t < 2000);
+}
+
+function renderNetDev() {
+  if (!netDevOn) return;
+  const n = frameMs.length;
+  const sorted = [...frameMs].sort((a, b) => a - b);
+  const p50 = n ? sorted[n >> 1] : 0;
+  const p95 = n ? sorted[Math.floor(n * 0.95)] : 0;
+  const fps = p50 > 0 ? Math.round(1000 / p50) : 0;
+  const snapHz = (snapTimes.length / 2).toFixed(1);
+  const kbs = net.role === 'host' ? net.sentBytes : net.recvBytes;
+  const me = localPlayer();
+  // 예측 오차 = 내가 그리는 내 위치와 호스트가 말하는 내 위치의 차이
+  const err = me.netX !== undefined ? Math.hypot(me.x - me.netX, me.z - me.netZ) : 0;
+  // 보간 지연 = 지금 그리는 시각이 최신 스냅보다 얼마나 과거인가
+  const behind = lastSnapT >= 0 ? lastSnapT - renderT : 0;
+  const cls = (v, warn, bad) => (v >= bad ? 'bad' : v >= warn ? 'warn' : '');
+  netDevEl.innerHTML =
+    `<b>F9 접속 진단</b>  ${net.role}${net.connected ? '' : ' (미접속)'}
+` +
+    `프레임   ${fps}fps  p50 ${p50.toFixed(1)}ms  <span class="${cls(p95, 20, 33)}">p95 ${p95.toFixed(1)}ms</span>
+` +
+    `RTT      ${net.rtt}ms   스냅 수신 ${snapHz}/s (목표 ${P.net.rate})
+` +
+    `누적     보냄 ${Math.round(net.sentBytes / 1024)}KB · 받음 ${Math.round(net.recvBytes / 1024)}KB
+` +
+    `보간     ${(behind * 1000).toFixed(0)}ms 뒤 (설정 ${(P.net.interpDelay * 1000).toFixed(0)}ms)
+` +
+    `예측오차 <span class="${cls(err, 0.4, 1.2)}">${err.toFixed(2)}m</span> (스냅 임계 ${P.net.smoothMax}m)
+` +
+    `개체     적 ${enemies.length} · 일꾼 ${workers.length} · 방어병 ${guards.length} · 벽 ${obstacles.size}`;
 }
 
 // 상대에게 넘길 초기 상태. 벽은 이벤트가 아니라 여기서 통째로 간다 (~300칸)
@@ -6239,7 +6342,8 @@ function fullSnapshot() {
 // **설정 동기화는 공짜다** — snapshotSettings/applySettings를 그대로 재사용한다 (D92-5단계).
 function applyFull(f) {
   if (!f) return;
-  if (f.map !== undefined && f.map !== mapIndex) setMap(f.map);
+  // 맵이 다르면 통째로 다시 만든다 (setMap의 호스트 가드는 여기선 지나가야 하므로 rebuild 직접)
+  if (f.map !== undefined && f.map !== mapIndex) { rebuildWorld(f.map); restart(); }
   else restart();
   if (f.settings) applySettings(f.settings);
   stage = f.stage; stageT = f.stageT; survival = f.survival;
@@ -6249,6 +6353,7 @@ function applyFull(f) {
   allyVis.group.scale.setScalar(P.ally.radius);
   ally.active = true; ally.ai = false; ally.local = true;
   player.local = false;
+  if (!started) beginMatch();   // 시작 화면을 닫고 호스트와 같은 출발선에서 시작 (D93)
   // 재시작 때도 같은 HELLO가 오므로 인사는 처음 한 번만 (안 그러면 매번 화면을 덮는다)
   if (!greeted) { greeted = true; flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a'); }
 }
@@ -6262,15 +6367,18 @@ const netHooks = {
       // 2P 시작 — 동료 슬롯을 사람에게 넘긴다
       ally.ai = false;
       ally.local = false;
+      player.local = true;
       ally.active = true;
       ally.stunned = false;
       // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 여기서만 덮어쓴다 (D92)
       P.ally.radius = P.player.radius;      // 안 맞추면 P2 히트박스가 35% 크다
       allyVis.group.scale.setScalar(P.ally.radius);
       ally.cheese = startResources();        // 솔로 동료는 벽 12개분뿐이라 창고를 못 짓는다 (D64)
-      ally.x = PLAYER_SPAWN.x + 1.4; ally.z = PLAYER_SPAWN.z + 0.6;
+      // **판을 새로 시작한다** (D93). 예전에는 호스트가 하던 솔로 판에 상대를 얹어서,
+      // 참가자는 이미 굴러가던 세계 한복판에 떨어졌고 화면이 안 넘어가는 것처럼 보였다.
+      beginMatch();
       net.send({ k: 'HELLO', full: fullSnapshot() });
-      flashMsg('친구가 들어왔다! 동료 자리를 넘겼다', '#6ee07a');
+      flashMsg('친구가 들어왔다! 같이 시작', '#6ee07a');
     }
     renderNet();
   },
@@ -6279,6 +6387,7 @@ const netHooks = {
     // 상대가 나가면 동료 자리를 AI에게 돌려준다 (게임이 안 끊긴다)
     if (ally.local) { ally.local = false; player.local = true; }
     ally.ai = true;
+    // 아직 시작 화면에 있었다면(방을 열어 두고 기다리는 중) 거기 머문다
     renderNet();
   },
   onMessage: (m) => onNetMessage(m),
@@ -6290,7 +6399,7 @@ function onNetMessage(m) {
     case 'HELLO':  applyFull(m.full); break;
     case 'IN':     ally.in.mx = m.mx; ally.in.mz = m.mz; break;
     case 'CMD':    applyCommand(ally, m.c); break;
-    case 'SNAP':   applySnapshot(m); break;
+    case 'SNAP':   noteSnap(); applySnapshot(m); break;
     case 'MSG':    flashMsg(m.t, m.c); break;
     case 'SET':    applySettings(m.s); break;
   }
@@ -6363,10 +6472,78 @@ function sendSnapshot(dt) {
   net.send(msg);
 }
 
-// 원격 개체는 스냅샷 위치로 **당겨 간다**. 20Hz 스냅을 그대로 찍으면 뚝뚝 끊겨 보이고,
-// 지수 감쇠로 당기면 한 스냅 간격 안에 따라잡으면서 부드럽다.
-// 다만 오차가 크면(잡힘·구출처럼 순간이동에 가까운 사건) 부드럽게 끌면 오히려 이상하므로 즉시 스냅한다.
-function pullTo(o, x, z, dt, rate = 18) {
+// ---- 원격 개체 보간 (D93) ----
+// 예전엔 "마지막으로 받은 위치로 지수 감쇠로 당기기"였는데, 그건 **항상 뒤처진다.**
+// 목표가 스냅샷 시점의 위치라 상대가 계속 움직이는 동안 절대 따라잡지 못하고,
+// 스냅이 올 때마다 훅 당겨진다 — 그게 "렉이 심하다"로 보인다.
+//
+// 대신 **스냅샷 두 장 사이를 시간으로 보간**한다. 화면은 호스트보다 interpDelay만큼
+// 과거를 그리지만, 속도가 맞아서 부드럽다. 표준적인 맞바꿈이다.
+//   b0/b1 = 직전/최신 스냅샷의 (시각, 위치). renderT = 지금 그리는 호스트 시각.
+// 표본은 **여러 장 쌓아 둔다.** 두 장만 들고 있으면 커버할 수 있는 시간이 스냅 간격
+// 하나뿐이라, interpDelay가 그보다 크면 렌더 시각이 항상 가장 오래된 표본보다 앞서서
+// 보간 계수가 0에 붙는다 — 개체가 멈춰 있다가 스냅마다 뚝 뛴다. 실측으로 잡은 버그다
+// (119프레임 중 89프레임이 정지, 흔들림 1.79).
+const BUF_MAX = 12;
+function pushSample(o, t, x, z, fx, fz) {
+  if (!o.buf) o.buf = [];
+  const last = o.buf[o.buf.length - 1];
+  if (last && last.t >= t) return;         // 순서가 뒤집힌 스냅은 버린다
+  o.buf.push({ t, x, z, fx, fz });
+  if (o.buf.length > BUF_MAX) o.buf.shift();
+}
+
+let renderT = 0, lastSnapT = -1;
+
+// 실제로 쓸 지연. 설정값이 스냅 간격보다 너무 작으면 버퍼가 비어 끊기므로
+// **최소 1.5 스냅 간격**은 확보한다 (rate를 낮게 돌려도 안 깨지게).
+const effInterpDelay = () => Math.max(P.net.interpDelay, 1.5 / Math.max(P.net.rate, 1));
+
+function interpEntity(o) {
+  const b = o.buf;
+  if (!b || !b.length) return;
+  const newest = b[b.length - 1];
+  let nx, nz, fx, fz;
+  if (renderT >= newest.t) {
+    // 표본이 아직 안 왔다 — 지어내지 않고 최신 표본에 머문다
+    // (외삽하면 벽을 뚫고 미끄러지는 그림이 나온다)
+    nx = newest.x; nz = newest.z; fx = newest.fx; fz = newest.fz;
+  } else {
+    let i = b.length - 1;
+    while (i > 0 && b[i - 1].t > renderT) i--;
+    const s0 = b[Math.max(i - 1, 0)], s1 = b[i];
+    const span = s1.t - s0.t;
+    const a = span > 1e-6 ? Math.max(0, Math.min(1, (renderT - s0.t) / span)) : 1;
+    nx = s0.x + (s1.x - s0.x) * a;
+    nz = s0.z + (s1.z - s0.z) * a;
+    if (s1.fx !== undefined && s0.fx !== undefined) {
+      fx = s0.fx + (s1.fx - s0.fx) * a;
+      fz = s0.fz + (s1.fz - s0.fz) * a;
+    }
+    // 오래된 표본은 버린다
+    if (i > 1) b.splice(0, i - 1);
+  }
+  // 잡힘·구출처럼 순간이동에 가까운 사건은 보간하면 맵을 가로질러 미끄러진다 — 즉시 스냅
+  if (Math.hypot(nx - o.x, nz - o.z) > P.net.smoothMax) { o.x = newest.x; o.z = newest.z; o.buf = [newest]; }
+  else { o.x = nx; o.z = nz; }
+  if (fx !== undefined) {
+    const l = Math.hypot(fx, fz);
+    if (l > 1e-4) { o.faceX = fx / l; o.faceZ = fz / l; }
+  }
+}
+
+// 렌더 시계 — dt로 흐르되 "최신 스냅 − 지연"을 향해 살살 맞춘다.
+// 너무 벌어지면(탭이 잠들었다 깨는 등) 그냥 점프한다.
+function advanceRenderClock(dt) {
+  if (lastSnapT < 0) return;
+  renderT += dt;
+  const target = lastSnapT - effInterpDelay();
+  if (Math.abs(target - renderT) > 0.5) renderT = target;
+  else renderT += (target - renderT) * (1 - Math.exp(-4 * dt));
+}
+
+// 내 몸은 예측하므로 보간이 아니라 **오차 보정**이다 (D92 예측 규칙)
+function pullTo(o, x, z, dt, rate = 12) {
   const d = Math.hypot(x - o.x, z - o.z);
   if (d > P.net.smoothMax) { o.x = x; o.z = z; return; }
   const k = 1 - Math.exp(-rate * dt);
@@ -6378,6 +6555,8 @@ let lastSnap = null;
 let overlayWasVictory = false;
 function applySnapshot(m) {
   lastSnap = m;
+  if (lastSnapT < 0) renderT = m.t - effInterpDelay();   // 첫 스냅에서 시계를 맞춘다
+  lastSnapT = m.t;
   survival = m.t; stage = m.st; stageT = m.sT; killCount = m.ki;
   territoryArea = m.tr; victory = !!m.vi;
   // 게임의 끝은 호스트가 정한다. 클라는 오버레이 문구만 맞춰 준다
@@ -6400,7 +6579,8 @@ function applySnapshot(m) {
     const p = players[k];
     if (!p) return;
     p.netX = a[0]; p.netZ = a[1];
-    p.faceX = a[2]; p.faceZ = a[3];
+    if (!p.local) pushSample(p, m.t, a[0], a[1], a[2], a[3]);
+    else { p.faceX = a[2]; p.faceZ = a[3]; }
     p.hp = a[4]; p.stunned = !!a[5];
     p.rollSpin = a[7];
     p.cheese = a[8]; p.parts = a[9]; p.stamina = a[10];
@@ -6412,17 +6592,19 @@ function applySnapshot(m) {
     p.wallOrderCount = a[18]; p.hasBuildOrder = !!a[19];
     p.mineOrder = a[20] ? (p.mineOrder || { pile: null }) : null;
     // **내 몸은 예측한다** — rollT는 내가 굴린 걸 내가 안다 (D92 예측 규칙)
-    if (!p.local) { p.rollT = a[6]; p.x = p.netX; p.z = p.netZ; }
+    if (!p.local) p.rollT = a[6];   // 위치는 보간이 맡는다
   });
 
   // ---- 적 ----
   syncList(enemies, m.en, (a) => {
     const e = makeEnemy(SNAP_TYPES[a[6]], enemies.length);
     e.id = a[0];
+    e.x = a[1]; e.z = a[2];        // 보간 첫 프레임에 스폰 지점에서 미끄러져 오지 않게
     enemies.push(e);
     return e;
   }, (e, a) => {
-    e.netX = a[1]; e.netZ = a[2]; e.dirX = a[3]; e.dirZ = a[4];
+    pushSample(e, m.t, a[1], a[2]);
+    e.dirX = a[3]; e.dirZ = a[4];
     e.hp = a[5]; e.windupPull = a[7]; e.isAttacking = !!a[8];
   }, (e) => {
     scene.remove(e.vis.group); disposeBar(e.bar);
@@ -6430,12 +6612,12 @@ function applySnapshot(m) {
   });
 
   syncList(workers, m.wk, (a) => newWorker(a[5] ? 'a' : 'p', a[0], a[1], a[2]),
-    (w, a) => { w.netX = a[1]; w.netZ = a[2]; w.faceX = a[3]; w.faceZ = a[4];
+    (w, a) => { pushSample(w, m.t, a[1], a[2], a[3], a[4]);
                 w.job = jobName(a[6]); w.mineT = a[7]; },
     (w) => disposeWorker(w));
 
   syncList(guards, m.gu, (a) => newGuard(SNAP_GUARDS[a[7]], a[6] ? 'a' : 'p', a[0], a[1], a[2]),
-    (g, a) => { g.netX = a[1]; g.netZ = a[2]; g.faceX = a[3]; g.faceZ = a[4];
+    (g, a) => { pushSample(g, m.t, a[1], a[2], a[3], a[4]);
                 g.hp = a[5]; g.swing = a[8]; },
     (g) => { scene.remove(g.vis.group); scene.remove(g.ring); g.ring.material.dispose();
              if (g.bar) disposeBar(g.bar); selectedUnits.delete(g); });
@@ -6500,22 +6682,49 @@ function syncList(list, rows, make, apply, dispose) {
   }
 }
 
-document.getElementById('m-host').onclick = () => {
+// ---- 시작 화면 버튼 (D93) ----
+const $ = (id) => document.getElementById(id);
+
+$('s-solo').onclick = () => {
+  net.leave();
+  player.local = true; ally.local = false; ally.ai = true;
+  beginMatch();
+};
+$('s-two').onclick = () => showStep('s-two-menu');
+$('s-back1').onclick = () => showStep('s-mode');
+
+$('s-create').onclick = () => {
+  showStep('s-hosting');
+  $('s-code').textContent = '······';
   net.host(netHooks);
   renderNet();
 };
-document.getElementById('m-join').onclick = () => {
-  const code = document.getElementById('m-join-code').value;
-  if (!code) { net.status = '방 코드를 입력하세요'; renderNet(); return; }
+$('s-back2').onclick = () => { net.leave(); showStep('s-two-menu'); renderNet(); };
+
+$('s-joinform').onclick = () => { showStep('s-joining'); $('s-code-in').focus(); };
+$('s-back3').onclick = () => { net.leave(); showStep('s-two-menu'); renderNet(); };
+
+function doJoin() {
+  const code = $('s-code-in').value.trim();
+  if (code.length < 4) { net.status = '여섯 글자 코드를 입력하세요'; renderNet(); return; }
   net.join(code, netHooks);
   // 클라는 동료 슬롯을 자기 몸으로 쓴다
   player.local = false;
   ally.local = true; ally.ai = false; ally.active = true;
   renderNet();
-};
-document.getElementById('m-leave').onclick = () => {
+}
+$('s-connect').onclick = doJoin;
+$('s-code-in').addEventListener('keydown', (e) => {
+  e.stopPropagation();                       // 게임 단축키가 코드 입력을 먹지 않게
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') doJoin();
+});
+
+// ---- ESC 메뉴의 멀티 항목 ----
+$('m-invite').onclick = () => { setMenu(false); net.leave(); openStart('s-two-menu'); renderNet(); };
+$('m-leave').onclick = () => {
   net.leave();
   player.local = true; ally.local = false; ally.ai = true;
+  setMenu(false);
   renderNet();
 };
 
@@ -6844,6 +7053,7 @@ measureTop(playerVis); measureTop(allyVis);
 rebuildWorld(mapIndex);      // 지형·광맥·바닥·스폰 생성 + clearance
 restart();                   // 동료·스테이지·업그레이드까지 초기 상태로
 updateHotbar();
+openStart();                 // **판은 아직 시작하지 않는다** — 몇 명이 할지부터 고른다 (D93)
 
 window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
@@ -6861,7 +7071,7 @@ function tickClient(dt) {
   sampleLocalInput(me);
   sendInput(me, dt);
 
-  if (!paused && alive && !me.stunned) {
+  if (!paused && alive && started && !me.stunned) {
     // 자기 위치와 구르기만 예측한다. 명령·소비·체력은 예측하지 않는다 —
     // 이중 지불 고무줄이 80ms 지연보다 훨씬 나쁘다 (D92 예측 규칙)
     if (me.rollT > 0) {
@@ -6882,9 +7092,10 @@ function tickClient(dt) {
     if (me.netX !== undefined) pullTo(me, me.netX, me.netZ, dt, 12);
   }
 
-  // 원격 개체 — 스냅샷 위치로 부드럽게
-  for (const list of [enemies, workers, guards])
-    for (const o of list) if (o.netX !== undefined) pullTo(o, o.netX, o.netZ, dt);
+  // 원격 개체 — 스냅샷 두 장 사이를 시간으로 보간한다 (D93)
+  advanceRenderClock(dt);
+  for (const list of [enemies, workers, guards]) for (const o of list) interpEntity(o);
+  for (const q of players) if (!q.local) interpEntity(q);
 
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) flashEl.style.opacity = '0'; }
   flushNavDirty();   // 스냅샷이 벽을 바꿨으면 영토·은신처 계산도 따라가야 한다
@@ -6899,8 +7110,9 @@ function tickClient(dt) {
   paintTerritory();
   updateFx(dt);
   updateCamera(dt);
+  noteFrame();
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); renderNetDev(); }
 }
 
 // 시뮬이 아니라 **그리기만** 하는 부분 — 클라에서 적·유닛·건물의 모델을 제자리에 놓는다.
@@ -6939,7 +7151,7 @@ function presentWorld(dt) {
 
 function tick(dt) {
   if (net.role === 'client') { tickClient(dt); return; }
-  if (!paused && alive) {
+  if (!paused && alive && started) {
     survival += dt;
     updatePlayer(dt);
     for (const p of players) if (p.grace > 0) p.grace -= dt;
@@ -7020,8 +7232,9 @@ function tick(dt) {
     c.position.x += (Math.random() - 0.5) * camShake * 0.9;
     c.position.z += (Math.random() - 0.5) * camShake * 0.9;
   }
+  noteFrame();
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); renderNetDev(); }
   sendSnapshot(dt);
   sendSettings(dt);
 }
@@ -7060,6 +7273,9 @@ window.__game = {
   net, byId, get entSeq() { return entSeq; },
   get territory() { return territory; }, get territoryArea() { return territoryArea; },
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
+  beginMatch, openStart, get started() { return started; }, get paused() { return paused; },
+  applySnapshot, fullSnapshot, applyFull, sendSnapshot,
+  get renderT() { return renderT; }, get lastSnapT() { return lastSnapT; },
   applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },

@@ -31,6 +31,7 @@ window.__freeCell = (kind, minD = 0) => {
 
 window.__verify = () => {
   const g = window.__game;
+  if (!g.started) g.beginMatch();   // 시작 화면을 지나야 시뮬이 돈다 (D93)
   const R = (v) => Math.round(v * 10) / 10;
   const out = [];
   const spawnAt = () => { g.player.x = g.PLAYER_SPAWN.x; g.player.z = g.PLAYER_SPAWN.z; };
@@ -281,4 +282,133 @@ window.__verify = () => {
              kills: g.killCount, errs: window.__errs.length, msgs: window.__errs.slice(0, 4) });
   g.restart();
   return out;
+};
+
+// ---- 프레임 비용 측정 (D92 렉 추적용) ----
+// rAF는 숨은 탭에서 멈추므로 tick()을 직접 재서 **CPU 비용만** 본다.
+window.__profile = (secs = 4) => {
+  const g = window.__game;
+  if (!g.started) g.beginMatch();
+  const n = Math.round(secs * 60);
+  const t = [];
+  for (let k = 0; k < n; k++) {
+    const a = performance.now();
+    g.tick(1 / 60);
+    t.push(performance.now() - a);
+  }
+  t.sort((x, y) => x - y);
+  const R = (v) => Math.round(v * 100) / 100;
+  return {
+    ticks: n,
+    avg: R(t.reduce((s, v) => s + v, 0) / n),
+    p50: R(t[Math.floor(n * 0.5)]),
+    p95: R(t[Math.floor(n * 0.95)]),
+    max: R(t[n - 1]),
+    role: g.net.role, en: g.enemies.length, walls: [...g.obstacles.values()].length,
+  };
+};
+
+// 어느 함수가 먹는지 — 이름별 누적 시간
+window.__profileParts = (secs = 3) => {
+  const g = window.__game;
+  if (!g.started) g.beginMatch();
+  const acc = {};
+  const wrap = (obj, name) => {
+    const orig = obj[name];
+    if (typeof orig !== 'function' || orig.__wrapped) return;
+    const f = function (...a) {
+      const t0 = performance.now();
+      try { return orig.apply(this, a); } finally { acc[name] = (acc[name] || 0) + (performance.now() - t0); }
+    };
+    f.__wrapped = true;
+    obj[name] = f;
+  };
+  for (const nm of ['refreshClearance', 'refreshTerritory', 'refreshReach', 'updatePlayer',
+                    'updateLocalUI', 'planEnemyPath', 'nearestSafeSpot'])
+    if (g[nm]) wrap(g, nm);
+  const t0 = performance.now();
+  const n = Math.round(secs * 60);
+  for (let k = 0; k < n; k++) g.tick(1 / 60);
+  const total = performance.now() - t0;
+  const out = { totalMs: Math.round(total), perTickMs: Math.round(total / n * 100) / 100 };
+  for (const [k, v] of Object.entries(acc)) out[k] = Math.round(v);
+  return out;
+};
+
+// ---- 원격 개체가 부드러운가 (D93) ----
+// 프레임마다 적의 이동량을 재서 **들쭉날쭉한 정도**를 본다.
+// 마지막 스냅 위치로 당기기만 하면 스냅 직후에만 크게 튀므로 표준편차가 평균만큼 커진다.
+// 시간 보간이 제대로 되면 속도가 일정해서 표준편차가 평균보다 훨씬 작다.
+// rAF는 숨은 탭에서 멈추므로 **고정 dt로 직접 tick을 돌리며** 잰다 (타이밍 잡음도 같이 빠진다).
+window.__smooth = (secs = 3) => new Promise((res) => {
+  const g = window.__game;
+  const d = [];
+  let prev = null;
+  const t0 = performance.now();
+  const iv = setInterval(() => {
+    for (let k = 0; k < 6; k++) {
+      g.tick(1 / 60);
+      const e = g.enemies[0];
+      if (!e) continue;
+      if (prev) d.push(Math.hypot(e.x - prev.x, e.z - prev.z));
+      prev = { x: e.x, z: e.z };
+    }
+    if (performance.now() - t0 < secs * 1000) return;
+    clearInterval(iv);
+    const n = d.length;
+    if (!n) return res('no samples');
+    const avg = d.reduce((s, v) => s + v, 0) / n;
+    const sd = Math.sqrt(d.reduce((s, v) => s + (v - avg) ** 2, 0) / n);
+    res({ samples: n, avgStep: +avg.toFixed(4), sd: +sd.toFixed(4),
+          jitter: avg > 1e-6 ? +(sd / avg).toFixed(2) : null,
+          frozen: d.filter((v) => v < 1e-7).length });
+  }, 100);
+});
+
+// ---- 보간 결정론 테스트 (D93) ----
+// 실제 연결로는 못 잰다: 숨은 탭에서 타이머가 1초로 묶여 60fps 표본이 안 나오고,
+// 동기 루프 안에서는 메시지가 아예 처리되지 않는다.
+// 그래서 **20Hz 스냅샷을 손으로 만들어** 60fps 틱 사이에 끼워 넣고 재는 쪽이 정확하다.
+// 등속으로 움직이는 적 하나를 흘려보내고, 클라가 그리는 프레임당 이동량의 흔들림을 본다.
+window.__interpTest = (secs = 2, hz = 20) => {
+  const g = window.__game;
+  if (g.net.role !== 'client') return 'client 에서만 의미가 있다';
+  // 적이 아직 없어도 된다 — 스냅샷이 만들게 한다 (그게 클라의 정상 경로다)
+  const id = 999001;
+  const speed = 6;                       // m/s, 등속
+  const dt = 1 / 60, step = 1 / hz;
+  let hostT = g.__snapT0 || 100, nextSnap = 0, x = 0;
+  const d = [];
+  let prev = null;
+
+  const snap = () => ({
+    k: 'SNAP', t: +hostT.toFixed(4), st: 1, sT: 0, al: 1, ki: 0, tr: 0, vi: 0,
+    ps: g.__lastPs || [[0,0,0,-1,100,0,0,0,0,0,100,0,0,0,0,-1,-1,-1,0,0,0],
+                       [1,1,0,-1,100,0,0,0,0,0,100,0,0,0,0,-1,-1,-1,0,0,0]],
+    en: [[id, +x.toFixed(3), 5, 1, 0, 100, 0 /* chaser */, 0, 0]],
+    wk: [], gu: [], bl: [], pu: [], nd: g.nodes.map((n) => Math.round(n.amount)), ev: [],
+  });
+
+  const n = Math.round(secs / dt);
+  for (let k = 0; k < n; k++) {
+    if (nextSnap <= 0) { g.applySnapshot(snap()); nextSnap = step; }
+    nextSnap -= dt; hostT += dt; x += speed * dt;
+    g.tick(dt);
+    const e = g.enemies.find((q) => q.id === id);
+    if (!e) break;
+    if (prev !== null) d.push(Math.abs(e.x - prev));
+    prev = e.x;
+  }
+  const m = d.length;
+  if (!m) return 'no samples';
+  const avg = d.reduce((s, v) => s + v, 0) / m;
+  const sd = Math.sqrt(d.reduce((s, v) => s + (v - avg) ** 2, 0) / m);
+  return {
+    samples: m,
+    expectedStep: +(speed * dt).toFixed(4),   // 등속이면 프레임당 이 값이 나와야 한다
+    avgStep: +avg.toFixed(4),
+    sd: +sd.toFixed(4),
+    jitter: +(sd / Math.max(avg, 1e-9)).toFixed(3),   // 0에 가까울수록 부드럽다
+    frozenFrames: d.filter((v) => v < 1e-6).length,
+  };
 };
