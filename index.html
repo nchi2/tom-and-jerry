@@ -23,9 +23,11 @@
       background: rgba(12, 15, 23, 0.88); border: 1px solid #333d55; border-radius: 8px;
       padding: 10px 12px; color: #c3cbdb; max-width: 60vw;
     }
-    /* 자원 — 우측 상단. 아이콘 + 수치만 (D88) */
+    /* 자원 — 우측 상단. 아이콘 + 수치만 (D88).
+       튜닝 패널이 열려 있으면 그만큼 왼쪽으로 비켜선다 — 치즈가 가려지면 안 된다 (D91) */
     #res {
       position: fixed; top: 12px; right: 12px; z-index: 12;
+      transition: right .15s ease;
       display: flex; gap: 8px; pointer-events: none;
       font-family: "SF Mono", Menlo, monospace; font-size: 15px; font-weight: 700;
     }
@@ -37,6 +39,8 @@
     #res .r .ic { font-size: 17px; }
     #res .cheese { border-color: #6b5a24; }
     #res .parts { border-color: #2f5570; }
+    body.gui-on #res { right: 268px; }
+    body.hud-off #hud { display: none; }
     #overlay {
       position: fixed; inset: 0; z-index: 20;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -139,6 +143,7 @@
     <button id="m-resume">계속하기</button>
     <button id="m-restart">다시 시작</button>
     <button id="m-help">조작법 (H)</button>
+    <button id="m-gui">튜닝 패널 켜기/끄기 (G)</button>
     <button id="m-maps">맵 선택</button>
     <button id="m-quit">종료</button>
     <div class="maps" id="m-maplist"></div>
