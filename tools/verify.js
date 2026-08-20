@@ -213,6 +213,65 @@ window.__verify = () => {
   out.push({ t: 'D7.end', errs: window.__errs.length, msgs: window.__errs.slice(0, 6) });
   a.ai = true;
 
+  // ---- E. 명령 계층 (D92-3단계) ----
+  // **마우스도 카메라도 없이** applyCommand만으로 전부 되어야 한다.
+  window.__errs.length = 0;
+  g.restart();
+  g.setEnemyCount(0);
+  const me = g.player;
+  me.cheese = 6000; me.parts = 200;
+  const cell = (di, dj) => { const c = g.worldToCell(me.x, me.z); return { i: c.i + di, j: c.j + dj }; };
+  const nWalls = () => { let n = 0; for (const ob of g.obstacles.values()) if (!ob.bedrock && !ob.bldgRef) n++; return n; };
+
+  const e0 = nWalls();
+  g.applyCommand(me, { t: 'wall', ...cell(1, 0) });
+  g.applyCommand(me, { t: 'wall', ...cell(0, 1) });
+  g.step(8);
+  out.push({ t: 'E1.wallCmd', built: nWalls() - e0, left: me.wallOrders.length });
+
+  g.applyCommand(me, { t: 'roll' });
+  out.push({ t: 'E2.rollCmd', rolling: me.rollT > 0 });
+  g.step(2);
+
+  const bc = window.__freeCell('depot');
+  g.applyCommand(me, { t: 'build', kind: 'depot', i: bc.i, j: bc.j });
+  g.step(14);
+  out.push({ t: 'E3.buildCmd', bldgs: g.buildings.length });
+
+  g.applyCommand(me, { t: 'unit', kind: 'worker' });
+  out.push({ t: 'E4.unitCmd', workers: g.workers.length });
+
+  const pl = g.nearestPile(me.x, me.z, 999);
+  g.applyCommand(me, { t: 'mine', i: pl.i, j: pl.j });
+  out.push({ t: 'E5.mineCmd', order: !!g.playerOrder });
+  g.applyCommand(me, { t: 'cancel', lvl: 'mineOrder' });
+  out.push({ t: 'E6.cancelCmd', order: !!g.playerOrder });
+
+  // 일꾼에게 id로 명령 (선택 상태를 안 거친다)
+  const wk = g.workers.filter((w) => w.owner === 'p');
+  g.applyCommand(me, { t: 'unitcmd', act: 'pile', i: pl.i, j: pl.j, ids: wk.map((w) => w.id) });
+  out.push({ t: 'E7.unitcmdPile', assigned: wk.filter((w) => w.pile === pl).length });
+  const mv = cell(3, 3);
+  g.applyCommand(me, { t: 'unitcmd', act: 'move', i: mv.i, j: mv.j, ids: wk.map((w) => w.id) });
+  out.push({ t: 'E8.unitcmdMove', goals: wk.filter((w) => w.moveGoal).length });
+
+  // 철거 — 마우스 없이
+  const wallOb = [...g.obstacles.values()].find((ob) => !ob.bedrock && !ob.bldgRef && ob.owner === 'p');
+  const r0 = nWalls();
+  if (wallOb) g.applyCommand(me, { t: 'remove', i: wallOb.i, j: wallOb.j });
+  out.push({ t: 'E9.removeCmd', removed: r0 - nWalls() });
+
+  // 공방 → 개조 명령
+  const wc2 = window.__freeCell('workshop');
+  if (wc2) { g.applyCommand(me, { t: 'build', kind: 'workshop', i: wc2.i, j: wc2.j }); g.step(14); }
+  const ws2 = g.buildings.find((b) => b.kind === 'workshop');
+  if (ws2) { me.x = ws2.cx + 1.2; me.z = ws2.cz + 1.2; }
+  g.applyCommand(me, { t: 'upg', k: 0 });
+  g.applyCommand(me, { t: 'f' });
+  out.push({ t: 'E10.upgCmd', speed: g.upg.speed, upgJob: !!g.upgradeJob });
+  g.applyCommand(me, { t: 'unit', kind: 'melee' });
+  out.push({ t: 'E11.guardCmd', guards: g.guards.length, errs: window.__errs.length, msgs: window.__errs.slice(0, 4) });
+
   // ---- C. 전투 60초 ----
   window.__errs.length = 0;
   g.P.enemy.count = en0; g.P.patrol.count = pat0; g.P.threat.everyLevels = grow0; g.P.enemy.spawnDelay = del0;

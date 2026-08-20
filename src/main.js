@@ -2558,11 +2558,11 @@ function unitAtScreen(clientX, clientY, maxPx = P.command.pickPx) {
   return best;
 }
 
-function commandWorkersToPile(pile, p = localPlayer()) {
+function commandWorkersToPile(pile, p = localPlayer(), list = selWorkers()) {
   const pw = cellToWorld(pile.i, pile.j);
   const dep = nearestDepot(pw.x, pw.z, p.owner);   // "가까운 (내) 치즈창고"로 나른다
   let sent = 0, full = 0;
-  for (const w of selWorkers()) {
+  for (const w of list) {
     if (w.pile !== pile && pileCrowd(pile) >= P.worker.perPile) { full++; continue; }
     w.pile = pile;
     w.forced = true;
@@ -2578,8 +2578,7 @@ function commandWorkersToPile(pile, p = localPlayer()) {
 }
 
 // 선택된 유닛 전부에게 이동 명령 (일꾼 + 방어병)
-function commandUnitsMove(x, z) {
-  const list = [...selectedUnits].filter((u) => myUnits().includes(u));
+function commandUnitsMove(x, z, list = [...selectedUnits].filter((u) => myUnits().includes(u)), p = localPlayer()) {
   // 여러 명이면 황금각으로 흩어 목표를 준다 (한 점에 겹쳐 서지 않게)
   list.forEach((u, k) => {
     const a = k * 2.399963, r = k === 0 ? 0 : 0.6 * Math.sqrt(k);
@@ -2588,7 +2587,7 @@ function commandUnitsMove(x, z) {
     else { u.moveGoal = { x: tx, z: tz }; u.idle = false; u.forced = false; }
     u.path.length = 0; u.repathT = 0;
   });
-  if (list.length) flashMsg(`${list.length}기 이동`, '#9fe8a0');
+  if (list.length) flashFor(p, `${list.length}기 이동`, '#9fe8a0');
   return list.length;
 }
 
@@ -4273,29 +4272,32 @@ window.addEventListener('keydown', (e) => {
   // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
   // ESC = 한 단계 물러나기. 더 물러날 게 없으면 메뉴가 뜬다 (D71)
   if (e.code === 'Escape') {
+    // 판정은 내 화면에서(클라도 자기 상태를 알고 있다), 실행은 명령으로 (D92-3단계)
+    const me = localPlayer();
     if (menuOpen) setMenu(false);
-    else if (player.buildJob) cancelBuild(true);
-    else if (player.upgradeJob) cancelUpgrade(true);
-    else if (player.buildOrder) { player.buildOrder = null; flashMsg('건물 명령 취소', '#9aa3b2'); }
-    else if (player.wallOrders.length) clearWallOrders('벽 명령 취소');
+    else if (me.buildJob) issueCommand({ t: 'cancel', lvl: 'buildJob' });
+    else if (me.upgradeJob) issueCommand({ t: 'cancel', lvl: 'upgradeJob' });
+    else if (me.buildOrder) issueCommand({ t: 'cancel', lvl: 'buildOrder' });
+    else if (me.wallOrders.length) issueCommand({ t: 'cancel', lvl: 'wallOrders' });
     else if (removeMode) { removeMode = false; updateHotbar(); }
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
-    else if (player.mineOrder) clearMineOrder('채굴 명령 취소');
+    else if (me.mineOrder) issueCommand({ t: 'cancel', lvl: 'mineOrder' });
     else if (selectedUnits.size) selectedUnits.clear();
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
     else if (helpOpen) { helpOpen = false; renderHelp(); }
     else setMenu(true);
   }
-  if (e.code === 'KeyE' && alive) toggleMineOrder();
+  if (e.code === 'KeyE' && alive) issueCommand({ t: 'mine' });
   // F — 공방·경비탑 제자리 업그레이드 (R은 이미 재시작에 쓰인다)
-  if (e.code === 'KeyF' && alive) tryUpgradeBuilding();
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') startRoll();
+  if (e.code === 'KeyF' && alive) issueCommand({ t: 'f' });
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') issueCommand({ t: 'roll' });
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
   if (e.code === 'Tab') {
     e.preventDefault();
     selectedUnits.clear();
-    for (const gu of guards) selectedUnits.add(gu);
-    if (guards.length) selectionMsg();
+    const mine = guardsOf(localPlayer().owner);
+    for (const gu of mine) selectedUnits.add(gu);
+    if (mine.length) selectionMsg();
     else flashMsg('방어병이 없습니다', '#e05050');
   }
   if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
@@ -4307,7 +4309,7 @@ window.addEventListener('keydown', (e) => {
   // 안 그러면 내 공방 옆에서 건물을 못 짓는다
   for (let k = 0; k < 8; k++) {
     if (e.code === 'Digit' + (k + 1)) {
-      if (upgOpen) buyUpgrade(k);
+      if (upgOpen) issueCommand({ t: 'upg', k });
       // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
       else if (k < BUILD_SLOTS.length) {
         removeMode = false;
@@ -4435,9 +4437,7 @@ window.addEventListener('mousedown', (e) => {
   // 2) 적 위 → 선택한 방어병 전원 **집중 공격** (자폭묘를 끊는 데 이게 필요하다)
   const foe = enemyAtScreen(e.clientX, e.clientY);
   if (foe && selGuards().length) {
-    let n = 0;
-    for (const gu of selGuards()) { gu.focus = foe; gu.repathT = 0; gu.path.length = 0; n++; }
-    flashMsg(`${n}기 집중 공격 — ${TYPE_INFO[foe.type].label}`, '#ff8b5e');
+    issueCommand({ t: 'unitcmd', act: 'focus', id: foe.id, ids: selGuards().map((u) => u.id) });
     return;
   }
 
@@ -4447,18 +4447,18 @@ window.addEventListener('mousedown', (e) => {
   // 3) 치즈더미 → 일꾼이 선택돼 있으면 일꾼에게, 아니면 내가 간다
   const pile = nearestPile(hit.x, hit.z, P.command.pickRange);
   if (pile) {
-    if (selWorkers().length) commandWorkersToPile(pile);
-    else if (!selGuards().length) setMineOrder(pile);
-    else commandUnitsMove(cellToWorld(pile.i, pile.j).x, cellToWorld(pile.i, pile.j).z);
+    if (selWorkers().length)
+      issueCommand({ t: 'unitcmd', act: 'pile', i: pile.i, j: pile.j, ids: selWorkers().map((u) => u.id) });
+    else if (!selGuards().length) issueCommand({ t: 'mine', i: pile.i, j: pile.j });
+    else issueCommand({ t: 'unitcmd', act: 'move', i: pile.i, j: pile.j, ids: selGuards().map((u) => u.id) });
     return;
   }
 
   // 4) 빈 땅 → 선택한 유닛 전부 이동 (집중 공격 명령은 여기서 풀린다)
   const c = worldToCell(hit.x, hit.z);
   if (obstacles.has(cellKey(c.i, c.j))) { flashMsg('그 자리로는 갈 수 없습니다', '#e05050'); return; }
-  const cw = cellToWorld(c.i, c.j);
-  for (const gu of selGuards()) gu.focus = null;
-  commandUnitsMove(cw.x, cw.z);
+  const ids = [...selectedUnits].filter((u) => myUnits().includes(u)).map((u) => u.id);
+  issueCommand({ t: 'unitcmd', act: 'move', i: c.i, j: c.j, ids });
 });
 
 // 화면 좌표 → 바닥 평면 교점
@@ -4817,6 +4817,106 @@ function updateActorVis(p, dt) {
          mining || building || upgrading || casting);
 }
 
+// ============================================================
+// 명령 (D92-3단계)
+//  **시뮬을 바꾸는 유일한 입구가 applyCommand다.**
+//  로컬 UI가 마우스·화면 좌표·선택 상태를 전부 여기 도달하기 전에 풀어서,
+//  명령에는 격자 좌표(i,j)와 엔티티 id만 남는다 — 그대로 네트워크에 실린다.
+//  선택 상태는 절대 보내지 않는다 (내 화면에서 누굴 골랐는지는 남의 일이 아니다).
+// ============================================================
+const unitById = (id) => workers.find((u) => u.id === id) || guards.find((u) => u.id === id) || null;
+
+function queueWall(p, i, j) {
+  if (p.wallOrders.some((o) => o.i === i && o.j === j)) return;
+  p.wallOrders.push({ i, j });
+  if (p.mineOrder) clearMineOrder(undefined, p);
+  p.orderPath.length = 0; p.orderRepathT = 0;
+}
+
+// 철거 — 예전엔 고스트 그리는 코드 한복판에 섞여 있었다 (마우스가 있어야만 철거가 됐다)
+function removeAt(p, i, j) {
+  const ob = obstacles.get(cellKey(i, j));
+  if (!ob) return;
+  const bldg = ob.bldgRef && ob.bldgRef.owner === p.owner ? ob.bldgRef : null;
+  const isWall = !ob.bedrock && !ob.bldgRef;
+  if (!isWall && !bldg) return;
+  const rc = P.wall.removeCost;
+  if (p.cheese < rc) return;
+  p.cheese -= rc;
+  if (bldg) {
+    const refund = Math.round(buildCost(bldg.kind) * P.build.refundRatio);
+    p.cheese += refund;
+    spawnBuildFx(bldg.cx, bldg.cz);
+    destroyBuilding(bldg, false);
+    flashFor(p, `${BLDG_INFO[bldg.kind].label} 철거 — 치즈 +${refund} 회수`, '#ffb347');
+    p.buildCooldown = 0.3;   // 건물은 연타로 지워지지 않게 조금 길게
+  } else {
+    const w0 = cellToWorld(i, j);
+    removeObstacle(ob);
+    markNavDirty();
+    spawnBuildFx(w0.x, w0.z);
+    p.buildCooldown = P.wall.cooldown;
+  }
+}
+
+function applyCommand(p, c) {
+  if (!alive || !c) return;
+  switch (c.t) {
+    case 'roll':   startRoll(p); break;
+    case 'wall':   queueWall(p, c.i, c.j); break;
+    case 'build':
+      p.buildOrder = { kind: c.kind, i: c.i, j: c.j };
+      p.orderPath.length = 0; p.orderRepathT = 0;
+      if (p.mineOrder) clearMineOrder(undefined, p);
+      break;
+    case 'unit':
+      if (c.kind === 'worker') hireWorker(p.owner);
+      else if (GUARD_TYPES[c.kind]) placeGuard(c.kind, p);
+      break;
+    case 'mine': {
+      if (c.i === undefined) { toggleMineOrder(p); break; }
+      const n = nodeAt(c.i, c.j);
+      if (n) setMineOrder(n, p);
+      break;
+    }
+    case 'f':      tryUpgradeBuilding(p); break;
+    case 'remove': removeAt(p, c.i, c.j); break;
+    case 'upg':    buyUpgrade(c.k, p); break;
+    case 'cancel':
+      if (c.lvl === 'buildJob') cancelBuild(true, p);
+      else if (c.lvl === 'upgradeJob') cancelUpgrade(true, p);
+      else if (c.lvl === 'buildOrder') { p.buildOrder = null; flashFor(p, '건물 명령 취소', '#9aa3b2'); }
+      else if (c.lvl === 'wallOrders') clearWallOrders('벽 명령 취소', p);
+      else if (c.lvl === 'mineOrder') clearMineOrder('채굴 명령 취소', p);
+      break;
+    case 'unitcmd': {
+      // 선택이 아니라 **id 목록**으로 온다. 내 것이 아니면 무시한다
+      const units = (c.ids || []).map(unitById).filter((u) => u && u.owner === p.owner);
+      if (c.act === 'pile') {
+        const n = nodeAt(c.i, c.j);
+        if (n) commandWorkersToPile(n, p, units.filter((u) => u.kind === 'worker'));
+      } else if (c.act === 'move') {
+        const w = cellToWorld(c.i, c.j);
+        for (const u of units) if (u.kind === 'guard') u.focus = null;
+        commandUnitsMove(w.x, w.z, units, p);
+      } else if (c.act === 'focus') {
+        const foe = enemies.find((e) => e.id === c.id);
+        if (!foe) break;
+        let n = 0;
+        for (const u of units) if (u.kind === 'guard') { u.focus = foe; u.repathT = 0; u.path.length = 0; n++; }
+        if (n) flashFor(p, `${n}기 집중 공격 — ${TYPE_INFO[foe.type].label}`, '#ff8b5e');
+      }
+      break;
+    }
+  }
+}
+
+// 로컬에서 만든 명령을 시뮬로 보낸다. 솔로·호스트면 바로, 클라이언트면 호스트로 (5단계).
+function issueCommand(c, p = localPlayer()) {
+  if (net.isHost) applyCommand(p, c);
+  else if (net.send) net.send(c);
+}
+
 // 로컬 UI — 고스트·프롬프트·레이캐스트·핫바 클릭.
 // 시뮬 상태를 **읽기만** 하는 게 아니라 여기서 명령도 건다 (3단계에서 applyCommand로 정리한다).
 function updateLocalUI(dt) {
@@ -4882,21 +4982,7 @@ function updateLocalUI(dt) {
     }
     ghost.material.color.setHex(ok ? 0xffb347 : 0xe05050);
     me.buildCooldown -= dt;
-    if (wantBuild && me.buildCooldown <= 0 && ok) {
-      me.cheese -= rc;
-      if (bldg) {
-        me.cheese += refund;
-        spawnBuildFx(bldg.cx, bldg.cz);
-        destroyBuilding(bldg, false);
-        flashMsg(`${BLDG_INFO[bldg.kind].label} 철거 — 치즈 +${refund} 회수`, '#ffb347');
-        me.buildCooldown = 0.3;   // 건물은 연타로 지워지지 않게 조금 길게
-      } else {
-        removeObstacle(ob);
-        markNavDirty();
-        spawnBuildFx(w0.x, w0.z);
-        me.buildCooldown = P.wall.cooldown;
-      }
-    }
+    if (wantBuild && me.buildCooldown <= 0 && ok) issueCommand({ t: 'remove', i: gi, j: gj });
     prompts();
     return;
   }
@@ -4972,25 +5058,16 @@ function updateLocalUI(dt) {
   me.buildCooldown -= dt;
   if (slot.key === 'wall') {
     // 클릭 한 번 = "거기에 지으러 가라" (D60/D73). 사거리는 짧게 두되(D69) 걷는 건 대신해 준다.
-    if (buildPressed && valid && hasTile) {
-      if (!me.wallOrders.some((o) => o.i === gi && o.j === gj)) {
-        me.wallOrders.push({ i: gi, j: gj });
-        if (me.mineOrder) clearMineOrder(undefined, me);
-        me.orderPath.length = 0; me.orderRepathT = 0;
-      }
-    }
+    if (buildPressed && valid && hasTile) issueCommand({ t: 'wall', i: gi, j: gj });
   } else if (unitSlot) {
     // **Enter도 되고 좌클릭도 된다** (D91). 고스트가 나올 자리를 이미 보여주므로
     // "어딘가를 찍어야 하나?"로 오해될 일이 없다 — 둘 다 열어 두는 게 손해가 없다
     if (spawnPressed || buildPressed) {
       if (lock) flashMsg(lock, '#e05050');
-      else if (GUARD_TYPES[slot.key]) placeGuard(slot.key, me);
-      else hireWorker(me.owner);
+      else issueCommand({ t: 'unit', kind: slot.key });
     }
   } else if (buildPressed && hasTile && !lock) {
-    me.buildOrder = { kind: slot.key, i: gi, j: gj };
-    me.orderPath.length = 0; me.orderRepathT = 0;
-    if (me.mineOrder) clearMineOrder(undefined, me);
+    issueCommand({ t: 'build', kind: slot.key, i: gi, j: gj });
   } else if (buildPressed && lock) {
     flashMsg(lock, '#e05050');
   }
@@ -6435,6 +6512,7 @@ window.__game = {
   net, byId, get entSeq() { return entSeq; },
   get territory() { return territory; }, get territoryArea() { return territoryArea; },
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
+  applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
