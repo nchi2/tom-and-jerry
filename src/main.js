@@ -413,7 +413,6 @@ const UPGRADES = [
   { key: 'guard', label: '방어병 화력', unit: () => `+${P.upgrade.guardStep}` },
 ];
 const newUpg = () => ({ speed: 0, radius: 0, tower: 0, guard: 0 });
-let parts = 0;
 
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
 // 모든 이동 속도는 이 배율을 통과한다 (D56) — 여기 한 곳만 바꾸면 전체 템포가 바뀐다
@@ -1221,6 +1220,8 @@ for (const p of players) {
   p.buildOrder = null;     // { kind, i, j }
   p.buildJob = null;       // { b, t, dur, cost } — 짓는 동안 그 자리에 묶인다 (D44)
   p.buildCooldown = 0;
+  p.upgradeJob = null;     // { b, t, dur, cost, parts } — 제자리 업그레이드 채널링 (D82)
+  p.parts = 0;             // 부품 (D92-1e). 치즈와 같은 이유로 각자 살림이다 (D43)
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -2313,8 +2314,6 @@ function updateMinePrompt() {
 // ---- 공방·경비탑 제자리 업그레이드 (D82) ----
 // 근처(4m)의 tier<3 건물에 [F] 안내가 뜬다. 경비탑은 그 위 tier의 공방이
 // 실존해야 잠금이 풀린다 — 공방 자체는 언제나 올릴 수 있다(상위 건물 요구 없음).
-let upgradeJob = null;   // { b, t, dur, cost }
-
 function nearestUpgradable(x, z, range) {
   let best = null, bestD = range;
   for (const b of buildings) {
@@ -2343,26 +2342,26 @@ function nearestCracked(x, z, range) {
 }
 
 // 지금 F가 무엇을 할지 (없으면 null). 빌보드와 F키가 같은 함수를 본다
-function fAction() {
-  const crack = nearestCracked(player.x, player.z, P.wall.range + CS);
+function fAction(p = player) {
+  const crack = nearestCracked(p.x, p.z, P.wall.range + CS);
   if (crack) {
     const cost = P.wall.repairCost;
     return { kind: 'repair', ob: crack, cost,
              x: cellToWorld(crack.i, crack.j).x, z: cellToWorld(crack.i, crack.j).z,
              label: `벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
-             why: player.cheese < cost ? `치즈 ${cost} 필요` : null };
+             why: p.cheese < cost ? `치즈 ${cost} 필요` : null };
   }
-  const b = nearestUpgradable(player.x, player.z, 4.0);
+  const b = nearestUpgradable(p.x, p.z, 4.0);
   if (!b) return null;
   const s = upgradeSpec(b);
   return { kind: 'upgrade', b, x: b.cx, z: b.cz,
            label: `${BLDG_INFO[b.kind].label} Lv.${(b.tier || 1) + 1} — 치즈 ${s.cost}` +
                   (s.parts > 0 ? ` · 부품 ${s.parts}` : ''),
-           why: upgradeBlockedWhy(b) };
+           why: upgradeBlockedWhy(b, p) };
 }
 
 function updateUpgradePrompt() {
-  const show = alive && !player.stunned && !player.buildJob && !upgradeJob && !player.wallCast;
+  const show = alive && !player.stunned && !player.buildJob && !player.upgradeJob && !player.wallCast;
   const a = show ? fAction() : null;
   upgradePrompt.visible = !!a;
   if (!a) return;
@@ -2390,22 +2389,22 @@ function upgradeSpec(b) {
 
 // 지금 이 건물을 못 올리는 이유 (없으면 null). 빌보드 문구와 F키가 같은 함수를 본다 —
 // 화면에 보이는 이유와 실제 거부 사유가 어긋나지 않게.
-function upgradeBlockedWhy(b) {
+function upgradeBlockedWhy(b, p = player) {
   if (towerUpgradeLocked(b)) return `🔒 공방 Lv.${(b.tier || 1) + 1} 필요`;
   const s = upgradeSpec(b);
-  if (player.cheese < s.cost) return `치즈 ${s.cost} 필요 (지금 ${Math.floor(player.cheese)})`;
-  if (s.parts > 0 && parts < s.parts) return `부품 ${s.parts}개 필요 (지금 ${parts})`;
+  if (p.cheese < s.cost) return `치즈 ${s.cost} 필요 (지금 ${Math.floor(p.cheese)})`;
+  if (s.parts > 0 && p.parts < s.parts) return `부품 ${s.parts}개 필요 (지금 ${p.parts})`;
   return null;
 }
 
 // F키 — 수리가 우선, 없으면 업그레이드 (D90). 빌보드와 같은 fAction()을 본다
-function tryUpgradeBuilding() {
-  if (upgradeJob || player.buildJob) return;
-  const a = fAction();
+function tryUpgradeBuilding(p = player) {
+  if (p.upgradeJob || p.buildJob) return;
+  const a = fAction(p);
   if (!a) return;
   if (a.why) { flashMsg(a.why, '#e05050'); return; }
   if (a.kind === 'repair') {
-    player.cheese -= a.cost;
+    p.cheese -= a.cost;
     repairWall(a.ob);
     spawnBuildFx(a.x, a.z);
     flashMsg('벽을 수리했다', '#6ee07a');
@@ -2413,8 +2412,8 @@ function tryUpgradeBuilding() {
   }
   const b = a.b;
   const { cost, parts: needParts, time } = upgradeSpec(b);
-  player.cheese -= cost;
-  parts -= needParts;
+  p.cheese -= cost;
+  p.parts -= needParts;
   // 경비탑 업그레이드는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
   // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
   // 그 자리에 묶이면 쓸 수가 없다. 공방 업그레이드는 채널링을 유지한다(기술 결정이니까).
@@ -2425,28 +2424,28 @@ function tryUpgradeBuilding() {
     flashMsg(`${BLDG_INFO[b.kind].label} Lv.${b.tier}!`, '#8fd6ff');
     return;
   }
-  upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
+  p.upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
   flashMsg(`${BLDG_INFO[b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
 }
 
-function cancelUpgrade(refund = true) {
-  if (!upgradeJob) return;
-  const { cost, parts: spentParts } = upgradeJob;
-  upgradeJob = null;
-  if (refund) { player.cheese += cost; parts += spentParts || 0; }
+function cancelUpgrade(refund = true, p = player) {
+  if (!p.upgradeJob) return;
+  const { cost, parts: spentParts } = p.upgradeJob;
+  p.upgradeJob = null;
+  if (refund) { p.cheese += cost; p.parts += spentParts || 0; }
   flashMsg('업그레이드 취소', '#ffb347');
 }
 
-function updateUpgradeJob(dt) {
-  if (!upgradeJob) return;
-  const { b, dur } = upgradeJob;
-  if (!buildings.includes(b)) { upgradeJob = null; return; }   // 적이 부숨
-  upgradeJob.t += dt;
-  if (upgradeJob.t >= dur) {
+function updateUpgradeJob(dt, p = player) {
+  if (!p.upgradeJob) return;
+  const { b, dur } = p.upgradeJob;
+  if (!buildings.includes(b)) { p.upgradeJob = null; return; }   // 적이 부숨
+  p.upgradeJob.t += dt;
+  if (p.upgradeJob.t >= dur) {
     b.tier = (b.tier || 1) + 1;
     applyBuildingTierVisual(b);
     flashMsg(`${BLDG_INFO[b.kind].label} Lv.${b.tier}!`, '#8fd6ff');
-    upgradeJob = null;
+    p.upgradeJob = null;
   }
 }
 
@@ -3278,17 +3277,21 @@ function updatePickups(dt) {
     u.t += dt;
     u.mesh.rotation.y += dt * 2;
     u.mesh.position.y = 0.5 + Math.sin(u.t * 3) * 0.12;
-    // 플레이어 또는 동료가 밟으면 획득
-    const got = Math.hypot(player.x - u.x, player.z - u.z) < 1.1
-      || (ally.active && !ally.stunned && Math.hypot(ally.x - u.x, ally.z - u.z) < 1.1);
-    if (!got) continue;
+    // 밟은 쪽이 가져간다 (D92-1e). 예전엔 동료가 밟아도 P1 지갑으로 들어갔는데,
+    // 2P에서는 그게 곧 "P2가 주운 부품이 P1 것이 된다"가 된다.
+    let taker = null;
+    for (const q of players) {
+      if (q !== player && (!q.active || q.stunned)) continue;
+      if (Math.hypot(q.x - u.x, q.z - u.z) < 1.1) { taker = q; break; }
+    }
+    if (!taker) continue;
     if (u.kind === 'parts') {
       const n = effPartsEach();
-      parts += n;
-      flashMsg(`부품 +${n} (U: 업그레이드)`, '#8fd6ff');
+      taker.parts += n;
+      if (taker.local) flashMsg(`부품 +${n} (U: 업그레이드)`, '#8fd6ff');
     } else {
-      player.cheese += P.pickup.cheeseEach;
-      flashMsg(`치즈 +${P.pickup.cheeseEach}`, '#ffd24a');
+      taker.cheese += P.pickup.cheeseEach;
+      if (taker.local) flashMsg(`치즈 +${P.pickup.cheeseEach}`, '#ffd24a');
     }
     spawnBuildFx(u.x, u.z);
     scene.remove(u.mesh);
@@ -4252,7 +4255,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape') {
     if (menuOpen) setMenu(false);
     else if (player.buildJob) cancelBuild(true);
-    else if (upgradeJob) cancelUpgrade(true);
+    else if (player.upgradeJob) cancelUpgrade(true);
     else if (player.buildOrder) { player.buildOrder = null; flashMsg('건물 명령 취소', '#9aa3b2'); }
     else if (player.wallOrders.length) clearWallOrders('벽 명령 취소');
     else if (removeMode) { removeMode = false; updateHotbar(); }
@@ -4719,7 +4722,7 @@ function updatePlayer(dt) {
   playerVis.group.rotation.x = 0;
 
   // ---- 이동 (건물을 짓거나 업그레이드하는 동안은 묶인다 = 무방비) ----
-  if (!player.buildJob && !upgradeJob) {
+  if (!player.buildJob && !player.upgradeJob) {
     const b = moveBasis();
     let mx = 0, mz = 0;
     const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
@@ -4777,12 +4780,12 @@ function updatePlayer(dt) {
            !player.stunned && player.hp < P.player.hp - 0.5);
     const mining = player.job === 'mine';
     const building = !!player.buildJob;
-    const upgrading = !!upgradeJob;
+    const upgrading = !!player.upgradeJob;
     const casting = !!player.wallCast;
     setBar(playerWorkBar,
            casting ? player.wallCast.t / P.wall.castTime
                    : building ? player.buildJob.t / player.buildJob.dur
-                   : upgrading ? upgradeJob.t / upgradeJob.dur
+                   : upgrading ? player.upgradeJob.t / player.upgradeJob.dur
                    : (player.mineT || 0) / effMineTime(),
            player.x, y + (playerBar && playerBar.visible ? 0.26 : 0), player.z,
            mining || building || upgrading || casting);
@@ -5543,7 +5546,7 @@ renderHelp();
 function updateRes() {
   resEl.innerHTML =
     `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(localPlayer().cheese)}</div>` +
-    `<div class="r parts"><span class="ic">⚙️</span>${parts}</div>`;
+    `<div class="r parts"><span class="ic">⚙️</span>${localPlayer().parts}</div>`;
 }
 
 let alive = true;
@@ -5576,6 +5579,9 @@ function startRoll() {
   player.wallCast = null;
 }
 
+// 화면 흔들림은 **카메라의 상태**지 햄스터의 상태가 아니다 (D92-1e).
+// 기계마다 카메라가 하나뿐이고 hurtHamster가 who.local로 이미 거르므로
+// 구조체 필드로 쪼갤 이유가 없다 — buildSlot·removeMode와 같은 "클라 로컬 UI" 부류다.
 let camShake = 0;
 let surgeDone = 0;         // 킬 서지가 몇 번 발동했는지
 let flashT = 0;  // 화면 중앙 알림 남은 시간
@@ -5654,8 +5660,7 @@ function restart() {
   if (menuOpen) setMenu(false);
   buildSlot = -1;      // 시작은 빈손 (숫자키로 들고 ESC로 내려놓는다)
   removeMode = false;
-  for (const q of players) { q.buildJob = null; q.buildOrder = null; q.buildCooldown = 0; }
-  upgradeJob = null;
+  for (const q of players) { q.buildJob = null; q.buildOrder = null; q.buildCooldown = 0; q.upgradeJob = null; }
   territoryGen = -1;   // 영토를 다시 센다 (세대 카운터라 시간으로 재면 안 된다 — D54의 교훈)
   for (const q of players) { q.wallOrders = []; q.wallCast = null; }
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
@@ -5669,8 +5674,7 @@ function restart() {
   ally.carry = 0;
   killCount = 0;
   for (const b of [...buildings]) destroyBuilding(b, false);
-  parts = 0;
-  for (const p of players) p.upg = newUpg();
+  for (const p of players) { p.parts = 0; p.upg = newUpg(); }
   upgOpen = false;
   renderUpgrade();
   stage = 1;
@@ -5807,44 +5811,45 @@ function updateRescue() {
 const upgEl = document.getElementById('upgrade');
 let upgOpen = false;
 
-function buyUpgrade(k) {
+function buyUpgrade(k, p = player) {
   const u = UPGRADES[k];
   if (!u) return;
-  if (!nearWorkshop()) { flashMsg('공방 옆에서만 개조할 수 있습니다', '#e05050'); return; }
-  const lv = player.upg[u.key];
+  if (!nearWorkshop(p)) { flashMsg('공방 옆에서만 개조할 수 있습니다', '#e05050'); return; }
+  const lv = p.upg[u.key];
   if (lv >= P.upgrade.maxLevel) { flashMsg('이미 최대 레벨입니다', '#e05050'); return; }
   const cost = upgCost(lv);
-  if (parts < cost) { flashMsg(`부품이 부족합니다 (${cost} 필요)`, '#e05050'); return; }
-  parts -= cost;
-  player.upg[u.key] = lv + 1;
+  if (p.parts < cost) { flashMsg(`부품이 부족합니다 (${cost} 필요)`, '#e05050'); return; }
+  p.parts -= cost;
+  p.upg[u.key] = lv + 1;
   flashMsg(`${u.label} Lv.${lv + 1}!`, '#8fd6ff');
   renderUpgrade();
 }
 
 // 공방 옆(4m)에 서 있어야 개조할 수 있다 — 공방을 지키고 드나들 이유
-function nearWorkshop() {
+function nearWorkshop(p = player) {
   return buildings.some((b) => b.kind === 'workshop' &&
-    Math.hypot(b.cx - player.x, b.cz - player.z) < 4.0);
+    Math.hypot(b.cx - p.x, b.cz - p.z) < 4.0);
 }
 
 // 공방 옆에 가면 **저절로 뜬다** (D88) — 개조가 있다는 걸 몰라서 안 쓰는 게 제일 큰 손실이다.
 // 다만 저절로 뜬 상태에서는 **읽기 전용**이고, 숫자키는 계속 핫바를 쓴다.
 // (안 그러면 내 공방 옆에서 건물을 못 짓는다) 구매는 U로 명시적으로 켜야 한다.
 function renderUpgrade() {
-  const ws = nearWorkshop();
+  const me = localPlayer();
+  const ws = nearWorkshop(me);
   const show = upgOpen || ws;
   if (!show) { upgEl.style.display = 'none'; return; }
   upgEl.style.display = 'block';
   upgEl.innerHTML =
-    `<div class="uhead">개조 · 부품 ${parts}` +
+    `<div class="uhead">개조 · 부품 ${me.parts}` +
     (!ws ? ' · <span class="warn">공방 옆으로 가세요</span>'
          : upgOpen ? ' · <span style="color:#6ee07a">숫자키로 구매 (U 닫기)</span>'
                    : ' · <span class="warn">U를 눌러 구매</span>') + '</div>' +
     UPGRADES.map((u, k) => {
-      const lv = localPlayer().upg[u.key];
+      const lv = me.upg[u.key];
       const max = lv >= P.upgrade.maxLevel;
       const cost = upgCost(lv);
-      const can = ws && upgOpen && !max && parts >= cost;
+      const can = ws && upgOpen && !max && me.parts >= cost;
       return `<div class="urow${can ? '' : ' dim'}">` +
         `<b>${k + 1}</b> ${u.label} <span class="lv">Lv.${lv}/${P.upgrade.maxLevel}</span>` +
         `<span class="cost">${max ? 'MAX' : `⚙️${cost}`}</span>` +
@@ -6182,7 +6187,7 @@ function updateHUD() {
   // "지금 하는 일" — 하나만 뜬다. 여러 개가 동시에 참인 경우는 없다
   const doing =
     player.buildJob ? `🏗 ${BLDG_INFO[player.buildJob.b.kind].label} 건설 ${Math.round(player.buildJob.t / player.buildJob.dur * 100)}% — 움직일 수 없다 (ESC)`
-    : upgradeJob ? `⬆ ${BLDG_INFO[upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
+    : player.upgradeJob ? `⬆ ${BLDG_INFO[player.upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
     : player.buildOrder ? `🏗 ${BLDG_INFO[player.buildOrder.kind].label} 지으러 가는 중`
     : player.wallOrders.length ? `🧱 벽 명령 ${player.wallOrders.length}개${player.wallCast ? ' (세우는 중)' : ''}`
     : player.mineOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
@@ -6375,7 +6380,7 @@ window.__game = {
   get removeMode() { return removeMode; }, set removeMode(v) { removeMode = v; },
   get upgradePromptText() { return upgradePrompt.userData.text; },
   get upgradePromptVisible() { return upgradePrompt.visible; },
-  get upgradeJob() { return upgradeJob; },
+  get upgradeJob() { return player.upgradeJob; },
   pickups, spawnPickup, UPGRADES, buyUpgrade,
   get upg() { return player.upg; },
   guards, projectiles, placeGuard, damageEnemy, topUpToCurve,
@@ -6386,7 +6391,7 @@ window.__game = {
   get allyHp() { return ally.hp; },
   hurtHamster, detonate, lobProjectile,
 
-  get parts() { return parts; }, set parts(v) { parts = v; },
+  get parts() { return player.parts; }, set parts(v) { player.parts = v; },
   MAPS, get mapIndex() { return mapIndex; }, setMap,
   ally, updateAlly, caught, gameOver,
   get playerStunned() { return player.stunned; },
