@@ -1203,7 +1203,7 @@ for (const p of players) {
   p.hurtT = 99;
   p.grace = 0;
   p.stunned = false;
-  // 구르기·기운 (D81 → D92-1d). player.rollT>0 이면 구르는 중 = 무적
+  // 구르기·기운 (D81 → D92-1d). rollT>0 이면 구르는 중 = 무적
   p.rollT = 0; p.rollCd = 0; p.rollX = 0; p.rollZ = 0; p.rollSpin = 0;
   p.stamina = P.player.stamMax; p.stamIdle = 0;
 }
