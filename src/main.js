@@ -6307,7 +6307,7 @@ function renderNetDev() {
   const behind = lastSnapT >= 0 ? lastSnapT - renderT : 0;
   const cls = (v, warn, bad) => (v >= bad ? 'bad' : v >= warn ? 'warn' : '');
   netDevEl.innerHTML =
-    `<b>F9 접속 진단</b>  ${net.role}${net.connected ? '' : ' (미접속)'}
+    `<b>F9 접속 진단</b>  ${net.role}${net.connected ? '' : ' (미접속)'}${alive ? '' : '  <span class="warn">판 종료 — 아래 숫자는 멈춘 값</span>'}
 ` +
     `프레임   ${fps}fps  p50 ${p50.toFixed(1)}ms  <span class="${cls(p95, 20, 33)}">p95 ${p95.toFixed(1)}ms</span>
 ` +
@@ -7090,6 +7090,11 @@ function tickClient(dt) {
     if (me.rollCd > 0) me.rollCd -= dt;
     // 호스트가 준 위치로 조용히 당겨 온다 (틀렸으면 여기서 새어 나온다)
     if (me.netX !== undefined) pullTo(me, me.netX, me.netZ, dt, 12);
+  } else if (me.netX !== undefined) {
+    // 기절·게임오버 중에는 **예측하지 않는다.** 예전엔 보정도 같이 건너뛰어서,
+    // 잡혀 끌려간 P2가 자기 화면에서는 원래 자리에 남아 있었다 —
+    // 구하러 오는 쪽이 엉뚱한 곳을 보게 되는 종류의 버그다.
+    me.x = me.netX; me.z = me.netZ;
   }
 
   // 원격 개체 — 스냅샷 두 장 사이를 시간으로 보간한다 (D93)
