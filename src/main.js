@@ -328,9 +328,9 @@ const BUILD_SLOTS = [
   { key: 'worker', label: '일꾼 고용', size: 1, need: 0, cost: () => cheeseCost(P.worker.cost) },
   { key: 'workshop', label: '공방', size: 2, need: 0, cost: () => cheeseCost(P.workshop.cost) },
   { key: 'tower', label: '경비탑', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
-  { key: 'melee', label: '근접병', size: 1, need: 1, cost: () => guardCost('melee') },
-  { key: 'archer', label: '사수', size: 1, need: 2, cost: () => guardCost('archer') },
-  { key: 'elite', label: '정예병', size: 1, need: 3, cost: () => guardCost('elite') },
+  { key: 'melee', label: '근접병', size: 1, need: 1, cost: () => guardCost('melee', localPlayer().owner) },
+  { key: 'archer', label: '사수', size: 1, need: 2, cost: () => guardCost('archer', localPlayer().owner) },
+  { key: 'elite', label: '정예병', size: 1, need: 3, cost: () => guardCost('elite', localPlayer().owner) },
 ];
 
 // 잠긴 이유 (없으면 null) — 핫바와 실제 거부 판정이 같은 함수를 본다
@@ -348,9 +348,12 @@ const cheeseCost = (base) => Math.round(base * P.res.costScale);
 
 // 다음 한 명의 값 — **병종별로 따로** 이미 거느린 수만큼 비싸진다 (D56 → 병종별 분리).
 // 예전엔 guards.length(3종 합산)를 봐서 사수 하나 사면 근접병·정예병 값도 같이 올랐다.
-const guardCost = (type) =>
+const guardCost = (type, owner = 'p') =>
   cheeseCost(GUARD_TYPES[type].cost() *
-    Math.pow(1 + P.guard.costGrowth, guards.filter((g) => g.type === type).length));
+    Math.pow(1 + P.guard.costGrowth, guards.filter((g) => g.type === type && g.owner === owner).length));
+// 방어병 정원도 소유자별이다 (D92-2단계) — 예전엔 guards 전체를 세서
+// P2가 뽑는 만큼 P1의 정원이 줄었다
+const guardsOf = (owner) => guards.filter((g) => g.owner === owner);
 
 // 공방이 지금 실존하는 최고 tier (0 = 공방 없음). 여러 채 지어도 최고 하나만 있으면
 // 통과 — 그 공방이 부서져도 다른 공방이 남아 있으면 해금이 유지된다.
@@ -1755,7 +1758,7 @@ function applyBuildingTierVisual(b) {
 // 앵커 (i,j) 기준 2x2. 실패 사유를 문자열로 돌려줘서 플래시로 안내
 // asOrder=true 면 거리·내 위치를 보지 않는다 (D66) — 명령이 걸어가고 비켜서기 때문.
 // 실제 착공(placeBuilding) 시점에는 asOrder=false로 다시 검사한다.
-function buildingPlacement(i, j, kind, asOrder = false) {
+function buildingPlacement(i, j, kind, asOrder = false, p = player) {
   if (i < 0 || j < 0 || i + 1 >= CELLS || j + 1 >= CELLS) return '맵 밖입니다';
   // 경비탑은 공방(어떤 tier든)이 실존해야 새로 지을 수 있다 (D82 기술 트리).
   // 실존 검사라 공방이 부서지면 이 자리에서 즉시 다시 막힌다.
@@ -1764,12 +1767,12 @@ function buildingPlacement(i, j, kind, asOrder = false) {
   for (const [ci, cj] of cells) {
     if (obstacles.has(cellKey(ci, cj))) return '자리가 막혀 있습니다 (2x2 공터 필요)';
     if (nodeAt(ci, cj)) return '광맥 위에는 지을 수 없습니다';
-    if (!asOrder && distCellToPoint(ci, cj, player.x, player.z) < P.player.radius + 0.02) return '내가 서 있는 자리입니다';
+    if (!asOrder && distCellToPoint(ci, cj, p.x, p.z) < P.player.radius + 0.02) return '내가 서 있는 자리입니다';
     for (const e of enemies)
       if (distCellToPoint(ci, cj, e.x, e.z) < enemyR(e) + 0.02) return '적이 서 있는 자리입니다';
   }
   const cx = cellToWorld(i, j).x + CS / 2, cz = cellToWorld(i, j).z + CS / 2;
-  if (!asOrder && Math.hypot(player.x - cx, player.z - cz) > P.wall.range + 1.2) return '너무 멉니다';
+  if (!asOrder && Math.hypot(p.x - cx, p.z - cz) > P.wall.range + 1.2) return '너무 멉니다';
   if (kind === 'depot') {
     for (const n of nodes) {
       const w = cellToWorld(n.i, n.j);
@@ -1783,11 +1786,11 @@ function buildingPlacement(i, j, kind, asOrder = false) {
 function placeBuilding(kind, i, j, owner = 'p') {
   const cost = buildCost(kind);
   if (purse(owner) < cost) {
-    if (owner === 'p') flashMsg(`치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050');
+    flashFor(ownerOf(owner), `치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050');
     return null;
   }
-  const err = buildingPlacement(i, j, kind);
-  if (err) { flashMsg(err, '#e05050'); return null; }
+  const err = buildingPlacement(i, j, kind, false, ownerOf(owner));
+  if (err) { flashFor(ownerOf(owner), err, '#e05050'); return null; }
   spend(owner, cost);
   const cx = cellToWorld(i, j).x + CS / 2, cz = cellToWorld(i, j).z + CS / 2;
   const mesh = makeBuildingMesh(kind, owner);
@@ -2462,19 +2465,20 @@ function pileCrowd(n) {
 }
 
 function hireWorker(owner = 'p') {
-  if (workers.filter((w) => w.owner === owner).length >= P.worker.max) {
-    if (owner === 'p') flashMsg('일꾼이 너무 많습니다', '#e05050');
+  const home = ownerOf(owner);
+  const mine = workers.filter((w) => w.owner === owner);
+  if (mine.length >= P.worker.max) {
+    flashFor(home, '일꾼이 너무 많습니다', '#e05050');
     return null;
   }
   const wcost = cheeseCost(P.worker.cost);
   if (purse(owner) < wcost) {
-    if (owner === 'p') flashMsg(`치즈가 부족합니다 (일꾼 ${wcost})`, '#e05050');
+    flashFor(home, `치즈가 부족합니다 (일꾼 ${wcost})`, '#e05050');
     return null;
   }
-  const home = owner === 'a' ? ally : player;
   const dep = nearestDepot(home.x, home.z, owner);
   if (!dep) {
-    if (owner === 'p') flashMsg('내 치즈 창고가 있어야 일꾼을 고용합니다', '#e05050');
+    flashFor(home, '내 치즈 창고가 있어야 일꾼을 고용합니다', '#e05050');
     return null;
   }
   spend(owner, wcost);
@@ -2482,7 +2486,7 @@ function hireWorker(owner = 'p') {
   vis.group.scale.setScalar(P.worker.radius);
   const ring = makeSelRing(0xf0c040, 0.85);
   // 일꾼도 **내 옆에서** 나온다 (동료 것은 동료 옆에서)
-  const sp = spawnSpotNear(home.x, home.z, P.worker.radius, workers.length);
+  const sp = spawnSpotNear(home.x, home.z, P.worker.radius, mine.length);
   const w = {
     kind: 'worker', id: nextId(),
     x: sp.x, z: sp.z,
@@ -2505,9 +2509,14 @@ function disposeWorker(w) {
   selectedUnits.delete(w);
 }
 
-function clearWorkers() {
-  for (const w of workers) disposeWorker(w);
+function clearWorkers(owner) {
+  const keep = [];
+  for (const w of workers) {
+    if (owner === undefined || w.owner === owner) disposeWorker(w);
+    else keep.push(w);
+  }
   workers.length = 0;
+  workers.push(...keep);
 }
 
 // ---- 유닛 선택 & 명령 (스타 방식) ----
@@ -2517,7 +2526,9 @@ function clearWorkers() {
 // 조작 편의로 무너지면 안 되기 때문이다.
 const selectedUnits = new Set();
 
-const myUnits = () => [...workers.filter((w) => w.owner === 'p'), ...guards];
+// 내가 명령할 수 있는 유닛 = **내 소유자 태그가 붙은 것**뿐이다 (D92-2단계).
+// 예전엔 일꾼만 'p'로 거르고 방어병은 전부 통과시켰다 (방어병에 owner가 없었으니까).
+const myUnits = (p = localPlayer()) => [...workers, ...guards].filter((u) => u.owner === p.owner);
 const selWorkers = () => [...selectedUnits].filter((u) => u.kind === 'worker' && workers.includes(u));
 const selGuards = () => [...selectedUnits].filter((u) => u.kind === 'guard' && guards.includes(u));
 
@@ -2547,9 +2558,9 @@ function unitAtScreen(clientX, clientY, maxPx = P.command.pickPx) {
   return best;
 }
 
-function commandWorkersToPile(pile) {
+function commandWorkersToPile(pile, p = localPlayer()) {
   const pw = cellToWorld(pile.i, pile.j);
-  const dep = nearestDepot(pw.x, pw.z, 'p');   // "가까운 치즈창고"로 나른다
+  const dep = nearestDepot(pw.x, pw.z, p.owner);   // "가까운 (내) 치즈창고"로 나른다
   let sent = 0, full = 0;
   for (const w of selWorkers()) {
     if (w.pile !== pile && pileCrowd(pile) >= P.worker.perPile) { full++; continue; }
@@ -2561,9 +2572,9 @@ function commandWorkersToPile(pile) {
     w.path.length = 0; w.repathT = 0;
     sent++;
   }
-  if (full) flashMsg(`${full}명은 못 붙는다 — 한 더미에 ${P.worker.perPile}명까지`, '#e05050');
-  else if (sent) flashMsg(`일꾼 ${sent}명 채굴 시작`, '#f0c040');
-  if (sent && !dep) flashMsg('내 치즈 창고가 없다 — 캐도 부릴 곳이 없다', '#e05050');
+  if (full) flashFor(p, `${full}명은 못 붙는다 — 한 더미에 ${P.worker.perPile}명까지`, '#e05050');
+  else if (sent) flashFor(p, `일꾼 ${sent}명 채굴 시작`, '#f0c040');
+  if (sent && !dep) flashFor(p, '내 치즈 창고가 없다 — 캐도 부릴 곳이 없다', '#e05050');
 }
 
 // 선택된 유닛 전부에게 이동 명령 (일꾼 + 방어병)
@@ -2704,7 +2715,8 @@ function updateTower(b, dt) {
   if (head) head.rotation.y = Math.atan2(target.x - b.cx, target.z - b.cz) + Math.PI;
   if (b.reload <= 0) {
     // tier가 오를수록 투사체도 커지고 밝아진다 — "이펙트가 강력해짐"
-    lobProjectile(b.cx, 1.5, b.cz, target, effTowerDmg(b.tier || 1), 1 + ((b.tier || 1) - 1) * 0.5);
+    lobProjectile(b.cx, 1.5, b.cz, target, effTowerDmg(b.tier || 1, ownerOf(b.owner)),
+                  1 + ((b.tier || 1) - 1) * 0.5, b.owner);
     b.reload = T.reload();
   }
 }
@@ -2753,14 +2765,15 @@ function detonate(e) {
 }
 
 // 적 피해 → 처치. 처치하면 치즈를 준다.
-function damageEnemy(e, dmg) {
+// by = 처치 보상을 받을 사람 (D92-2단계). 예전엔 누가 잡든 P1에게 갔다.
+function damageEnemy(e, dmg, by = player) {
   e.hp -= dmg;
   e.hitFlash = 0.15;
   if (e.hp > 0) return;
   const reward = P[e.type].reward;
-  player.cheese += reward;
+  by.cheese += reward;
   spawnBuildFx(e.x, e.z);
-  for (let k = 0; k < 3; k++) spawnCheeseBit(e.x, e.z, null);
+  for (let k = 0; k < 3; k++) spawnCheeseBit(e.x, e.z, null, by);
   scene.remove(e.vis.group);
   disposeBar(e.bar);
   if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); e.homeRing = null; }
@@ -2968,22 +2981,23 @@ function spawnSpotNear(x, z, r, n = 0) {
   return { x, z };
 }
 
-function placeGuard(type = 'archer') {
+function placeGuard(type = 'archer', p = player) {
   const T = GUARD_TYPES[type];
   // 기술 트리 게이트 (D82) — 공방이 그 등급 이상 실존해야 뽑을 수 있다
   if (maxWorkshopTier() < T.reqTier) {
-    flashMsg(`${T.label}은 공방 Lv.${T.reqTier}이 필요합니다`, '#e05050');
+    flashFor(p, `${T.label}은 공방 Lv.${T.reqTier}이 필요합니다`, '#e05050');
     return null;
   }
-  const cost = guardCost(type);
-  if (player.cheese < cost) { flashMsg(`치즈가 부족합니다 (${T.label} ${cost})`, '#e05050'); return null; }
-  if (guards.length >= P.guard.max) { flashMsg(`방어병이 너무 많습니다 (최대 ${P.guard.max})`, '#e05050'); return null; }
-  const w = spawnSpotNear(player.x, player.z, T.radius(), guards.length);
-  player.cheese -= cost;
+  const mine = guardsOf(p.owner);
+  const cost = guardCost(type, p.owner);
+  if (p.cheese < cost) { flashFor(p, `치즈가 부족합니다 (${T.label} ${cost})`, '#e05050'); return null; }
+  if (mine.length >= P.guard.max) { flashFor(p, `방어병이 너무 많습니다 (최대 ${P.guard.max})`, '#e05050'); return null; }
+  const w = spawnSpotNear(p.x, p.z, T.radius(), mine.length);
+  p.cheese -= cost;
   const vis = makeGuardVis(type);
   const maxHp = T.hp();
   const g = {
-    kind: 'guard', id: nextId(), type, x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1,
+    kind: 'guard', id: nextId(), type, owner: p.owner, x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1,
     vis, ring: makeSelRing(0x9fe8a0, 1.05), path: [], repathT: 0, reload: 0, focus: null,
     hp: maxHp, maxHp, bar: maxHp > 0 ? makeBar(0x5fd07a, 1.0) : null, swing: 0,
   };
@@ -3007,17 +3021,20 @@ function removeGuard(g, byEnemy) {
   const k = guards.indexOf(g);
   if (k >= 0) guards.splice(k, 1);
   selectedUnits.delete(g);
-  if (byEnemy) { spawnBuildFx(g.x, g.z); flashMsg(`${GUARD_TYPES[g.type].label}이(가) 쓰러졌다!`, '#ff6b6b'); }
+  if (byEnemy) { flashFor(ownerOf(g.owner), `${GUARD_TYPES[g.type].label}이(가) 쓰러졌다!`, '#ff6b6b'); spawnBuildFx(g.x, g.z); }
 }
 
-function clearGuards() {
-  for (const g of [...guards]) removeGuard(g, false);
-  projectiles.length = 0;
+// owner를 주면 그 사람 것만 지운다 (D92-2단계).
+// **이 필터가 없어서 P1이 잡히면 P2의 군대까지 통째로 사라졌다.**
+function clearGuards(owner) {
+  for (const g of [...guards]) if (owner === undefined || g.owner === owner) removeGuard(g, false);
+  if (owner === undefined) projectiles.length = 0;
 }
 
 // 던지기 — 포물선이라 벽을 넘어간다 (경비탑·방어병 공용)
 // scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
-function lobProjectile(x, y, z, e, dmg, scale = 1) {
+// owner = 이 투사체를 쏜 쪽. 처치 보상이 그 사람에게 간다 (D92-2단계)
+function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p') {
   const m = new THREE.Mesh(projGeo, scale > 1 ? projMat.clone() : projMat);
   if (scale > 1) {
     m.material.emissiveIntensity = 0.5 + (scale - 1) * 0.6;
@@ -3029,7 +3046,7 @@ function lobProjectile(x, y, z, e, dmg, scale = 1) {
   scene.add(m);
   projectiles.push({
     mesh: m, t: 0, dur: 0.35 + Math.hypot(e.x - x, e.z - z) * 0.045,
-    x0: x, y0: y, z0: z, target: e, dmg,
+    x0: x, y0: y, z0: z, target: e, dmg, owner,
   });
 }
 
@@ -3047,7 +3064,7 @@ function updateProjectiles(dt) {
     );
     q.mesh.rotation.x += dt * 10;
     if (p >= 1) {
-      if (q.target && enemies.includes(q.target)) damageEnemy(q.target, q.dmg);
+      if (q.target && enemies.includes(q.target)) damageEnemy(q.target, q.dmg, ownerOf(q.owner));
       scene.remove(q.mesh);
       if (q.mesh.material !== projMat) q.mesh.material.dispose();
       projectiles.splice(k, 1);
@@ -3131,9 +3148,9 @@ function updateGuards(dt) {
       const dc = Math.max(Math.hypot(tgt.x - g.x, tgt.z - g.z), 0.001);
       g.faceX = (tgt.x - g.x) / dc; g.faceZ = (tgt.z - g.z) / dc;
       if (g.reload <= 0) {
-        const dmg = effGuardDmg(g.type);   // 방어병 화력 업그레이드 반영 (D87)
-        if (T.melee) { damageEnemy(tgt, dmg); g.swing = 0.22; }
-        else lobProjectile(g.x, 0.9, g.z, tgt, dmg);
+        const dmg = effGuardDmg(g.type, ownerOf(g.owner));   // 방어병 화력 업그레이드 반영 (D87)
+        if (T.melee) { damageEnemy(tgt, dmg, ownerOf(g.owner)); g.swing = 0.22; }
+        else lobProjectile(g.x, 0.9, g.z, tgt, dmg, 1, g.owner);
         g.reload = T.reload();
       }
     }
@@ -4903,7 +4920,7 @@ function updateLocalUI(dt) {
     ghostWhy = !affordable ? '치즈 부족' : (valid ? '' : '창고가 필요합니다');
   } else if (GUARD_TYPES[slot.key]) {
     // 유닛은 내 옆에서 나온다 — 자리를 안 찍으므로 타일 유효성도 없다
-    valid = affordable && guards.length < P.guard.max;
+    valid = affordable && guardsOf(me.owner).length < P.guard.max;
     ghostWhy = !affordable ? '치즈 부족' : (valid ? '' : `방어병 최대 ${P.guard.max}`);
   } else if (hasTile) {
     if (slot.size === 2) {
@@ -4925,7 +4942,8 @@ function updateLocalUI(dt) {
   // 클릭이든 Enter든 누르면 된다는 게 저절로 읽힌다.
   if (unitSlot) {
     const r = GUARD_TYPES[slot.key] ? GUARD_TYPES[slot.key].radius() : P.worker.radius;
-    const n = GUARD_TYPES[slot.key] ? guards.length : workers.length;
+    const n = GUARD_TYPES[slot.key] ? guardsOf(me.owner).length
+                                    : workers.filter((w) => w.owner === me.owner).length;
     const sp = spawnSpotNear(me.x, me.z, r, n);
     unitGhostAt.set(sp.x, sp.z);
     ghost.visible = alive;
@@ -4966,7 +4984,7 @@ function updateLocalUI(dt) {
     // "어딘가를 찍어야 하나?"로 오해될 일이 없다 — 둘 다 열어 두는 게 손해가 없다
     if (spawnPressed || buildPressed) {
       if (lock) flashMsg(lock, '#e05050');
-      else if (GUARD_TYPES[slot.key]) placeGuard(slot.key);
+      else if (GUARD_TYPES[slot.key]) placeGuard(slot.key, me);
       else hireWorker(me.owner);
     }
   } else if (buildPressed && hasTile && !lock) {
@@ -5789,32 +5807,30 @@ function caught(who) {
     e.path = []; e.repathT = 0; e.stallT = 0; e.attackTarget = null; e.raidTarget = null;
   }
   who.hp = P.player.hp; who.hurtT = 99;   // 잡히면 체력은 채워서 부활한다 (D92-1c: 양쪽 동일)
-  // 원작: 잡히면 지은 것이 전부 소멸하고 깃발만 남는다 (D7).
-  // 플레이어가 잡혔을 때만 — 동료는 지은 게 없다.
-  if (who === player && P.player.wipeOnCatch) {
+  // 원작: 잡히면 **그 사람이** 지은 것이 전부 소멸하고 깃발만 남는다 (D7).
+  // 소멸은 소유자별이다 (D92-2단계). 벽·건물은 예전에도 소유자를 봤는데
+  // 방어병·일꾼만 필터가 없어서, P1이 잡히면 P2의 군대까지 같이 사라졌다.
+  // 솔로 동료는 지은 게 없으므로 여기서 아무 일도 안 일어난다.
+  if (P.player.wipeOnCatch && !who.ai) {
     let lost = 0;
     for (const ob of [...obstacles.values()])
-      if (!ob.bedrock && !ob.bldgRef && ob.owner !== 'a') { removeObstacle(ob); lost++; }
-    for (const b of [...buildings]) if (b.owner !== 'a') destroyBuilding(b, false);
-    clearGuards();
-    clearWorkers();
-    player.carry = 0;
+      if (!ob.bedrock && !ob.bldgRef && ob.owner === who.owner) { removeObstacle(ob); lost++; }
+    for (const b of [...buildings]) if (b.owner === who.owner) destroyBuilding(b, false);
+    clearGuards(who.owner);
+    clearWorkers(who.owner);
+    who.carry = 0;
     refreshClearance();
     repathAll();
-    if (lost) flashMsg(`잡혔다! 지은 것이 전부 무너졌다 (벽 ${lost}칸)`, '#ff4d4d');
+    if (lost) flashFor(who, `잡혔다! 지은 것이 전부 무너졌다 (벽 ${lost}칸)`, '#ff4d4d');
   }
   const soloMode = !ally.active;
-  if (who === player) {
-    player.stunned = true;
-    camTarget.set(player.x, 0, player.z); // 카메라가 끌려간 걸 보여줌
-    if (soloMode || ally.stunned) return gameOver();
-    flashMsg('잡혔다! 동료가 구하러 올 때까지 기절', '#ff6b6b');
-  } else {
-    ally.stunned = true;
-    ally.path = [];
-    if (player.stunned) return gameOver();
-    flashMsg('동료가 잡혔다! 적 본진에서 기절 — 구하러 가자', '#ff6b6b');
-  }
+  who.stunned = true;
+  if (who === ally) ally.path = [];
+  if (who.local) camTarget.set(who.x, 0, who.z); // 카메라가 끌려간 걸 보여줌
+  const other = who === player ? ally : player;
+  if ((who === player && soloMode) || other.stunned) return gameOver();
+  if (who.local) flashMsg('잡혔다! 동료가 구하러 올 때까지 기절', '#ff6b6b');
+  else flashMsg('동료가 잡혔다! 적 본진에서 기절 — 구하러 가자', '#ff6b6b');
 }
 
 function gameOver() {
@@ -5918,6 +5934,14 @@ function flashMsg(text, color = '#6ee07a') {
   flashEl.style.color = color;
   flashEl.style.opacity = '1';
   flashT = 2.0;
+}
+
+// 소유자가 있는 실패·성공 알림은 **그 사람 화면에만** 떠야 한다 (D92-2단계).
+// 안 그러면 P2가 치즈가 모자라 벽을 못 세울 때마다 P1 화면에 빨간 글씨가 뜬다.
+// p가 null이면(주인 없는 사건) 그냥 띄운다.
+function flashFor(p, text, color = '#6ee07a') {
+  if (p && !p.local) return;
+  flashMsg(text, color);
 }
 
 
@@ -6344,7 +6368,15 @@ function tick(dt) {
     // 영토 면적당 치즈 수입 (D88 실험) — 치즈더미 없이 숨어 있어도 소량은 모인다.
     // **면적에 비례**하므로 "숨어 있으면 번다"가 아니라 "넓혀야 번다"가 된다.
     // 채굴 왕복(D36)을 대체하지 않도록 일부러 작게 뒀다 (기본값 근거는 P.res.terrIncome 주석).
-    if (P.res.terrIncome > 0) player.cheese += territoryArea * P.res.terrIncome * dt;
+    // 영토에는 소유자가 없다 (벽 한 줄을 둘이 같이 쌓으면 누구 땅인지 정할 방법이 없다).
+    // 그래서 **면적 수입을 살아 있는 인원수로 균등 분할**한다 — D92의 의도적 타협이다.
+    // 나누는 대상은 **사람이 운전하는 햄스터**뿐이다. AI 동료는 D64의 고정 예산으로
+    // 살기 때문에 수입이 필요 없고, 여기에 끼우면 솔로 수입이 조용히 반토막 난다.
+    if (P.res.terrIncome > 0) {
+      const share = players.filter((q) => !q.ai && (q === player || q.active));
+      const each = territoryArea * P.res.terrIncome * dt / Math.max(share.length, 1);
+      for (const q of share) q.cheese += each;
+    }
   }
   updateFx(dt);
   updateCamera(dt);
