@@ -1213,6 +1213,9 @@ for (const p of players) {
   p.mineOrder = null;      // { pile }
   p.orderPath = [];
   p.orderRepathT = 0;
+  // 벽 명령 큐와 시전 상태 (D92-1e)
+  p.wallOrders = [];       // [{ i, j }]
+  p.wallCast = null;       // { i, j, t } — 이동하면 즉시 null (D58)
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -1992,10 +1995,10 @@ function stepToward(gx, gz, stopAt, dt, p = player) {
 // 실제로 필요한 건 "목표에 손이 닿는 가장 가까운 서 있을 자리"다.
 // 내 위치에서 BFS로 넓혀가며 **사거리 안에 드는 첫 칸**을 고르면,
 // 벽 이쪽 편이면 이쪽 편에서, 은신처 안이면 목표 쪽 틈에서 빼꼼 내밀고 짓게 된다.
-function nearestBuildSpot(tx, tz, r, range) {
+function nearestBuildSpot(tx, tz, r, range, p = player) {
   if (!clearHam) return null;
   const pass = (i) => canPass(clearHam, i, r);
-  const start = nearestPassableNav(player.x, player.z, pass);
+  const start = nearestPassableNav(p.x, p.z, pass);
   const seen = new Uint8Array(NAV * NAV);
   const q = [start];
   seen[start] = 1;
@@ -2027,17 +2030,17 @@ function nearestBuildSpot(tx, tz, r, range) {
 //  · 내가 서 있는 자리도 된다 — **살짝 비켜선 뒤** 짓는다
 //  · 여러 번 클릭하면 줄줄이 예약된다 (순서대로)
 //  · WASD로 직접 움직이면 전부 취소 (개입이 항상 우선 — 채굴 명령과 같은 규칙)
-let wallOrders = [];
-
-function clearWallOrders(msg) {
-  if (!wallOrders.length && !wallCast) return;
-  wallOrders = [];
-  wallCast = null;
+function clearWallOrders(msg, p = player) {
+  if (!p.wallOrders.length && !p.wallCast) return;
+  p.wallOrders = [];
+  p.wallCast = null;
   if (msg) flashMsg(msg, '#9aa3b2');
 }
 
 // 그 칸에 지을 수 있는가 (거리·바라보는 방향은 **명령이 알아서 하므로 보지 않는다**)
-function wallSpotOk(i, j) {
+// p = 명령을 내리는 쪽. 자기 몸은 비켜서면 되므로 막지 않는다 (updateWallOrder 1단계).
+// 막는 건 **다른 햄스터**다 — 예전엔 그게 항상 ally였다 (2P에서는 P1일 수도 있다).
+function wallSpotOk(i, j, p = player) {
   if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) return '맵 밖입니다';
   if (obstacles.has(cellKey(i, j))) return '이미 뭔가 있음';
   if (nodeAt(i, j)) return '치즈더미 위';
@@ -2045,31 +2048,34 @@ function wallSpotOk(i, j) {
   const pr = P.wall.post / 2;
   for (const e of enemies)
     if (Math.hypot(w.x - e.x, w.z - e.z) < pr + enemyR(e) + 0.02) return '적이 서 있는 자리';
-  if (ally.active && Math.hypot(w.x - ally.x, w.z - ally.z) < pr + P.ally.radius + 0.02)
-    return '동료가 서 있는 자리';
+  for (const q of players) {
+    if (q === p || (q !== player && !q.active)) continue;
+    const qr = q === ally ? P.ally.radius : P.player.radius;
+    if (Math.hypot(w.x - q.x, w.z - q.z) < pr + qr + 0.02) return '동료가 서 있는 자리';
+  }
   return null;
 }
 
-function updateWallOrder(dt) {
-  while (wallOrders.length) {
-    const o = wallOrders[0];
-    const err = wallSpotOk(o.i, o.j);
-    if (err) { wallOrders.shift(); wallCast = null; continue; }   // 상황이 바뀌었으면 건너뛴다
-    if (player.cheese < P.wall.cost) { clearWallOrders('치즈가 부족해 벽 명령을 취소'); return; }
+function updateWallOrder(dt, p = player) {
+  while (p.wallOrders.length) {
+    const o = p.wallOrders[0];
+    const err = wallSpotOk(o.i, o.j, p);
+    if (err) { p.wallOrders.shift(); p.wallCast = null; continue; }   // 상황이 바뀌었으면 건너뛴다
+    if (p.cheese < P.wall.cost) { clearWallOrders('치즈가 부족해 벽 명령을 취소', p); return; }
     const w = cellToWorld(o.i, o.j);
-    const dCen = Math.hypot(w.x - player.x, w.z - player.z);
+    const dCen = Math.hypot(w.x - p.x, w.z - p.z);
     const tooClose = P.wall.post / 2 + P.player.radius + 0.15;
 
     // 1) 내가 그 자리에 서 있으면 **살짝 비켜선다** (원작 프로브가 자리를 내주듯)
     if (dCen < tooClose) {
-      let ax = player.x - w.x, az = player.z - w.z;
+      let ax = p.x - w.x, az = p.z - w.z;
       const al = Math.hypot(ax, az);
-      if (al < 1e-4) { ax = player.faceX || 1; az = player.faceZ || 0; }
+      if (al < 1e-4) { ax = p.faceX || 1; az = p.faceZ || 0; }
       else { ax /= al; az /= al; }
       const gx = clamp(w.x + ax * (tooClose + 0.2), -HALF + 1, HALF - 1);
       const gz = clamp(w.z + az * (tooClose + 0.2), -HALF + 1, HALF - 1);
-      stepToward(gx, gz, 0.12, dt);
-      wallCast = null;
+      stepToward(gx, gz, 0.12, dt, p);
+      p.wallCast = null;
       return;
     }
     // 2) 아직 멀면 걸어간다
@@ -2077,34 +2083,34 @@ function updateWallOrder(dt) {
       // 목표가 아니라 **시공 자리**로 간다 (D67). 0.4초마다 다시 고른다.
       o.spotT = (o.spotT || 0) - dt;
       if (!o.spot || o.spotT <= 0) {
-        o.spot = nearestBuildSpot(w.x, w.z, P.player.radius, P.wall.range - navRes * 0.5);
+        o.spot = nearestBuildSpot(w.x, w.z, P.player.radius, P.wall.range - navRes * 0.5, p);
         o.spotT = 0.4;
       }
       // 격자에 걸리는 자리를 못 찾으면 목표로 직행한다 (조용히 취소하지 않는다).
       // 어차피 매 프레임 사거리를 연속값으로 다시 재므로, 가까워지면 거기서 짓는다.
-      if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt);
-      else stepToward(w.x, w.z, P.wall.range - 0.05, dt);
-      wallCast = null;
+      if (o.spot) stepToward(o.spot.x, o.spot.z, 0.18, dt, p);
+      else stepToward(w.x, w.z, P.wall.range - 0.05, dt, p);
+      p.wallCast = null;
       return;
     }
 
     // 3) 도착 — 그 칸을 보고 잠깐 서서 짓는다 (무방비 구간)
-    const fx = w.x - player.x, fz = w.z - player.z;
+    const fx = w.x - p.x, fz = w.z - p.z;
     const fl = Math.hypot(fx, fz) || 1;
-    player.faceX = fx / fl; player.faceZ = fz / fl;
-    if (!wallCast || wallCast.i !== o.i || wallCast.j !== o.j) wallCast = { i: o.i, j: o.j, t: 0 };
-    wallCast.t += dt;
-    if (wallCast.t >= P.wall.castTime) {
-      player.cheese -= P.wall.cost;
-      const ob = addObstacle(o.i, o.j, false);
+    p.faceX = fx / fl; p.faceZ = fz / fl;
+    if (!p.wallCast || p.wallCast.i !== o.i || p.wallCast.j !== o.j) p.wallCast = { i: o.i, j: o.j, t: 0 };
+    p.wallCast.t += dt;
+    if (p.wallCast.t >= P.wall.castTime) {
+      p.cheese -= P.wall.cost;
+      const ob = addObstacle(o.i, o.j, false, false, p.owner);
       refreshClearance();
       repathAll();
       ob.mesh.scale.y = 0.02;
       ob.mesh.position.y = 0.01;
       popping.push({ ob, t: 0 });
       spawnBuildFx(w.x, w.z);
-      wallCast = null;
-      wallOrders.shift();
+      p.wallCast = null;
+      p.wallOrders.shift();
     }
     return;
   }
@@ -2353,7 +2359,7 @@ function fAction() {
 }
 
 function updateUpgradePrompt() {
-  const show = alive && !player.stunned && !buildJob && !upgradeJob && !wallCast;
+  const show = alive && !player.stunned && !buildJob && !upgradeJob && !player.wallCast;
   const a = show ? fAction() : null;
   upgradePrompt.visible = !!a;
   if (!a) return;
@@ -4245,7 +4251,7 @@ window.addEventListener('keydown', (e) => {
     else if (buildJob) cancelBuild(true);
     else if (upgradeJob) cancelUpgrade(true);
     else if (buildOrder) { buildOrder = null; flashMsg('건물 명령 취소', '#9aa3b2'); }
-    else if (wallOrders.length) clearWallOrders('벽 명령 취소');
+    else if (player.wallOrders.length) clearWallOrders('벽 명령 취소');
     else if (removeMode) { removeMode = false; updateHotbar(); }
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (player.mineOrder) clearMineOrder('채굴 명령 취소');
@@ -4722,17 +4728,16 @@ function updatePlayer(dt) {
     if (ml > 1e-4) {
       // 직접 움직이면 걸어둔 명령은 전부 풀린다 — 개입이 항상 우선이다
       if (player.mineOrder) clearMineOrder('직접 이동 — 채굴 명령 취소');
-      if (wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소');
+      if (player.wallOrders.length) clearWallOrders('직접 이동 — 벽 명령 취소');
       if (buildOrder) { buildOrder = null; flashMsg('직접 이동 — 건물 명령 취소', '#9aa3b2'); }
-      wallCast = null;
-      wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
+      player.wallCast = null;   // 벽은 서 있어야 지어진다 (D58)
       mx /= ml; mz /= ml;
       player.x += mx * effPlayerSpeed() * dt;
       player.z += mz * effPlayerSpeed() * dt;
       player.faceX = mx; player.faceZ = mz;
     } else if (buildOrder) {
       updateBuildOrder(dt);       // 건물 명령이 최우선 (하나뿐이고 비싸다)
-    } else if (wallOrders.length) {
+    } else if (player.wallOrders.length) {
       updateWallOrder(dt);        // 벽 명령이 채굴보다 우선 (방금 내린 지시니까)
     } else if (player.mineOrder) {
       updateMineOrder(dt);
@@ -4771,9 +4776,9 @@ function updatePlayer(dt) {
     const mining = player.job === 'mine';
     const building = !!buildJob;
     const upgrading = !!upgradeJob;
-    const casting = !!wallCast;
+    const casting = !!player.wallCast;
     setBar(playerWorkBar,
-           casting ? wallCast.t / P.wall.castTime
+           casting ? player.wallCast.t / P.wall.castTime
                    : building ? buildJob.t / buildJob.dur
                    : upgrading ? upgradeJob.t / upgradeJob.dur
                    : (player.mineT || 0) / effMineTime(),
@@ -4913,8 +4918,8 @@ function updatePlayer(dt) {
   if (slot.key === 'wall') {
     // 클릭 한 번 = "거기에 지으러 가라" (D60/D73). 사거리는 짧게 두되(D69) 걷는 건 대신해 준다.
     if (buildPressed && valid && hasTile) {
-      if (!wallOrders.some((o) => o.i === gi && o.j === gj)) {
-        wallOrders.push({ i: gi, j: gj });
+      if (!player.wallOrders.some((o) => o.i === gi && o.j === gj)) {
+        player.wallOrders.push({ i: gi, j: gj });
         if (player.mineOrder) clearMineOrder();
         player.orderPath.length = 0; player.orderRepathT = 0;
       }
@@ -4943,7 +4948,6 @@ function updatePlayer(dt) {
 // ---- 건물 건설 (시간 소요 · 무방비) ----
 // 짓는 동안 플레이어는 그 자리에 묶인다. ESC로 중단하면 펑 터지고 자원을 돌려받는다.
 let buildJob = null;   // { b, t, dur, cost }
-let wallCast = null;   // { i, j, t } — 벽 시전 중 (D58). 이동하면 즉시 null
 let ghostWhy = '';     // 지금 그 칸에 못 짓는 이유 (HUD 힌트 + 디버그)
 
 function buildTimeOf(kind) {
@@ -5566,9 +5570,9 @@ function startRoll() {
   player.faceX = dx; player.faceZ = dz;
   // 구르면 걸어둔 명령은 전부 풀린다 (직접 이동과 같은 취급)
   clearMineOrder();
-  if (wallOrders.length) clearWallOrders();
+  if (player.wallOrders.length) clearWallOrders();
   buildOrder = null;
-  wallCast = null;
+  player.wallCast = null;
 }
 
 let camShake = 0;
@@ -5652,8 +5656,7 @@ function restart() {
   buildJob = null;
   upgradeJob = null;
   territoryGen = -1;   // 영토를 다시 센다 (세대 카운터라 시간으로 재면 안 된다 — D54의 교훈)
-  wallCast = null;
-  wallOrders = [];
+  for (const q of players) { q.wallOrders = []; q.wallCast = null; }
   buildOrder = null;
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
   for (const p of players) { p.rollT = 0; p.rollCd = 0; p.stamina = P.player.stamMax; p.stamIdle = 99; }
@@ -6181,7 +6184,7 @@ function updateHUD() {
     buildJob ? `🏗 ${BLDG_INFO[buildJob.b.kind].label} 건설 ${Math.round(buildJob.t / buildJob.dur * 100)}% — 움직일 수 없다 (ESC)`
     : upgradeJob ? `⬆ ${BLDG_INFO[upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
     : buildOrder ? `🏗 ${BLDG_INFO[buildOrder.kind].label} 지으러 가는 중`
-    : wallOrders.length ? `🧱 벽 명령 ${wallOrders.length}개${wallCast ? ' (세우는 중)' : ''}`
+    : player.wallOrders.length ? `🧱 벽 명령 ${player.wallOrders.length}개${player.wallCast ? ' (세우는 중)' : ''}`
     : player.mineOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
     : player.job === 'mine' ? '⛏ 채굴'
     : player.job === 'drop' ? '📦 하역'
@@ -6355,9 +6358,9 @@ window.__game = {
   get playerJob() { return player.job; },
   get allyRes() { return ally.cheese; }, set allyRes(v) { ally.cheese = v; },
   get buildJob() { return buildJob; },
-  get wallCast() { return wallCast; },
+  get wallCast() { return player.wallCast; },
   wallSpotOk, nearestBuildSpot, clearWallOrders,
-  get wallOrders() { return wallOrders; }, get buildOrder() { return buildOrder; },
+  get wallOrders() { return player.wallOrders; }, get buildOrder() { return buildOrder; },
   get ghostCell() { return ghostCell; }, get ghostWhy() { return ghostWhy; },
   startBuild, cancelBuild, pickShelter, shelterTodo,
   buildings, placeBuilding, destroyBuilding, STAGES,
