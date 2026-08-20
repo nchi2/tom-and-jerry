@@ -125,6 +125,94 @@ window.__verify = () => {
   g.step(20);
   out.push({ t: 'B9.end', alive: g.alive, errs: window.__errs.length, msgs: window.__errs.slice(0, 4) });
 
+  // ---- D. 동료 경제 (D92-2단계) ----
+  // **이 코드 경로는 한 번도 실행된 적이 없다.** D47이 동료 경제를 들어냈기 때문에
+  // placeBuilding(...,'a') / hireWorker('a') / placeGuard(...,ally) 가 전부 죽은 코드였다.
+  // 여기서 P2가 될 슬롯을 손으로 돌려 본다. 적은 여전히 꺼져 있다.
+  window.__errs.length = 0;
+  g.restart();
+  g.setEnemyCount(0);
+  const a = g.ally;
+  a.active = true; a.stunned = false;
+  a.ai = false;                        // AI를 끄고 사람처럼 다룬다 (6단계의 예행)
+  a.cheese = 6000; a.parts = 200;
+  g.player.cheese = 6000;
+  // 두 햄스터를 멀리 떼어 놓는다 (자리 다툼이 원인인지 아닌지 구분하려고)
+  a.x = g.PLAYER_SPAWN.x + 14; a.z = g.PLAYER_SPAWN.z + 6;
+
+  const aCell = (kind) => {
+    const c = g.worldToCell(a.x, a.z);
+    let best = null, bd = 1e9;
+    for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) {
+      const i = c.i + di, j = c.j + dj;
+      if (kind ? g.buildingPlacement(i, j, kind, false, a) : g.wallSpotOk(i, j, a)) continue;
+      const w = g.cellToWorld(i, j);
+      const d = Math.hypot(w.x - a.x, w.z - a.z);
+      if (d < bd) { bd = d; best = { i, j }; }
+    }
+    return best;
+  };
+
+  // D1) 동료 창고
+  let ac = aCell('depot');
+  const aDepot = ac ? g.placeBuilding('depot', ac.i, ac.j, 'a') : null;
+  if (aDepot) aDepot.underBuild = false;
+  out.push({ t: 'D1.allyDepot', placed: !!aDepot, owner: aDepot && aDepot.owner, cheese: R(a.cheese) });
+
+  // D2) 동료 일꾼 — 자기 창고로 날라야 한다
+  const aw = g.hireWorker('a');
+  out.push({ t: 'D2.allyWorker', hired: !!aw, owner: aw && aw.owner,
+             depotOwner: aw && aw.depot && aw.depot.owner });
+
+  // D3) 동료 공방 + 방어병
+  ac = aCell('workshop');
+  const aWs = ac ? g.placeBuilding('workshop', ac.i, ac.j, 'a') : null;
+  if (aWs) { aWs.underBuild = false; aWs.tier = 1; }
+  const ag = g.placeGuard('melee', a);
+  out.push({ t: 'D3.allyGuard', ws: !!aWs, guard: !!ag, owner: ag && ag.owner,
+             guards: g.guards.length });
+
+  // D4) 동료 벽 명령 — 사람이 조종하는 것처럼
+  const awc = g.worldToCell(a.x, a.z);
+  let aq = 0;
+  for (const [di, dj] of [[1, 0], [0, 1], [-1, 0]]) {
+    if (!g.wallSpotOk(awc.i + di, awc.j + dj, a)) { a.wallOrders.push({ i: awc.i + di, j: awc.j + dj }); aq++; }
+  }
+  const cw = () => { let n = 0; for (const ob of g.obstacles.values()) if (!ob.bedrock && !ob.bldgRef && ob.owner === 'a') n++; return n; };
+  const aw0 = cw();
+  g.step(20);   // ai=false 이므로 tick이 알아서 updateActor(ally)를 돌린다
+  out.push({ t: 'D4.allyWalls', queued: aq, left: a.wallOrders.length, built: cw() - aw0 });
+
+  // D5) 동료 채굴 명령
+  const apile = g.nearestPile(a.x, a.z, 999);
+  g.setMineOrder(apile, a);
+  const ac0 = a.cheese;
+  g.step(30);
+  out.push({ t: 'D5.allyMine', order: !!a.mineOrder, job: a.job, carry: R(a.carry), mined: R(a.cheese - ac0) });
+
+  // D6) **핵심**: P1이 잡혀도 P2의 군대가 살아 있는가
+  const pw = g.hireWorker('p');
+  const pg = g.placeGuard('melee', g.player);
+  const before = { pw: g.workers.filter((w) => w.owner === 'p').length,
+                   aw: g.workers.filter((w) => w.owner === 'a').length,
+                   pg: g.guards.filter((x) => x.owner === 'p').length,
+                   ag: g.guards.filter((x) => x.owner === 'a').length,
+                   ab: g.buildings.filter((b) => b.owner === 'a').length,
+                   pb: g.buildings.filter((b) => b.owner === 'p').length };
+  g.playerHp = 1;
+  g.hurtHamster(g.player, 5);
+  const after = { pw: g.workers.filter((w) => w.owner === 'p').length,
+                  aw: g.workers.filter((w) => w.owner === 'a').length,
+                  pg: g.guards.filter((x) => x.owner === 'p').length,
+                  ag: g.guards.filter((x) => x.owner === 'a').length,
+                  ab: g.buildings.filter((b) => b.owner === 'a').length,
+                  pb: g.buildings.filter((b) => b.owner === 'p').length };
+  out.push({ t: 'D6.p1Caught', before, after, allySurvived:
+             after.aw === before.aw && after.ag === before.ag && after.ab === before.ab,
+             p1Wiped: after.pw === 0 && after.pg === 0 && after.pb === 0 });
+  out.push({ t: 'D7.end', errs: window.__errs.length, msgs: window.__errs.slice(0, 6) });
+  a.ai = true;
+
   // ---- C. 전투 60초 ----
   window.__errs.length = 0;
   g.P.enemy.count = en0; g.P.patrol.count = pat0; g.P.threat.everyLevels = grow0; g.P.enemy.spawnDelay = del0;

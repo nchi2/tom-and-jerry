@@ -4998,12 +4998,18 @@ function updateLocalUI(dt) {
   prompts();
 }
 
-// 기존 이름은 "이 프레임의 플레이어 처리 한 묶음"으로 남긴다 (호출부 그대로).
-// 솔로에서는 로컬 플레이어가 player 하나뿐이라 순서가 예전과 같다.
+// 사람이 운전하는 햄스터인가 (AI 동료도 아니고, 꺼진 슬롯도 아닌)
+const isDriven = (p) => !p.ai && (p === player || p.active);
+
+// 이 프레임의 플레이어 처리 한 묶음. 솔로에서는 사람이 player 하나뿐이라
+// 순서와 결과가 예전 updatePlayer와 같다.
 function updatePlayer(dt) {
-  sampleLocalInput(player);
-  updateActor(player, dt);
-  updateActorVis(player, dt);
+  sampleLocalInput(localPlayer());   // 로컬 입력은 로컬 플레이어에게만 (원격은 p.in을 네트워크가 채운다)
+  for (const p of players) {
+    if (!isDriven(p)) continue;
+    updateActor(p, dt);
+    updateActorVis(p, dt);
+  }
   updateLocalUI(dt);
 }
 
@@ -6320,7 +6326,10 @@ function tick(dt) {
       flashT -= dt;
       if (flashT <= 0) flashEl.style.opacity = '0';
     }
-    updateAlly(dt);
+    // 동료 슬롯은 AI가 몰거나(솔로) 사람이 몬다(2P). 사람이 몰면 updatePlayer가
+    // 이미 updateActor로 돌렸으므로 AI 루틴을 겹쳐 돌리면 안 된다 (D92-6단계 이음매).
+    if (ally.ai) updateAlly(dt);
+    else allyVis.group.visible = ally.active;
     updateRescue();
     flushNavDirty();           // 이번 프레임에 바뀐 벽을 한 번에 반영 (D70)
     trackTargetVelocity(dt);   // 리드 조준용 속도 추정 (적이 앞을 노린다)
@@ -6353,7 +6362,10 @@ function tick(dt) {
     }
     if (camShake > 0) camShake -= dt * 2;
     updateStageTimer(dt);
-    player.job = player.stunned ? null : doCarryWork(player, dt, P.carry.playerLoad, 'p');
+    // 나르기는 사람이 모는 햄스터 전부가 한다 (D92-2단계).
+    // 솔로에서는 player 하나라 예전과 같다.
+    for (const p of players)
+      if (isDriven(p)) p.job = p.stunned ? null : doCarryWork(p, dt, P.carry.playerLoad, p.owner);
     updateWorkers(dt);
     updateGuards(dt);
     updateProjectiles(dt);
