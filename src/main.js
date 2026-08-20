@@ -5176,7 +5176,7 @@ function sendInput(p, dt) {
   if (!changed && inSendT > 0) return;
   inSendT = 1 / 30;
   inLastX = p.in.mx; inLastZ = p.in.mz;
-  net.send({ k: 'IN', mx: p.in.mx, mz: p.in.mz });
+  net.send({ k: 'IN', mx: p.in.mx, mz: p.in.mz }, true);   // 무순서 — 다음 입력이 덮어쓴다
 }
 
 // 이 프레임의 플레이어 처리 한 묶음. 솔로에서는 사람이 player 하나뿐이라
@@ -6301,7 +6301,6 @@ function renderNetDev() {
   const p95 = n ? sorted[Math.floor(n * 0.95)] : 0;
   const fps = p50 > 0 ? Math.round(1000 / p50) : 0;
   const snapHz = (snapTimes.length / 2).toFixed(1);
-  const kbs = net.role === 'host' ? net.sentBytes : net.recvBytes;
   const me = localPlayer();
   // 예측 오차 = 내가 그리는 내 위치와 호스트가 말하는 내 위치의 차이
   const err = me.netX !== undefined ? Math.hypot(me.x - me.netX, me.z - me.netZ) : 0;
@@ -6315,7 +6314,7 @@ function renderNetDev() {
 ` +
     `RTT      ${net.rtt}ms   스냅 수신 ${snapHz}/s (목표 ${P.net.rate})
 ` +
-    `누적     보냄 ${Math.round(net.sentBytes / 1024)}KB · 받음 ${Math.round(net.recvBytes / 1024)}KB
+    `채널     ${net.fastOpen ? '무순서 OK' : '<span class="warn">순서채널 폴백</span>'}  대기 ${Math.round(net.buffered/1024)}KB  <span class="${net.dropped ? 'warn' : ''}">버림 ${net.dropped}</span>  재접속 ${net.retries}
 ` +
     `보간     ${(behind * 1000).toFixed(0)}ms 뒤 (설정 ${(P.net.interpDelay * 1000).toFixed(0)}ms)
 ` +
@@ -6350,6 +6349,22 @@ function applyFull(f) {
   if (f.settings) applySettings(f.settings);
   stage = f.stage; stageT = f.stageT; survival = f.survival;
   if (f.nodes) f.nodes.forEach((amt, k) => { if (nodes[k]) nodes[k].amount = amt; });
+  // **벽과 건물을 실제로 세운다** (D94). 예전엔 HELLO에 실어 보내 놓고 쓰지를 않았다.
+  // 처음 붙을 때는 호스트도 방금 새 판을 연 참이라 티가 안 났지만, 끊겼다 다시 붙으면
+  // 참가자만 지어 놓은 게 전부 사라진 세계를 보게 된다.
+  wallEvMute++;
+  for (const [i, j, owner, cracks] of f.walls || []) {
+    const ob = addObstacle(i, j, false, false, owner);
+    if (ob && cracks) { ob.cracks = cracks; applyCrackVisual(ob); }
+  }
+  wallEvMute--;
+  for (const b of f.buildings || []) {
+    const nb = placeBuildingLocal(b.kind, b.i, b.j, b.owner, b.id);
+    nb.hp = b.hp;
+    if (b.tier && b.tier !== nb.tier) { nb.tier = b.tier; applyBuildingTierVisual(nb); }
+    if (!b.underBuild) finishBuild(nb);
+  }
+  markNavDirty();
   // 클라는 자기 몸(동료 슬롯)만 예측한다. 나머지는 스냅샷이 채운다
   P.ally.radius = P.player.radius;
   allyVis.group.scale.setScalar(P.ally.radius);
@@ -6375,12 +6390,17 @@ const netHooks = {
       // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 여기서만 덮어쓴다 (D92)
       P.ally.radius = P.player.radius;      // 안 맞추면 P2 히트박스가 35% 크다
       allyVis.group.scale.setScalar(P.ally.radius);
-      ally.cheese = startResources();        // 솔로 동료는 벽 12개분뿐이라 창고를 못 짓는다 (D64)
-      // **판을 새로 시작한다** (D93). 예전에는 호스트가 하던 솔로 판에 상대를 얹어서,
-      // 참가자는 이미 굴러가던 세계 한복판에 떨어졌고 화면이 안 넘어가는 것처럼 보였다.
-      beginMatch();
+      // **처음 붙을 때만** 판을 새로 시작한다 (D93). 예전에는 호스트가 하던 솔로 판에
+      // 상대를 얹어서, 참가자가 이미 굴러가던 세계 한복판에 떨어졌다.
+      // 다만 끊겼다 다시 붙는 것까지 재시작하면 **잠깐 끊긴 것만으로 판이 날아간다** (D94) —
+      // 그때는 지금 상태를 통째로 다시 보내 주기만 하면 된다.
+      const resumed = started;
+      if (!resumed) {
+        ally.cheese = startResources();    // 솔로 동료는 벽 12개분뿐이라 창고를 못 짓는다 (D64)
+        beginMatch();
+      }
       net.send({ k: 'HELLO', full: fullSnapshot() });
-      flashMsg('친구가 들어왔다! 같이 시작', '#6ee07a');
+      flashMsg(resumed ? '친구가 다시 붙었다' : '친구가 들어왔다! 같이 시작', '#6ee07a');
     }
     renderNet();
   },
@@ -6471,7 +6491,7 @@ function sendSnapshot(dt) {
     ev: wallEvents,
   };
   wallEvents = [];
-  net.send(msg);
+  net.send(msg, true);   // 무순서 채널 — 늦은 스냅샷이 뒤를 막지 않게 (D94)
 }
 
 // ---- 원격 개체 보간 (D93) ----
@@ -7246,17 +7266,61 @@ function tick(dt) {
   sendSettings(dt);
 }
 
+// ============================================================
+// 루프 (D94에서 창을 내려도 안 멈추게 고침)
+//  브라우저는 **숨은 탭의 requestAnimationFrame을 아예 멈춘다.** 그러면 호스트가
+//  창을 내리는 순간 시뮬이 정지하고, 상대 화면에서는 세계가 그대로 얼어붙는다.
+//  방 코드를 불러 주려면 어차피 창을 옮겨야 하니 실제로 늘 일어나는 일이다.
+//  Worker의 타이머는 숨어 있어도 산다(실측 ~13Hz). 그걸 심장박동으로 쓴다.
+//  화면은 어차피 안 보이므로 **그릴 필요는 없고, 시뮬만 이어 가면 된다.**
 let prevT = performance.now();
+let visible = !document.hidden;
+
+function stepBy(elapsedMs, draw) {
+  // 한 번에 몰아서 따라잡되 상한을 둔다 (오래 숨어 있었으면 그만큼은 버린다 —
+  // 다 따라잡으려다 프레임을 통째로 잡아먹는 죽음의 나선을 피한다)
+  let left = Math.min(elapsedMs / 1000, 0.5);
+  while (left > 0) {
+    const dt = Math.min(left, 1 / 60);
+    tick(dt);
+    left -= dt;
+  }
+  if (draw) { faceBars(); renderer.render(scene, activeCam()); }
+}
+
 function loop() {
   requestAnimationFrame(loop);
+  if (document.hidden) return;          // 숨어 있으면 심장박동이 대신 돈다
   const now = performance.now();
-  const dt = Math.min((now - prevT) / 1000, 0.05);
+  const el = now - prevT;
   prevT = now;
-  tick(dt);
-  faceBars();
-  renderer.render(scene, activeCam());
+  stepBy(el, true);
 }
 loop();
+
+// 숨어 있는 동안만 도는 심장박동. rAF가 살아 있으면 아무 일도 안 한다.
+{
+  const src = 'let t=null; onmessage=(e)=>{ if(e.data){ t=t||setInterval(()=>postMessage(1),16); }' +
+              ' else { clearInterval(t); t=null; } };';
+  let beat = null;
+  try {
+    beat = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    beat.onmessage = () => {
+      if (!document.hidden) return;
+      const now = performance.now();
+      const el = now - prevT;
+      prevT = now;
+      stepBy(el, false);                // 안 보이는 화면은 안 그린다
+    };
+  } catch { /* Worker를 못 만들면 예전처럼 rAF만 쓴다 */ }
+  const sync = () => {
+    visible = !document.hidden;
+    prevT = performance.now();          // 돌아왔을 때 큰 dt가 한 번에 들어오지 않게
+    if (beat) beat.postMessage(document.hidden ? 1 : 0);
+  };
+  document.addEventListener('visibilitychange', sync);
+  sync();
+}
 
 // 자동 검증용 디버그 훅
 window.__game = {
