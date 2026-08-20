@@ -602,6 +602,13 @@ function paintTerritory() {
 //  bedrock = 파괴 불가 지형 (미리 배치)
 // ============================================================
 const obstacles = new Map();
+// ---- 벽 이벤트 큐 (D92-6단계) ----
+// 벽은 300칸까지 가므로 스냅샷에 매번 실을 수 없다. 대신 **바뀔 때만** 보낸다.
+// 호스트에서 벽이 생기고/사라지고/금이 갈 때 여기 쌓였다가 다음 스냅샷에 딸려 나간다.
+// (건물은 12채뿐이라 그냥 스냅샷에 통째로 싣는다 — 이벤트를 둘 만들 이유가 없다)
+let wallEvents = [];
+let wallEvMute = 0;   // 초기 생성·맵 재구성처럼 통째로 다시 보낼 때는 개별 이벤트를 막는다
+const wallEv = (e) => { if (!wallEvMute && netAuthoring()) wallEvents.push(e); };
 const wallGeo = new THREE.BoxGeometry(1, 1, 1);
 // 플레이어 벽은 **원기둥**이다 (D59). 사각 기둥이면 대각 관문이 코너-코너 거리라
 // √2×(틈)밖에 안 나오는데, 원이면 중심거리 자체가 √2배로 벌어져 관문이 훨씬 넓다.
@@ -637,10 +644,12 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
     bedrock, building, mesh,
   };
   obstacles.set(key, ob);
+  if (post) wallEv({ a: 1, i, j, o: owner });
   return ob;
 }
 
 function removeObstacle(ob) {
+  if (!ob.bedrock && !ob.bldgRef) wallEv({ a: 0, i: ob.i, j: ob.j });
   obstacles.delete(cellKey(ob.i, ob.j));
   if (ob.mesh) {
     scene.remove(ob.mesh);
@@ -679,12 +688,14 @@ function crackWall(ob) {
   ob.cracks = (ob.cracks || 0) + 1;
   if (ob.cracks > P.wall.crackMax) { removeObstacle(ob); return true; }
   applyCrackVisual(ob);
+  wallEv({ a: 2, i: ob.i, j: ob.j, c: ob.cracks });
   return false;
 }
 
 function repairWall(ob) {
   ob.cracks = 0;
   applyCrackVisual(ob);
+  wallEv({ a: 2, i: ob.i, j: ob.j, c: 0 });
 }
 
 // ============================================================
@@ -1801,13 +1812,20 @@ function placeBuilding(kind, i, j, owner = 'p') {
   const err = buildingPlacement(i, j, kind, false, ownerOf(owner));
   if (err) { flashFor(ownerOf(owner), err, '#e05050'); return null; }
   spend(owner, cost);
+  const b = placeBuildingLocal(kind, i, j, owner, nextId());
+  spawnBuildFx(b.cx, b.cz);
+  return b;
+}
+
+// 순수 생성 — 비용도 자리 검사도 안 본다 (클라가 스냅샷대로 세울 때 쓴다, D92-6단계)
+function placeBuildingLocal(kind, i, j, owner, id) {
   const cx = cellToWorld(i, j).x + CS / 2, cz = cellToWorld(i, j).z + CS / 2;
   const mesh = makeBuildingMesh(kind, owner);
   mesh.position.set(cx, 0, cz);
   scene.add(mesh);
   const hp = buildHp(kind);
   // tier: 공방·경비탑만 의미가 있다 (제자리 업그레이드, D82). 새로 지으면 항상 1.
-  const b = { kind, id: nextId(), i, j, owner, cells: [], hp, maxHp: hp, store: 0, mesh, cx, cz, bitT: 0,
+  const b = { kind, id, i, j, owner, cells: [], hp, maxHp: hp, store: 0, mesh, cx, cz, bitT: 0,
               underBuild: false, tier: 1,
               bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6) };
   for (const [ci, cj] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
@@ -1817,7 +1835,6 @@ function placeBuilding(kind, i, j, owner = 'p') {
   }
   buildings.push(b);
   markNavDirty();
-  spawnBuildFx(cx, cz);
   if (kind === 'workshop' || kind === 'tower') applyBuildingTierVisual(b);
   return b;
 }
@@ -2491,22 +2508,29 @@ function hireWorker(owner = 'p') {
     return null;
   }
   spend(owner, wcost);
-  const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
-  vis.group.scale.setScalar(P.worker.radius);
-  const ring = makeSelRing(0xf0c040, 0.85);
   // 일꾼도 **내 옆에서** 나온다 (동료 것은 동료 옆에서)
   const sp = spawnSpotNear(home.x, home.z, P.worker.radius, mine.length);
+  const w = newWorker(owner, nextId(), sp.x, sp.z);
+  w.depot = dep;
+  spawnBuildFx(w.x, w.z);
+  return w;
+}
+
+// 순수 생성 — 비용도 조건도 안 본다. 호스트의 hireWorker와
+// **클라이언트의 표시용 껍데기**가 같은 생성자를 쓰게 하려고 갈랐다 (D92-6단계).
+function newWorker(owner, id, x, z) {
+  const vis = makeCarrierVis(owner === 'a' ? 0x93b0e0 : 0xd9c48a);
+  vis.group.scale.setScalar(P.worker.radius);
   const w = {
-    kind: 'worker', id: nextId(),
-    x: sp.x, z: sp.z,
+    kind: 'worker', id, x, z,
     faceX: 0, faceZ: 1, carry: 0, pile: null, job: null, owner,
     // forced = 플레이어가 직접 지정한 더미 (자동 재배치가 덮어쓰지 않는다)
     // moveGoal = 이동 명령 목적지 / idle = 명령을 끝내고 대기 중 (스스로 일하지 않음)
     forced: false, moveGoal: null, idle: false,
-    path: [], repathT: 0, vis, ring, depot: dep, workBar: makeBar(0xf0c040, 0.9),
+    path: [], repathT: 0, vis, ring: makeSelRing(0xf0c040, 0.85), depot: null,
+    workBar: makeBar(0xf0c040, 0.9),
   };
   workers.push(w);
-  spawnBuildFx(w.x, w.z);
   return w;
 }
 
@@ -3002,15 +3026,22 @@ function placeGuard(type = 'archer', p = player) {
   if (mine.length >= P.guard.max) { flashFor(p, `방어병이 너무 많습니다 (최대 ${P.guard.max})`, '#e05050'); return null; }
   const w = spawnSpotNear(p.x, p.z, T.radius(), mine.length);
   p.cheese -= cost;
-  const vis = makeGuardVis(type);
+  const g = newGuard(type, p.owner, nextId(), w.x, w.z);
+  spawnBuildFx(w.x, w.z);
+  return g;
+}
+
+// 순수 생성 (newWorker와 같은 이유로 갈랐다 — D92-6단계)
+function newGuard(type, owner, id, x, z) {
+  const T = GUARD_TYPES[type];
   const maxHp = T.hp();
   const g = {
-    kind: 'guard', id: nextId(), type, owner: p.owner, x: w.x, z: w.z, gx: w.x, gz: w.z, faceX: 0, faceZ: 1,
-    vis, ring: makeSelRing(0x9fe8a0, 1.05), path: [], repathT: 0, reload: 0, focus: null,
+    kind: 'guard', id, type, owner, x, z, gx: x, gz: z, faceX: 0, faceZ: 1,
+    vis: makeGuardVis(type), ring: makeSelRing(0x9fe8a0, 1.05),
+    path: [], repathT: 0, reload: 0, focus: null,
     hp: maxHp, maxHp, bar: maxHp > 0 ? makeBar(0x5fd07a, 1.0) : null, swing: 0,
   };
   guards.push(g);
-  spawnBuildFx(w.x, w.z);
   return g;
 }
 
@@ -3268,9 +3299,15 @@ function randomOpenCell() {
 }
 
 function spawnPickup() {
+  if (!netAuthoring()) return;   // 스폰은 호스트만 (D92-6단계)
   const spot = randomOpenCell();
   if (!spot) return;
-  const isParts = Math.random() < P.pickup.partsRatio;
+  spawnPickupLocal(Math.random() < P.pickup.partsRatio ? 'parts' : 'cheese', spot.x, spot.z, nextId());
+}
+
+// 표시용 생성 — 클라가 스냅샷을 보고 같은 걸 만들 수 있게 갈랐다 (D92-6단계)
+function spawnPickupLocal(kind, x, z, id) {
+  const isParts = kind === 'parts';
   const mesh = new THREE.Mesh(
     isParts ? partGeo : pileGeo,
     new THREE.MeshStandardMaterial({
@@ -3280,10 +3317,12 @@ function spawnPickup() {
       emissiveIntensity: 0.7,
     })
   );
-  mesh.position.set(spot.x, 0.5, spot.z);
+  mesh.position.set(x, 0.5, z);
   mesh.castShadow = true;
   scene.add(mesh);
-  pickups.push({ kind: isParts ? 'parts' : 'cheese', id: nextId(), x: spot.x, z: spot.z, mesh, t: 0 });
+  const u = { kind, id, x, z, mesh, t: 0 };
+  pickups.push(u);
+  return u;
 }
 
 // 후반일수록 부품이 더 자주·더 많이 나온다 (D87) — 적이 단단해지는 만큼 밖에 나갈 값어치가 커진다
@@ -3928,6 +3967,7 @@ function spawnBoss() {
 }
 
 function advanceStage() {
+  if (!netAuthoring()) return;          // 스테이지 진행은 호스트만 (D92-6단계)
   if (stage >= STAGES.length) return;   // 보스만이 승리를 결정한다 — 더 이상 진행 없음
   stage++;
   stageT = 0;
@@ -3943,6 +3983,7 @@ function advanceStage() {
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
 function updateSpawns() {
+  if (!netAuthoring()) return;   // 증원은 호스트만 — 클라가 적을 만들면 id가 충돌한다
   const per = P.threat.everyLevels;
   const growthTarget = per > 0 ? Math.floor(threatLevel() / per) : 0;
   while (growthSpawned < growthTarget) {
@@ -4329,7 +4370,7 @@ window.addEventListener('keydown', (e) => {
     }
   }
   if (e.code === 'KeyP') paused = !paused;
-  if (e.code === 'KeyR') restart();
+  if (e.code === 'KeyR') issueCommand({ t: 'restart' });
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
   if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
 
@@ -4869,7 +4910,14 @@ function removeAt(p, i, j) {
 }
 
 function applyCommand(p, c) {
-  if (!alive || !c) return;
+  if (!c) return;
+  // 재시작은 죽은 뒤에 쓰는 명령이라 alive 검사보다 먼저 온다
+  if (c.t === 'restart') {
+    restart();
+    if (net.role === 'host' && net.connected) net.send({ k: 'HELLO', full: fullSnapshot() });
+    return;
+  }
+  if (!alive) return;
   switch (c.t) {
     case 'roll':   startRoll(p); break;
     case 'wall':   queueWall(p, c.i, c.j); break;
@@ -5804,6 +5852,7 @@ function rebuildWorld(idx) {
 }
 
 function setMap(idx) {
+  if (!netAuthoring() && net.connected) return;   // 맵은 호스트가 정한다
   rebuildWorld(((idx % MAPS.length) + MAPS.length) % MAPS.length);
   restart();
   flashMsg(`${MAPS[mapIndex].name} — ${MAPS[mapIndex].desc}`, '#6ee07a');
@@ -5835,8 +5884,9 @@ function restart() {
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
   for (const p of players) { p.rollT = 0; p.rollCd = 0; p.stamina = P.player.stamMax; p.stamIdle = 99; }
   // 솔로 동료는 '벽 N개분'만 갖는다 (D64) — 벽만 짓는 AI라 그게 예산의 의미다.
-  // ⚠ 2P에서는 P2가 창고도 못 짓는 금액이므로, 세션 시작 때 startResources()로 덮어쓴다 (D92-6단계).
-  ally.cheese = P.ally.startWalls * P.wall.cost;
+  // 2P에서는 사람이 모는 자리이므로 플레이어와 같은 시작 자금을 준다 (D92-6단계).
+  // 안 그러면 **재시작할 때마다 P2만 창고를 못 짓는 상태로 돌아간다.**
+  ally.cheese = ally.ai ? P.ally.startWalls * P.wall.cost : startResources();
   ally.shelter = null;
   ally.buildCd = 0;
   player.carry = 0;
@@ -5873,8 +5923,12 @@ function restart() {
     if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); }
   }
   enemies.length = 0;
-  setEnemyCount(P.enemy.count);
-  spawnPatrols();          // 맵에 상주하는 순찰조 (웨이브와 별개)
+  // 적 스폰은 호스트만 한다 (D92-6단계) — 클라가 만들면 id가 어긋나서
+  // 스냅샷이 엉뚱한 개체에 값을 써 넣고, 그 증상이 물리 버그처럼 보인다
+  if (netAuthoring()) {
+    setEnemyCount(P.enemy.count);
+    spawnPatrols();        // 맵에 상주하는 순찰조 (웨이브와 별개)
+  }
   survival = 0;
   caughtCount = 0;
   for (const p of players) p.grace = 0;
@@ -6084,7 +6138,7 @@ function buildMapList() {
 }
 
 document.getElementById('m-resume').onclick = () => setMenu(false);
-document.getElementById('m-restart').onclick = () => { setMenu(false); restart(); };
+document.getElementById('m-restart').onclick = () => { setMenu(false); issueCommand({ t: 'restart' }); };
 document.getElementById('m-help').onclick = () => { setMenu(false); helpOpen = true; renderHelp(); };
 document.getElementById('m-gui').onclick = () => { setGui(!guiOpen); };
 document.getElementById('m-maps').onclick = () => { buildMapList(); mapListEl.classList.add('on'); };
@@ -6189,6 +6243,182 @@ function onNetMessage(m) {
     case 'HELLO':  applyFull(m.full); break;
     case 'IN':     ally.in.mx = m.mx; ally.in.mz = m.mz; break;
     case 'CMD':    applyCommand(ally, m.c); break;
+    case 'SNAP':   applySnapshot(m); break;
+  }
+}
+
+// ============================================================
+// 스냅샷 (D92-6단계)
+//  호스트만 시뮬을 돌린다. 클라는 이걸 받아 그리기만 한다.
+//  · 연속 상태(위치·체력·자원)는 SNAP에 20Hz로
+//  · 벽은 wallEvents로 (300칸을 매번 실을 수 없다)
+//  · 건물은 12채뿐이라 그냥 SNAP에 통째로 (이벤트 종류를 늘릴 값이 없다)
+//  숫자는 배열로 담는다 — 키 이름이 페이로드의 절반을 먹기 때문이다.
+// ============================================================
+const SNAP_TYPES = ['chaser', 'runner', 'bomber', 'boss'];
+const SNAP_GUARDS = ['melee', 'archer', 'elite'];
+const r2 = (v) => Math.round(v * 100) / 100;
+const jobCode = (j) => (j === 'mine' ? 1 : j === 'drop' ? 2 : 0);
+const jobName = (c) => (c === 1 ? 'mine' : c === 2 ? 'drop' : null);
+
+// "내가 세계의 주인인가" — 솔로와 호스트는 true, 클라는 false.
+// 스폰·재시작·스테이지 진행을 이걸로 막는다. 클라가 자기 멋대로 적을 만들면
+// id가 충돌해서 **물리 버그처럼 보이는 증상**이 난다.
+const netAuthoring = () => net.role !== 'client';
+
+let snapT = 0;
+function sendSnapshot(dt) {
+  if (net.role !== 'host' || !net.connected) return;
+  snapT -= dt;
+  if (snapT > 0) return;
+  snapT = 1 / Math.max(P.net.rate, 1);
+  const msg = {
+    k: 'SNAP',
+    t: r2(survival), st: stage, sT: r2(stageT), al: alive ? 1 : 0, ki: killCount,
+    tr: Math.round(territoryArea), vi: victory ? 1 : 0,
+    ps: players.map((p) => [r2(p.x), r2(p.z), r2(p.faceX), r2(p.faceZ), Math.round(p.hp),
+                            p.stunned ? 1 : 0, r2(p.rollT), r2(p.rollSpin), r2(p.cheese),
+                            p.parts, Math.round(p.stamina), r2(p.carry || 0),
+                            r2(p.mineT || 0), jobCode(p.job), r2(p.harvestPulse),
+                            p.wallCast ? r2(p.wallCast.t) : -1,
+                            p.buildJob ? r2(p.buildJob.t / p.buildJob.dur) : -1,
+                            p.upgradeJob ? r2(p.upgradeJob.t / p.upgradeJob.dur) : -1,
+                            p.wallOrders.length, p.buildOrder ? 1 : 0, p.mineOrder ? 1 : 0]),
+    en: enemies.map((e) => [e.id, r2(e.x), r2(e.z), r2(e.dirX), r2(e.dirZ), Math.round(e.hp),
+                            SNAP_TYPES.indexOf(e.type), e.windupPull ? r2(e.windupPull) : 0,
+                            e.isAttacking ? 1 : 0]),
+    wk: workers.map((w) => [w.id, r2(w.x), r2(w.z), r2(w.faceX), r2(w.faceZ),
+                            w.owner === 'a' ? 1 : 0, jobCode(w.job), r2(w.mineT || 0)]),
+    gu: guards.map((g) => [g.id, r2(g.x), r2(g.z), r2(g.faceX), r2(g.faceZ), Math.round(g.hp),
+                           g.owner === 'a' ? 1 : 0, SNAP_GUARDS.indexOf(g.type), r2(g.swing || 0)]),
+    bl: buildings.map((b) => [b.id, b.kind, b.i, b.j, b.owner, Math.round(b.hp), b.tier || 1,
+                              b.underBuild ? 1 : 0, Math.round(b.store || 0),
+                              b.underBuild && b.selfDur ? r2(b.selfT / b.selfDur) : -1]),
+    pu: pickups.map((u) => [u.id, r2(u.x), r2(u.z), u.kind === 'parts' ? 1 : 0]),
+    nd: nodes.map((n) => Math.round(n.amount)),
+    ev: wallEvents,
+  };
+  wallEvents = [];
+  net.send(msg);
+}
+
+// 원격 개체는 스냅샷 위치로 **당겨 간다**. 20Hz 스냅을 그대로 찍으면 뚝뚝 끊겨 보이고,
+// 지수 감쇠로 당기면 한 스냅 간격 안에 따라잡으면서 부드럽다.
+// 다만 오차가 크면(잡힘·구출처럼 순간이동에 가까운 사건) 부드럽게 끌면 오히려 이상하므로 즉시 스냅한다.
+function pullTo(o, x, z, dt, rate = 18) {
+  const d = Math.hypot(x - o.x, z - o.z);
+  if (d > P.net.smoothMax) { o.x = x; o.z = z; return; }
+  const k = 1 - Math.exp(-rate * dt);
+  o.x += (x - o.x) * k;
+  o.z += (z - o.z) * k;
+}
+
+let lastSnap = null;
+function applySnapshot(m) {
+  lastSnap = m;
+  survival = m.t; stage = m.st; stageT = m.sT; killCount = m.ki;
+  territoryArea = m.tr; victory = !!m.vi;
+  if (!!m.al !== alive) {
+    alive = !!m.al;
+    overlayEl.classList.toggle('hidden', alive);
+    if (!alive) overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
+  }
+
+  // ---- 플레이어 둘 ----
+  m.ps.forEach((a, k) => {
+    const p = players[k];
+    if (!p) return;
+    p.netX = a[0]; p.netZ = a[1];
+    p.faceX = a[2]; p.faceZ = a[3];
+    p.hp = a[4]; p.stunned = !!a[5];
+    p.rollSpin = a[7];
+    p.cheese = a[8]; p.parts = a[9]; p.stamina = a[10];
+    p.carry = a[11]; p.mineT = a[12]; p.job = jobName(a[13]); p.harvestPulse = a[14];
+    // 진행 바를 그리기 위한 최소한의 가짜 작업 상태 (클라는 시뮬을 안 돌린다)
+    p.wallCast = a[15] >= 0 ? { i: 0, j: 0, t: a[15] } : null;
+    p.buildJob = a[16] >= 0 ? { b: null, t: a[16], dur: 1 } : null;
+    p.upgradeJob = a[17] >= 0 ? { b: null, t: a[17], dur: 1 } : null;
+    p.wallOrderCount = a[18]; p.hasBuildOrder = !!a[19];
+    p.mineOrder = a[20] ? (p.mineOrder || { pile: null }) : null;
+    // **내 몸은 예측한다** — rollT는 내가 굴린 걸 내가 안다 (D92 예측 규칙)
+    if (!p.local) { p.rollT = a[6]; p.x = p.netX; p.z = p.netZ; }
+  });
+
+  // ---- 적 ----
+  syncList(enemies, m.en, (a) => {
+    const e = makeEnemy(SNAP_TYPES[a[6]], enemies.length);
+    e.id = a[0];
+    enemies.push(e);
+    return e;
+  }, (e, a) => {
+    e.netX = a[1]; e.netZ = a[2]; e.dirX = a[3]; e.dirZ = a[4];
+    e.hp = a[5]; e.windupPull = a[7]; e.isAttacking = !!a[8];
+  }, (e) => {
+    scene.remove(e.vis.group); disposeBar(e.bar);
+    if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); }
+  });
+
+  syncList(workers, m.wk, (a) => newWorker(a[5] ? 'a' : 'p', a[0], a[1], a[2]),
+    (w, a) => { w.netX = a[1]; w.netZ = a[2]; w.faceX = a[3]; w.faceZ = a[4];
+                w.job = jobName(a[6]); w.mineT = a[7]; },
+    (w) => disposeWorker(w));
+
+  syncList(guards, m.gu, (a) => newGuard(SNAP_GUARDS[a[7]], a[6] ? 'a' : 'p', a[0], a[1], a[2]),
+    (g, a) => { g.netX = a[1]; g.netZ = a[2]; g.faceX = a[3]; g.faceZ = a[4];
+                g.hp = a[5]; g.swing = a[8]; },
+    (g) => { scene.remove(g.vis.group); scene.remove(g.ring); g.ring.material.dispose();
+             if (g.bar) disposeBar(g.bar); selectedUnits.delete(g); });
+
+  syncList(buildings, m.bl, (a) => placeBuildingLocal(a[1], a[2], a[3], a[4], a[0]),
+    (b, a) => {
+      b.hp = a[5];
+      if (b.tier !== a[6]) { b.tier = a[6]; applyBuildingTierVisual(b); }
+      const wasUnder = b.underBuild;
+      b.underBuild = !!a[7];
+      b.store = a[8];
+      if (a[9] >= 0) b.mesh.scale.y = 0.25 + 0.75 * a[9];
+      if (wasUnder && !b.underBuild) finishBuild(b);
+    },
+    (b) => destroyBuilding(b, false));
+
+  syncList(pickups, m.pu, (a) => spawnPickupLocal(a[3] ? 'parts' : 'cheese', a[1], a[2], a[0]),
+    (u, a) => { u.x = a[1]; u.z = a[2]; },
+    (u) => { scene.remove(u.mesh); u.mesh.material.dispose(); });
+
+  m.nd.forEach((amt, k) => { if (nodes[k]) nodes[k].amount = amt; });
+
+  // ---- 벽 이벤트 ----
+  for (const e of m.ev || []) {
+    const ob = obstacles.get(cellKey(e.i, e.j));
+    if (e.a === 1) {
+      if (!ob) {
+        wallEvMute++;
+        const nw = addObstacle(e.i, e.j, false, false, e.o);
+        wallEvMute--;
+        if (nw) { nw.mesh.scale.y = 0.02; nw.mesh.position.y = 0.01; popping.push({ ob: nw, t: 0 }); }
+      }
+    } else if (e.a === 0) {
+      if (ob) { wallEvMute++; removeObstacle(ob); wallEvMute--; }
+    } else if (e.a === 2 && ob) {
+      ob.cracks = e.c;
+      applyCrackVisual(ob);
+    }
+  }
+}
+
+// 스냅샷의 배열과 로컬 목록을 id로 맞춘다 (없으면 만들고, 남으면 지운다)
+function syncList(list, rows, make, apply, dispose) {
+  const seen = new Set();
+  for (const a of rows) {
+    seen.add(a[0]);
+    let o = list.find((x) => x.id === a[0]);
+    if (!o) { o = make(a); if (!o) continue; }
+    apply(o, a);
+  }
+  for (let k = list.length - 1; k >= 0; k--) {
+    if (seen.has(list[k].id)) continue;
+    dispose(list[k]);
+    list.splice(k, 1);
   }
 }
 
@@ -6472,14 +6702,19 @@ function updateHUD() {
     return on.repeat(n) + off.repeat(10 - n);
   };
   // "지금 하는 일" — 하나만 뜬다. 여러 개가 동시에 참인 경우는 없다
+  // 클라에서는 job 객체가 스냅샷이 만든 **진행도만 든 껍데기**라 b가 없다 —
+  // 라벨은 있으면 쓰고 없으면 생략한다
+  const me = localPlayer();
+  const lbl = (j) => (j && j.b ? BLDG_INFO[j.b.kind].label + ' ' : '');
+  const nWall = me.wallOrders.length || me.wallOrderCount || 0;
   const doing =
-    player.buildJob ? `🏗 ${BLDG_INFO[player.buildJob.b.kind].label} 건설 ${Math.round(player.buildJob.t / player.buildJob.dur * 100)}% — 움직일 수 없다 (ESC)`
-    : player.upgradeJob ? `⬆ ${BLDG_INFO[player.upgradeJob.b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC)`
-    : player.buildOrder ? `🏗 ${BLDG_INFO[player.buildOrder.kind].label} 지으러 가는 중`
-    : player.wallOrders.length ? `🧱 벽 명령 ${player.wallOrders.length}개${player.wallCast ? ' (세우는 중)' : ''}`
-    : player.mineOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
-    : player.job === 'mine' ? '⛏ 채굴'
-    : player.job === 'drop' ? '📦 하역'
+    me.buildJob ? `🏗 ${lbl(me.buildJob)}건설 ${Math.round(me.buildJob.t / me.buildJob.dur * 100)}% — 움직일 수 없다 (ESC)`
+    : me.upgradeJob ? `⬆ ${lbl(me.upgradeJob)}업그레이드 중 — 움직일 수 없다 (ESC)`
+    : (me.buildOrder || me.hasBuildOrder) ? `🏗 ${me.buildOrder ? BLDG_INFO[me.buildOrder.kind].label + ' ' : ''}지으러 가는 중`
+    : nWall ? `🧱 벽 명령 ${nWall}개${me.wallCast ? ' (세우는 중)' : ''}`
+    : me.mineOrder ? '🔁 자동 채굴 중 (움직이면 취소)'
+    : me.job === 'mine' ? '⛏ 채굴'
+    : me.job === 'drop' ? '📦 하역'
     : removeMode ? '✖ 철거 모드 (X로 끄기)'
     // 유닛 슬롯을 들고 있으면 **무엇을 눌러야 하는지** 말해 준다 (D91).
     // 숫자만 눌러 놓고 다음 동작을 모르겠다는 지적이 있었다
@@ -6495,8 +6730,8 @@ function updateHUD() {
     (waiting
       ? `적 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
       : `적 ${enemies.length}마리${attacking ? ` · ${attacking}마리 공격 중!` : ''}\n`) +
-    `체력 ${bar(player.hp, P.player.hp, '█', '░')} ${Math.ceil(player.hp)}\n` +
-    `기운 ${bar(player.stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(player.stamina)}` +
+    `체력 ${bar(me.hp, P.player.hp, '█', '░')} ${Math.ceil(me.hp)}\n` +
+    `기운 ${bar(me.stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(me.stamina)}` +
     (inTerritory(player.x, player.z) ? '  🌿내 땅' : '') + '\n' +
     // 영토 (D86) — 벽으로 감싸 고양이가 못 오게 만든 땅의 넓이
     `영토 ${territoryArea.toFixed(0)}㎡` +
@@ -6536,7 +6771,93 @@ window.addEventListener('resize', () => {
   persp.updateProjectionMatrix();
 });
 
+// ============================================================
+// 클라이언트 프레임 (D92-6단계)
+//  **시뮬을 한 줄도 돌리지 않는다.** 자기 몸만 예측하고, 나머지는 스냅샷을 따라간다.
+//  그래서 고정 timestep도, 락스텝도, 롤백도 필요가 없다 — 클라는 표시 단말이다.
+// ============================================================
+function tickClient(dt) {
+  const me = localPlayer();
+  sampleLocalInput(me);
+  sendInput(me, dt);
+
+  if (!paused && alive && !me.stunned) {
+    // 자기 위치와 구르기만 예측한다. 명령·소비·체력은 예측하지 않는다 —
+    // 이중 지불 고무줄이 80ms 지연보다 훨씬 나쁘다 (D92 예측 규칙)
+    if (me.rollT > 0) {
+      me.rollT -= dt;
+      me.rollSpin += dt * 22;
+      const spd = P.player.rollDist / Math.max(P.player.rollTime, 0.01);
+      me.x += me.rollX * spd * dt;
+      me.z += me.rollZ * spd * dt;
+      collideWithObstacles(me, radiusOf(me));
+    } else if (me.in.mx || me.in.mz) {
+      me.x += me.in.mx * effPlayerSpeed(me) * dt;
+      me.z += me.in.mz * effPlayerSpeed(me) * dt;
+      me.faceX = me.in.mx; me.faceZ = me.in.mz;
+      collideWithObstacles(me, radiusOf(me));
+    }
+    if (me.rollCd > 0) me.rollCd -= dt;
+    // 호스트가 준 위치로 조용히 당겨 온다 (틀렸으면 여기서 새어 나온다)
+    if (me.netX !== undefined) pullTo(me, me.netX, me.netZ, dt, 12);
+  }
+
+  // 원격 개체 — 스냅샷 위치로 부드럽게
+  for (const list of [enemies, workers, guards])
+    for (const o of list) if (o.netX !== undefined) pullTo(o, o.netX, o.netZ, dt);
+
+  if (flashT > 0) { flashT -= dt; if (flashT <= 0) flashEl.style.opacity = '0'; }
+  presentWorld(dt);
+  updateActorVis(player, dt);
+  updateActorVis(ally, dt);
+  allyVis.group.visible = ally.active;
+  updateLocalUI(dt);
+  updateCheeseBits(dt);
+  updateWallPops(dt);
+  refreshTerritory();
+  paintTerritory();
+  updateFx(dt);
+  updateCamera(dt);
+  hudT -= dt;
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
+}
+
+// 시뮬이 아니라 **그리기만** 하는 부분 — 클라에서 적·유닛·건물의 모델을 제자리에 놓는다.
+// 호스트에서는 각 update* 함수가 이 일을 겸하고 있어서 따로 부르지 않는다.
+function presentWorld(dt) {
+  for (const e of enemies) {
+    e.vis.setOpacity(enemyActive() ? 1 : 0.5);
+    const pull = e.windupPull || 0;
+    e.vis.group.position.set(e.x - e.dirX * pull * 0.55, 0, e.z - e.dirZ * pull * 0.55);
+    e.vis.group.rotation.y = Math.atan2(e.dirX, e.dirZ) + Math.PI;
+    e.vis.setEmissive(e.isAttacking ? 0xff2222 : 0x000000, e.isAttacking ? 0.4 : 0);
+    setBar(e.bar, e.hp / enemyMaxHp(e), e.x, barY(e.vis), e.z, e.hp < enemyMaxHp(e) - 0.5);
+  }
+  for (const w of workers) {
+    w.vis.group.position.set(w.x, 0, w.z);
+    w.vis.group.rotation.y = Math.atan2(w.faceX, w.faceZ) + Math.PI;
+    w.ring.position.set(w.x, 0.06, w.z);
+    w.ring.visible = selectedUnits.has(w);
+    setBar(w.workBar, (w.mineT || 0) / effMineTime(), w.x, barY(w.vis), w.z, w.job === 'mine');
+  }
+  for (const g of guards) {
+    const lunge = g.swing > 0 ? Math.sin((0.22 - g.swing) / 0.22 * Math.PI) * 0.3 : 0;
+    g.vis.group.position.set(g.x + g.faceX * lunge, 0, g.z + g.faceZ * lunge);
+    g.vis.group.rotation.y = Math.atan2(g.faceX, g.faceZ) + Math.PI;
+    g.ring.position.set(g.x, 0.06, g.z);
+    g.ring.visible = selectedUnits.has(g);
+    if (g.bar) setBar(g.bar, g.hp / g.maxHp, g.x, barY(g.vis), g.z, g.hp < g.maxHp - 0.5);
+  }
+  for (const b of buildings) setBar(b.bar, b.hp / b.maxHp, b.cx, 1.9, b.cz, b.hp < b.maxHp - 0.5);
+  for (const u of pickups) {
+    u.t += dt;
+    u.mesh.rotation.y += dt * 2;
+    u.mesh.position.set(u.x, 0.5 + Math.sin(u.t * 3) * 0.12, u.z);
+  }
+}
+
 function tick(dt) {
+  if (net.role === 'client') { tickClient(dt); return; }
   if (!paused && alive) {
     survival += dt;
     updatePlayer(dt);
@@ -6545,7 +6866,9 @@ function tick(dt) {
       flashT -= dt;
       if (flashT <= 0) flashEl.style.opacity = '0';
     }
-    // 동료 슬롯은 AI가 몰거나(솔로) 사람이 몬다(2P). 사람이 몰면 updatePlayer가
+    // 2P에서는 동료 슬롯이 사람 것이므로 AI 초기값으로 덮으면 안 된다
+  if (!ally.ai) { ally.active = true; ally.local = net.role === 'client'; }
+  // 동료 슬롯은 AI가 몰거나(솔로) 사람이 몬다(2P). 사람이 몰면 updatePlayer가
     // 이미 updateActor로 돌렸으므로 AI 루틴을 겹쳐 돌리면 안 된다 (D92-6단계 이음매).
     if (ally.ai) updateAlly(dt);
     else allyVis.group.visible = ally.active;
@@ -6618,6 +6941,7 @@ function tick(dt) {
   }
   hudT -= dt;
   if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
+  sendSnapshot(dt);
 }
 
 let prevT = performance.now();
