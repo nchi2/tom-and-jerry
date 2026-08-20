@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { net } from './net.js';
 
 // ============================================================
 // 튜닝 파라미터 (GUI로 플레이 중 조절)
@@ -298,6 +299,13 @@ const P = {
     // 원작의 탐욕 페널티: 일정 수를 잡으면 그때 우루루 쏟아진다
     killsPerSurge: 6, surgeSize: 3,
   },
+  // 2P 접속 (D92). 솔로에서는 아무 영향이 없다.
+  //  rate        스냅샷 초당 횟수. 실측 ~705B/스냅샷이라 20이면 ~14KB/s
+  //  interpDelay 원격 개체를 이만큼 과거로 그린다(초). 지터를 흡수하는 대신 그만큼 늦게 보인다
+  //  smoothMax   예측 오차를 이 거리(m) 안에서는 부드럽게 당긴다. 넘으면 즉시 스냅
+  //              (잡힘·구출처럼 순간이동에 가까운 사건은 부드럽게 끌면 오히려 이상하다)
+  //  fakeLag     인위적 편도 지연(ms) — 손맛 A/B용. Chrome 스로틀은 WebRTC에 안 걸린다
+  net: { rate: 20, interpDelay: 0.10, smoothMax: 1.5, fakeLag: 0 },
 };
 
 // ---- 10 스테이지 (시간 기반) ----
@@ -1272,7 +1280,8 @@ const byId = (arr, id) => arr.find((e) => e.id === id) || null;
 
 // 멀티 상태 (D92). 지금은 솔로 고정 — 5단계에서 net.js가 이걸 채운다.
 // isHost가 true면 시뮬레이션을 돌린다. 솔로는 언제나 호스트다.
-const net = { role: 'solo', isHost: true, rtt: 0 };
+// 멀티 상태는 src/net.js가 들고 있다 (D92-5단계). 여기서는 net.isHost / net.role만 본다.
+// 솔로도 isHost = true다 — 시뮬을 자기가 돌린다는 뜻이지 방을 열었다는 뜻이 아니다.
 
 function makeEnemy(type, n) {
   const p = enemySpawnPos(n);
@@ -4914,7 +4923,7 @@ function applyCommand(p, c) {
 // 로컬에서 만든 명령을 시뮬로 보낸다. 솔로·호스트면 바로, 클라이언트면 호스트로 (5단계).
 function issueCommand(c, p = localPlayer()) {
   if (net.isHost) applyCommand(p, c);
-  else if (net.send) net.send(c);
+  else net.send({ k: 'CMD', c });
 }
 
 // 로컬 UI — 고스트·프롬프트·레이캐스트·핫바 클릭.
@@ -5078,10 +5087,23 @@ function updateLocalUI(dt) {
 // 사람이 운전하는 햄스터인가 (AI 동료도 아니고, 꺼진 슬롯도 아닌)
 const isDriven = (p) => !p.ai && (p === player || p.active);
 
+// 입력 송신 (D92-6단계) — 바뀌었을 때 + 최소 주기로. 30Hz면 ~180 B/s다.
+let inSendT = 0, inLastX = 0, inLastZ = 0;
+function sendInput(p, dt) {
+  if (net.role !== 'client' || !net.connected) return;
+  inSendT -= dt;
+  const changed = p.in.mx !== inLastX || p.in.mz !== inLastZ;
+  if (!changed && inSendT > 0) return;
+  inSendT = 1 / 30;
+  inLastX = p.in.mx; inLastZ = p.in.mz;
+  net.send({ k: 'IN', mx: p.in.mx, mz: p.in.mz });
+}
+
 // 이 프레임의 플레이어 처리 한 묶음. 솔로에서는 사람이 player 하나뿐이라
 // 순서와 결과가 예전 updatePlayer와 같다.
 function updatePlayer(dt) {
   sampleLocalInput(localPlayer());   // 로컬 입력은 로컬 플레이어에게만 (원격은 p.in을 네트워크가 채운다)
+  sendInput(localPlayer(), dt);
   for (const p of players) {
     if (!isDriven(p)) continue;
     updateActor(p, dt);
@@ -5257,6 +5279,14 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.player, 'regen', 0, 30, 1).name('체력 재생(초당)');
   f.add(P.player, 'regenDelay', 0, 10, 0.5).name('재생 시작까지(초)');
   f.add(P.player, 'wipeOnCatch', 0, 1, 1).name('잡히면 전부 소멸 (원작)');
+}
+{
+  const f = adv.addFolder('멀티 (2P)');
+  f.add(P.net, 'rate', 5, 60, 1).name('스냅샷 Hz');
+  f.add(P.net, 'interpDelay', 0, 0.3, 0.01).name('보간 지연(초)');
+  f.add(P.net, 'smoothMax', 0.2, 5, 0.1).name('오차 스냅 임계(m)');
+  f.add(P.net, 'fakeLag', 0, 300, 5).name('인위 지연(ms, 편도)')
+    .onChange((v) => { net.fakeLag = v; });
 }
 {
   const f = adv.addFolder('적 (공통)');
@@ -6069,6 +6099,118 @@ document.getElementById('m-quit').onclick = () => {
   overlayEl.classList.remove('hidden');
 };
 
+// ============================================================
+// 멀티 로비 · 프로토콜 (D92-5·6단계)
+//  · 호스트가 시뮬 전체를 돌린다. 클라는 입력을 보내고 상태를 받아 그린다
+//  · 접속하면 HELLO로 snapshotSettings()를 통째로 보낸다 —
+//    P 동기화 문제가 **기존 함수 재사용으로 통째로 해결된다**
+// ============================================================
+const netEl = document.getElementById('net');
+const netMsgEl = document.getElementById('m-netmsg');
+const netCodeEl = document.getElementById('m-code');
+
+function renderNet() {
+  const on = net.role !== 'solo' || !!net.status;
+  netEl.classList.toggle('on', on);
+  if (on) {
+    const who = net.role === 'host' ? '호스트' : net.role === 'client' ? '참가' : '';
+    netEl.innerHTML = net.connected
+      ? `${who} · 방 <b>${net.code}</b> · ${net.rtt}ms`
+      : `${net.status}`;
+  }
+  netMsgEl.textContent = net.status;
+  netCodeEl.textContent = net.role === 'host' ? net.code : '';
+}
+
+// 상대에게 넘길 초기 상태. 벽은 이벤트가 아니라 여기서 통째로 간다 (~300칸)
+function fullSnapshot() {
+  const walls = [];
+  for (const ob of obstacles.values())
+    if (!ob.bedrock && !ob.bldgRef) walls.push([ob.i, ob.j, ob.owner, ob.cracks || 0]);
+  return {
+    settings: snapshotSettings(),
+    map: mapIndex,
+    stage, stageT, survival,
+    walls,
+    buildings: buildings.map((b) => ({ id: b.id, kind: b.kind, i: b.i, j: b.j, owner: b.owner,
+                                       hp: b.hp, tier: b.tier, underBuild: b.underBuild })),
+    nodes: nodes.map((n) => n.amount),
+  };
+}
+
+// 접속 직후 클라가 호스트의 세계를 통째로 받는다.
+// **설정 동기화는 공짜다** — snapshotSettings/applySettings를 그대로 재사용한다 (D92-5단계).
+function applyFull(f) {
+  if (!f) return;
+  if (f.map !== undefined && f.map !== mapIndex) setMap(f.map);
+  else restart();
+  if (f.settings) applySettings(f.settings);
+  stage = f.stage; stageT = f.stageT; survival = f.survival;
+  if (f.nodes) f.nodes.forEach((amt, k) => { if (nodes[k]) nodes[k].amount = amt; });
+  // 클라는 자기 몸(동료 슬롯)만 예측한다. 나머지는 스냅샷이 채운다
+  P.ally.radius = P.player.radius;
+  allyVis.group.scale.setScalar(P.ally.radius);
+  ally.active = true; ally.ai = false; ally.local = true;
+  player.local = false;
+  flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a');
+}
+
+const netHooks = {
+  onStatus: renderNet,
+  onOpen() {
+    if (net.isHost) {
+      // 2P 시작 — 동료 슬롯을 사람에게 넘긴다
+      ally.ai = false;
+      ally.local = false;
+      ally.active = true;
+      ally.stunned = false;
+      // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 여기서만 덮어쓴다 (D92)
+      P.ally.radius = P.player.radius;      // 안 맞추면 P2 히트박스가 35% 크다
+      allyVis.group.scale.setScalar(P.ally.radius);
+      ally.cheese = startResources();        // 솔로 동료는 벽 12개분뿐이라 창고를 못 짓는다 (D64)
+      ally.x = PLAYER_SPAWN.x + 1.4; ally.z = PLAYER_SPAWN.z + 0.6;
+      net.send({ k: 'HELLO', full: fullSnapshot() });
+      flashMsg('친구가 들어왔다! 동료 자리를 넘겼다', '#6ee07a');
+    }
+    renderNet();
+  },
+  onClose() {
+    // 상대가 나가면 동료 자리를 AI에게 돌려준다 (게임이 안 끊긴다)
+    if (ally.local) { ally.local = false; player.local = true; }
+    ally.ai = true;
+    renderNet();
+  },
+  onMessage: (m) => onNetMessage(m),
+};
+
+function onNetMessage(m) {
+  if (!m || !m.k) return;
+  switch (m.k) {
+    case 'HELLO':  applyFull(m.full); break;
+    case 'IN':     ally.in.mx = m.mx; ally.in.mz = m.mz; break;
+    case 'CMD':    applyCommand(ally, m.c); break;
+  }
+}
+
+document.getElementById('m-host').onclick = () => {
+  net.host(netHooks);
+  renderNet();
+};
+document.getElementById('m-join').onclick = () => {
+  const code = document.getElementById('m-join-code').value;
+  if (!code) { net.status = '방 코드를 입력하세요'; renderNet(); return; }
+  net.join(code, netHooks);
+  // 클라는 동료 슬롯을 자기 몸으로 쓴다
+  player.local = false;
+  ally.local = true; ally.ai = false; ally.active = true;
+  renderNet();
+};
+document.getElementById('m-leave').onclick = () => {
+  net.leave();
+  player.local = true; ally.local = false; ally.ai = true;
+  renderNet();
+};
+
 // ---- 동료 AI (생존 특화) ----
 //  경제 활동 없음. 우선순위:
 //   1. 내가 기절 → 구조 (카이팅으로 틈을 만든 뒤 접근)
@@ -6475,7 +6617,7 @@ function tick(dt) {
     c.position.z += (Math.random() - 0.5) * camShake * 0.9;
   }
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); }
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); }
 }
 
 let prevT = performance.now();

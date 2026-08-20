@@ -39,7 +39,7 @@
     #res .r .ic { font-size: 17px; }
     #res .cheese { border-color: #6b5a24; }
     #res .parts { border-color: #2f5570; }
-    body.gui-on #res { right: 268px; }
+    body.gui-on #res, body.gui-on #net { right: 268px; }
     body.hud-off #hud { display: none; }
     #overlay {
       position: fixed; inset: 0; z-index: 20;
@@ -121,6 +121,29 @@
     #menu .maps { display: none; margin-top: 10px; border-top: 1px solid #333d55; padding-top: 10px; }
     #menu .maps.on { display: block; }
     #menu .hint { color: #8b94a8; font-size: 12px; margin-top: 10px; }
+    /* 멀티 (D92-5단계) — 방 코드 하나로 붙는다 */
+    #menu .net { margin-top: 10px; border-top: 1px solid #333d55; padding-top: 10px; }
+    #menu .net input {
+      width: 100%; box-sizing: border-box; margin: 6px 0; padding: 8px 10px;
+      background: #171c28; color: #e8ecf4; border: 1px solid #3a4054; border-radius: 6px;
+      font-family: "SF Mono", Menlo, monospace; font-size: 15px; letter-spacing: 2px;
+      text-transform: uppercase; text-align: center;
+    }
+    #menu .netmsg { color: #8fd6ff; font-size: 12px; margin-top: 6px; min-height: 16px; }
+    #menu .code {
+      font-family: "SF Mono", Menlo, monospace; font-size: 26px; font-weight: 700;
+      letter-spacing: 6px; color: #6ee07a; text-align: center; padding: 6px 0;
+    }
+    /* 접속 상태 — 화면 우상단, 자원 줄 바로 아래 */
+    #net {
+      position: fixed; top: 46px; right: 12px; z-index: 12;
+      transition: right .15s ease;
+      font-family: "SF Mono", Menlo, monospace; font-size: 12px;
+      background: rgba(16, 20, 30, 0.86); border: 1px solid #3a4054; border-radius: 8px;
+      padding: 4px 10px; color: #9aa3b2; pointer-events: none; display: none;
+    }
+    #net.on { display: block; }
+    #net b { color: #6ee07a; letter-spacing: 2px; }
     #flash {
       position: fixed; top: 22%; left: 0; right: 0; z-index: 15;
       text-align: center; pointer-events: none;
@@ -132,6 +155,7 @@
 </head>
 <body>
   <div id="hud"></div>
+  <div id="net"></div>
   <div id="res"></div>
   <div id="help"></div>
   <div id="flash"></div>
@@ -147,6 +171,14 @@
     <button id="m-maps">맵 선택</button>
     <button id="m-quit">종료</button>
     <div class="maps" id="m-maplist"></div>
+    <div class="net">
+      <button id="m-host">친구 초대 (방 만들기)</button>
+      <div class="code" id="m-code"></div>
+      <input id="m-join-code" maxlength="6" placeholder="방 코드" />
+      <button id="m-join">방 코드로 참가</button>
+      <button id="m-leave">멀티 끊기</button>
+      <div class="netmsg" id="m-netmsg"></div>
+    </div>
     <div class="hint">ESC로 닫기</div>
   </div></div>
   <div id="overlay" class="hidden">
