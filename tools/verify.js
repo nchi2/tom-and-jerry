@@ -121,7 +121,7 @@ window.__verify = () => {
   for (const ob of g.obstacles.values()) if (!ob.bedrock && !ob.bldgRef) walls1++;
   out.push({ t: 'B8.caught', n: g.caughtCount, guards: `${gu0}>${g.guards.length}`,
              workers: `${w0}>${g.workers.length}`, bldgs: `${b0}>${g.buildings.length}`,
-             walls: `${walls0}>${walls1}` });
+             walls: `${walls0}>${walls1}` });   // 솔로는 즉시 소멸 (D95)
 
   g.step(20);
   out.push({ t: 'B9.end', alive: g.alive, errs: window.__errs.length, msgs: window.__errs.slice(0, 4) });
@@ -208,9 +208,16 @@ window.__verify = () => {
                   ag: g.guards.filter((x) => x.owner === 'a').length,
                   ab: g.buildings.filter((b) => b.owner === 'a').length,
                   pb: g.buildings.filter((b) => b.owner === 'p').length };
-  out.push({ t: 'D6.p1Caught', before, after, allySurvived:
-             after.aw === before.aw && after.ag === before.ag && after.ab === before.ab,
-             p1Wiped: after.pw === 0 && after.pg === 0 && after.pb === 0 });
+  // 2P에서는 소멸이 **유예**된다 (D95) — 잡힌 직후에는 아직 남아 있고 카운트다운이 돈다
+  out.push({ t: 'D6.p1Caught', before, after,
+             allyUntouched: after.aw === before.aw && after.ag === before.ag && after.ab === before.ab,
+             p1Deferred: g.player.wipeT > 0 && after.pg === before.pg });
+  g.step(g.P.coop.wipeGrace + 1);   // 아무도 안 구하면 결국 무너진다
+  out.push({ t: 'D6b.graceExpired',
+             p1Gone: g.guards.filter((x) => x.owner === 'p').length === 0
+                  && g.buildings.filter((b) => b.owner === 'p').length === 0,
+             allyStill: g.workers.filter((w) => w.owner === 'a').length === before.aw
+                     && g.buildings.filter((b) => b.owner === 'a').length === before.ab });
   out.push({ t: 'D7.end', errs: window.__errs.length, msgs: window.__errs.slice(0, 6) });
   a.ai = true;
 
@@ -411,4 +418,72 @@ window.__interpTest = (secs = 2, hz = 20) => {
     jitter: +(sd / Math.max(avg, 1e-9)).toFixed(3),   // 0에 가까울수록 부드럽다
     frozenFrames: d.filter((v) => v < 1e-6).length,
   };
+};
+
+// ---- F. 2인 컨텐츠 (D95) ----
+// 적 배수 · 소멸 유예 · 구출이 유예를 취소 · 수입 기여도 분배.
+// ally를 사람이 앉은 것처럼 다뤄서 (ai=false) 2P 경로를 그대로 밟는다.
+window.__coop = () => {
+  const g = window.__game;
+  const out = [];
+  const R = (v) => Math.round(v * 10) / 10;
+  const a = g.ally;
+
+  // --- 적 배수 ---
+  a.ai = true; g.beginMatch();
+  const soloEn = g.enemies.length;
+  a.ai = false; a.active = true; g.beginMatch();
+  out.push({ t: 'F1.enemyScale', solo: soloEn, coop: g.enemies.length,
+             ratio: R(g.enemies.length / Math.max(soloEn, 1)), want: g.P.coop.enemyScale });
+
+  // --- 소멸 유예 ---
+  g.P.enemy.count = 0; g.P.patrol.count = 0; g.P.threat.everyLevels = 0; g.P.enemy.spawnDelay = 1e9;
+  g.beginMatch(); g.setEnemyCount(0);
+  g.player.cheese = 3000; a.cheese = 3000;
+  a.x = g.PLAYER_SPAWN.x + 16; a.z = g.PLAYER_SPAWN.z;
+  const nWalls = (o) => { let n = 0; for (const ob of g.obstacles.values())
+    if (!ob.bedrock && !ob.bldgRef && ob.owner === o) n++; return n; };
+  const c = g.worldToCell(g.player.x, g.player.z);
+  let built = 0;
+  for (let dj = -2; dj <= 2 && built < 5; dj++) for (let di = -2; di <= 2 && built < 5; di++) {
+    if (g.wallSpotOk(c.i + di, c.j + dj, g.player)) continue;
+    g.addObstacle(c.i + di, c.j + dj, false, false, 'p'); built++;
+  }
+  g.playerHp = 1; g.hurtHamster(g.player, 5);
+  out.push({ t: 'F2.grace', walls: nWalls('p'), wipeT: R(g.player.wipeT), stunned: g.player.stunned });
+
+  // --- 구출이 취소한다 ---
+  a.x = g.player.x + 0.5; a.z = g.player.z + 0.5;
+  g.step(0.3);
+  out.push({ t: 'F3.rescueCancels', walls: nWalls('p'), wipeT: R(g.player.wipeT),
+             stunned: g.player.stunned, saved: nWalls('p') === built });
+
+  // --- 구출 안 하면 결국 무너진다 ---
+  a.x = g.PLAYER_SPAWN.x + 20; a.z = g.PLAYER_SPAWN.z + 20;
+  g.playerHp = 1; g.player.grace = 0; g.hurtHamster(g.player, 5);
+  const t0 = g.player.wipeT;
+  g.step(g.P.coop.wipeGrace + 1);
+  out.push({ t: 'F4.graceExpires', startedAt: R(t0), walls: nWalls('p'), wipeT: R(g.player.wipeT) });
+
+  // --- 수입은 기여도대로 ---
+  g.beginMatch(); g.setEnemyCount(0);
+  a.ai = false; a.active = true;
+  const cc = g.worldToCell(g.player.x, g.player.z);
+  let np = 0, na = 0;
+  for (let dj = -3; dj <= 3; dj++) for (let di = -3; di <= 3; di++) {
+    if (g.wallSpotOk(cc.i + di, cc.j + dj, g.player)) continue;
+    if (np < 9) { g.addObstacle(cc.i + di, cc.j + dj, false, false, 'p'); np++; }
+    else if (na < 3) { g.addObstacle(cc.i + di, cc.j + dj, false, false, 'a'); na++; }
+  }
+  g.refreshClearance(); g.refreshTerritory();
+  const p0 = g.player.cheese, a0 = a.cheese;
+  g.step(3);
+  const dp = g.player.cheese - p0, da = a.cheese - a0;
+  out.push({ t: 'F5.incomeByWalls', pWalls: np, aWalls: na,
+             pGain: R(dp), aGain: R(da),
+             share: dp + da > 0 ? R(dp / (dp + da) * 100) + '%' : 'n/a',
+             wantShare: R(np / (np + na) * 100) + '%' });
+
+  a.ai = true; a.active = false;
+  return out;
 };

@@ -81,6 +81,18 @@
     #start .msg.bad { color: #ff8b8b; }
     #start .step { display: none; }
     #start .step.on { display: block; }
+    /* 미니맵 (D95) — 우측 하단. 상대가 어디 있는지 아는 게 협동의 전제다 */
+    #mini {
+      position: fixed; right: 12px; bottom: 12px; z-index: 12;
+      border: 1px solid #3a4054; border-radius: 8px;
+      background: rgba(12, 15, 23, 0.82); display: none;
+      box-shadow: 0 2px 10px rgba(0,0,0,.45);
+    }
+    #mini.on { display: block; }
+    body.hud-off #mini { display: none; }
+    /* 아주 좁은 화면에서만 핫바(하단 중앙)와 겹친다 — 그때는 그 위로 올린다.
+       1280 기준으로 핫바는 320~960px, 미니맵은 1098px에서 시작해 안 겹친다. */
+    @media (max-width: 980px) { #mini { bottom: 172px; } }
     #overlay {
       position: fixed; inset: 0; z-index: 20;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -209,6 +221,7 @@
   <div id="hud"></div>
   <div id="net"></div>
   <div id="netdev"></div>
+  <canvas id="mini" width="168" height="168"></canvas>
   <div id="res"></div>
   <div id="help"></div>
   <div id="flash"></div>
@@ -237,8 +250,8 @@
       <div class="sub">작은 햄스터, 큰 고양이. 틈이 좁으면 못 지나간다</div>
 
       <div class="step on" id="s-mode">
-        <button id="s-solo">1인 플레이<span class="k">혼자. AI 동료가 은신처를 짓고 구하러 온다</span></button>
-        <button id="s-two">2인 협동<span class="k">방 코드로 친구와. 살림은 따로, 잡히면 서로 구한다</span></button>
+        <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 지은 게 무너지고 적 본진에서 다시 시작</span></button>
+        <button id="s-two">2인 협동<span class="k">살림은 따로. 적은 1.8배. 잡혀도 20초 안에 구해 주면 기지가 산다</span></button>
         <button id="s-four" disabled>3~4인 협동<span class="k">예정 — 아직 안 됩니다</span></button>
       </div>
 
