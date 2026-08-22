@@ -487,3 +487,98 @@ window.__coop = () => {
   a.ai = true; a.active = false;
   return out;
 };
+
+// ---- G. 2인 상호작용 (D96) ----
+// 건네주기(가까이) · 도발(어그로 당기기 + 이동 봉쇄) · 걷는 모션
+window.__interact = () => {
+  const g = window.__game;
+  const out = [];
+  const R = (v) => Math.round(v * 10) / 10;
+  const a = g.ally;
+
+  g.P.enemy.count = 0; g.P.patrol.count = 0; g.P.threat.everyLevels = 0; g.P.enemy.spawnDelay = 1e9;
+  a.ai = false; a.active = true;
+  g.beginMatch(); g.setEnemyCount(0);
+  g.player.cheese = 200; g.player.parts = 5; a.cheese = 0; a.parts = 0;
+
+  // --- 멀면 안 넘어간다 ---
+  a.x = g.PLAYER_SPAWN.x + 20; a.z = g.PLAYER_SPAWN.z;
+  g.applyCommand(g.player, { t: 'give', k: 'cheese' });
+  out.push({ t: 'G1.tooFar', pCheese: R(g.player.cheese), aCheese: R(a.cheese) });
+
+  // --- 붙으면 넘어간다 ---
+  a.x = g.player.x + 1.0; a.z = g.player.z;
+  g.applyCommand(g.player, { t: 'give', k: 'cheese' });
+  g.applyCommand(g.player, { t: 'give', k: 'parts' });
+  out.push({ t: 'G2.given', pCheese: R(g.player.cheese), aCheese: R(a.cheese),
+             pParts: g.player.parts, aParts: a.parts });
+
+  // --- 없으면 못 준다 ---
+  a.parts = 0; g.player.parts = 0;
+  g.applyCommand(g.player, { t: 'give', k: 'parts' });
+  out.push({ t: 'G3.nothingToGive', aParts: a.parts });
+
+  // --- 도발: 어그로가 나에게 온다 ---
+  g.P.enemy.count = 4; g.P.enemy.spawnDelay = 0;
+  g.beginMatch();
+  a.ai = false; a.active = true;
+  // 적을 동료 쪽에 몰아 두고, 플레이어는 조금 떨어진 곳에
+  a.x = g.PLAYER_SPAWN.x; a.z = g.PLAYER_SPAWN.z;
+  g.player.x = g.PLAYER_SPAWN.x + 8; g.player.z = g.PLAYER_SPAWN.z;
+  for (const e of g.enemies) { e.x = a.x + (Math.random() - 0.5) * 3; e.z = a.z + 2; e.targetUntil = 0; }
+  g.step(2);
+  const onAllyBefore = g.enemies.filter((e) => e.chaseTarget === a).length;
+  const onMeBefore = g.enemies.filter((e) => e.chaseTarget === g.player).length;
+  g.applyCommand(g.player, { t: 'taunt' });
+  const rooted = { tauntT: R(g.player.tauntT), cd: R(g.player.tauntCd) };
+  // 어그로는 **도발이 끝나기 전에** 재야 한다 (끝나면 피로·붐빔이 다시 흩는다)
+  g.step(0.8);
+  const onMeDuring = g.enemies.filter((e) => e.chaseTarget === g.player).length;
+  const onAllyDuring = g.enemies.filter((e) => e.chaseTarget === a).length;
+  out.push({ t: 'G4.tauntPullsAggro', ...rooted,
+             onMe: `${onMeBefore}>${onMeDuring}`, onAlly: `${onAllyBefore}>${onAllyDuring}`,
+             pulledOffMate: onAllyDuring < onAllyBefore });
+
+  // --- 쿨다운 중엔 안 된다 ---
+  // --- 도발 중에는 못 움직인다 (적 없이 재야 잡힘 순간이동과 안 섞인다) ---
+  g.P.enemy.count = 0; g.P.enemy.spawnDelay = 1e9;
+  g.beginMatch(); g.setEnemyCount(0);
+  g.player.tauntCd = 0;
+  g.applyCommand(g.player, { t: 'taunt' });
+  const x0 = g.player.x;
+  g.keys.add('KeyD');          // ⚠ p.in 직접 대입은 sampleLocalInput이 덮어쓴다
+  g.step(1.0);
+  const movedWhileTaunting = R(Math.abs(g.player.x - x0));
+  g.step(1.0);                 // 도발이 끝난 뒤에는 움직여야 한다
+  const movedAfter = R(Math.abs(g.player.x - x0));
+  g.keys.delete('KeyD');
+  out.push({ t: 'G5.rootedThenFree', movedWhileTaunting, movedAfter,
+             rootWorks: movedWhileTaunting < 0.2 && movedAfter > 1 });
+
+  // --- 쿨다운 중엔 안 된다 ---
+  const cd = g.player.tauntCd;
+  const before5 = g.player.tauntT;
+  g.applyCommand(g.player, { t: 'taunt' });
+  out.push({ t: 'G5b.cooldown', cdWas: R(cd),
+             refused: g.player.tauntT <= Math.max(before5, 0) + 0.001 });
+
+  // --- 걷는 모션이 실제로 움직이는가 ---
+  // 적을 치우고 새 판에서 잰다 — 앞 단계에서 잡혀 기절해 있으면 표현이 안 돈다
+  g.P.enemy.count = 0; g.P.enemy.spawnDelay = 1e9;
+  g.beginMatch(); g.setEnemyCount(0);
+  const vis = g.playerVis;
+  g.player.tauntT = 0; g.player.tauntCd = 0;
+  g.keys.add('KeyD');
+  g.step(0.4);
+  const f1 = vis.footL.position.z;
+  g.step(0.25);
+  const f2 = vis.footL.position.z;
+  g.keys.delete('KeyD');
+  g.step(1.0);
+  const f3 = vis.footL.position.z;
+  out.push({ t: 'G6.walkCycle', movingLegsDiffer: Math.abs(f1 - f2) > 0.01,
+             restsWhenStopped: Math.abs(f3 - vis.rest.footL.z) < 0.001 });
+
+  a.ai = true; a.active = false;
+  return out;
+};

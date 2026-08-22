@@ -102,6 +102,19 @@ const P = {
     // 잡히면 이 시간 안에 동료가 터치하면 **소멸이 취소된다** (0이면 즉시 소멸 = 솔로와 같음).
     // D7의 "죽음의 사회성"에 처음으로 실제 이해관계를 붙이는 값이다.
     wipeGrace: 20,
+    // ---- 건네주기 (D96) ----
+    // 살림은 각자다(D43). 대신 **가까이 붙어야만** 옮길 수 있게 해서
+    // 두 경제가 합쳐지지 않고 *거래*하게 만든다 — 주러 가는 것 자체가 위험이다.
+    giveRange: 2.6,
+    giveCheese: 20,    // 한 번에 넘기는 치즈
+    giveParts: 1,      // 한 번에 넘기는 부품
+    // ---- 도발 (D96) ----
+    // 이 게임에서 플레이어는 공격 수단이 없다. 그래서 적에게 할 수 있는 유일한 기여가
+    // **"내가 끌기"**다. 춤추는 동안 못 움직이는 게 그 대가다.
+    tauntTime: 1.5,    // 춤추는 시간 (그동안 이동 불가 = 무방비)
+    tauntCool: 8,      // 재사용 대기
+    tauntRange: 18,    // 이 거리 안의 적만 끌린다
+    tauntPull: 40,     // 목표 점수에서 빼는 값(m 상당). 클수록 강하게 끌린다
   },
   // ---- 적 3종 ----
   // 통행권(=반지름)과 벽 공격 가능 여부가 종류를 가른다.
@@ -649,6 +662,10 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
     owner,
     bedrock, building, mesh,
   };
+  // 소유자별로 색이 달라야 한다 (D96에서 되살림). D95에서 동료 AI 블록을 걷어낼 때
+  // 여기 있던 파란 칠이 같이 사라졌는데, 소멸이 소유자별인 지금은
+  // **"이 벽이 누구 것인가"가 생사에 걸린 정보**다 — 상대가 잡히면 그 벽만 사라진다.
+  if (post && owner === 'a') mat.color.setHex(0x7f93c8);
   obstacles.set(key, ob);
   if (post) wallEv({ a: 1, i, j, o: owner });
   return ob;
@@ -664,11 +681,13 @@ function removeObstacle(ob) {
 }
 
 const WALL_BASE = new THREE.Color(0x8fa1b8);
+const WALL_BASE_A = new THREE.Color(0x7f93c8);   // 동료(P2) 벽은 파랗다 (D96)
+const wallBaseOf = (ob) => (ob.owner === 'a' ? WALL_BASE_A : WALL_BASE);
 const WALL_DMG = new THREE.Color(0xd9534f);
 function updateWallColor(ob) {
   if (!ob.mesh) return; // 건물 셀은 건물 쪽에서 색을 관리
   const t = 1 - ob.hp / ob.maxHp;
-  ob.mesh.material.color.copy(WALL_BASE).lerp(WALL_DMG, t);
+  ob.mesh.material.color.copy(wallBaseOf(ob)).lerp(WALL_DMG, t);
 }
 
 // ---- 금 간 벽 (D90) ----
@@ -684,7 +703,8 @@ function applyCrackVisual(ob) {
   const side = P.wall.post * (1 - 0.3 * f);
   ob.mesh.scale.set(side, P.wall.height * (1 - 0.12 * f), side);
   ob.mesh.position.y = (P.wall.height * (1 - 0.12 * f)) / 2;
-  ob.mesh.material.color.copy(WALL_BASE).lerp(WALL_DMG, 0.55 * f + 0.25 * (f > 0 ? 1 : 0));
+  // 금이 가도 **소유자 색은 유지**한다 — 누구 벽인지가 계속 읽혀야 한다 (D96)
+  ob.mesh.material.color.copy(wallBaseOf(ob)).lerp(WALL_DMG, 0.55 * f + 0.25 * (f > 0 ? 1 : 0));
   ob.mesh.material.emissive.setHex(f > 0 ? 0x772222 : 0x000000);
   ob.mesh.material.emissiveIntensity = f > 0 ? 0.35 * f + 0.2 : 0;
 }
@@ -1068,6 +1088,17 @@ function makeHamster(furColor = 0xe8b45a) {
   c.handR = c.group.children[18];
   c.armL = c.group.children[15];
   c.armR = c.group.children[16];
+  // 다리·발 — 걷는 모션에 쓴다 (D96). 모델은 원래부터 두 발로 서 있었는데
+  // 움직일 때 아무것도 안 움직여서 **미끄러지듯** 보였다.
+  c.footL = c.group.children[0];
+  c.footR = c.group.children[1];
+  c.legL = c.group.children[2];
+  c.legR = c.group.children[3];
+  // 기준 자세를 기억해 둔다 — 모션은 전부 여기서 얼마나 벗어났는가로 준다
+  c.rest = {};
+  for (const k of ['footL', 'footR', 'legL', 'legR', 'armL', 'armR', 'handL', 'handR'])
+    c.rest[k] = c[k].position.clone();
+  c.walkPhase = 0;
   return c;
 }
 
@@ -1188,14 +1219,16 @@ function swapVis(vis, template, tint, tintAmt = 0.22) {
 
 const playerVis = makeHamster();
 playerVis.group.scale.setScalar(P.player.radius);
-applyModel(playerVis, 'hamster', 0xf0c070);
+// **햄스터는 절차적 모델을 쓴다** (D96). Kenney GLB는 뼈가 하나도 없는 정적 메시라
+// 다리를 움직일 수가 없다 — makeHamster 쪽은 애초에 "두 발로 선 자세"로 짜여 있고
+// 발·다리·팔·손이 따로 있어서 걷는 모션을 줄 수 있다. 고양이는 GLB 그대로 쓴다.
 let playerBar = null, playerWorkBar = null, allyBar = null, allyWorkBar = null;
 
 // 두 번째 햄스터 (회색). **사람이 앉는 자리다** (D95에서 AI를 걷어냈다).
 // 잡히면 적 본진에서 기절 — 상대가 가서 터치하면 구출된다 (D7).
 const allyVis = makeHamster(0xb8b8c4);
 allyVis.group.scale.setScalar(P.ally.radius);
-applyModel(allyVis, 'hamster', 0x6f86d6, 0.62);
+// (동료도 같은 이유로 절차적 모델. 색만 다르다)
 const ally = {
   active: false,
   x: 0, z: 0, faceX: 0, faceZ: -1,
@@ -1258,6 +1291,7 @@ for (const p of players) {
   // 그만큼 회피 판정을 더 열어 준다 — 아래 applyCommand 주석 참고
   p.rollGrace = 0;
   p.wipeT = 0;             // >0 이면 소멸 카운트다운 중 (D95)
+  p.tauntT = 0; p.tauntCd = 0;   // 도발 춤 / 재사용 대기 (D96)
 }
 player.cheese = startResources();
 const ownerOf = (o) => (o === 'a' ? ally : player);
@@ -3539,6 +3573,10 @@ function pickChaseTarget(enemy) {
     Math.hypot(enemy.x - ct.x, enemy.z - ct.z) < P.enemy.engageDist;
   const score = (t) => {
     let s = Math.hypot(t.x - enemy.x, t.z - enemy.z) * bias.get(t);
+    // 도발 중인 햄스터는 **훨씬 가까워 보인다** (D96). 사거리 안에서만 통한다 —
+    // 맵 반대편까지 끌면 그건 버튼 하나로 판을 뒤집는 것이지 미끼 플레이가 아니다
+    if (t.tauntT > 0 && Math.hypot(t.x - enemy.x, t.z - enemy.z) < P.coop.tauntRange)
+      s -= P.coop.tauntPull;
     let crowd = 0;
     for (const o of enemies) if (o !== enemy && o.chaseTarget === t) crowd++;
     // 붐빔은 거리로 환산해 **더한다**. 곱셈이면 코앞(거리≈0)에서 효과가 사라져
@@ -4356,6 +4394,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyE' && alive) issueCommand({ t: 'mine' });
   // F — 공방·경비탑 제자리 업그레이드 (R은 이미 재시작에 쓰인다)
   if (e.code === 'KeyF' && alive) issueCommand({ t: 'f' });
+  // 0번 = 도발 (D96). 이 게임의 유일한 '공격'이다
+  if ((e.code === 'Digit0' || e.code === 'Numpad0') && alive) issueCommand({ t: 'taunt' });
+  // 건네주기 — 옆에 붙어야 넘어간다 (D96)
+  if (e.code === 'KeyQ' && alive) issueCommand({ t: 'give', k: 'cheese' });
+  if (e.code === 'KeyZ' && alive) issueCommand({ t: 'give', k: 'parts' });
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') issueCommand({ t: 'roll' });
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
   if (e.code === 'Tab') {
@@ -4794,6 +4837,13 @@ function updateActor(p, dt) {
   // ---- 앞구르기 (D77) — 이동보다 우선. 구르는 동안은 조작이 안 먹는다 ----
   if (p.rollCd > 0) p.rollCd -= dt;
   if (p.rollGrace > 0) p.rollGrace -= dt;
+  if (p.tauntCd > 0) p.tauntCd -= dt;
+  // 도발 중에는 발이 묶인다 — 이게 도발의 대가다 (D96)
+  if (p.tauntT > 0) {
+    p.tauntT -= dt;
+    collideWithObstacles(p, radiusOf(p));
+    return;
+  }
   // 스태미너 회복 — 구른 직후 잠깐 멈췄다가 찬다
   p.stamIdle += dt;
   if (p.stamIdle > P.player.stamDelay) {
@@ -4834,6 +4884,71 @@ function updateActor(p, dt) {
   collideWithObstacles(p, radiusOf(p));
 }
 
+// ---- 두 발로 걷는다 (D96) ----
+// 모델은 원래부터 두 발로 서 있었는데(makeHamster 주석 참조) 움직일 때 아무것도
+// 움직이지 않아서 **미끄러지듯** 보였다. 걸음 위상을 **이동 거리**로 돌린다 —
+// 시간으로 돌리면 속도가 바뀔 때 발이 땅에서 미끄러진다.
+// 도발(0번) 중이면 걷는 대신 춤을 춘다.
+const STRIDE = 1.05;   // 이 거리마다 한 걸음
+function animateLegs(p, vis, dt) {
+  if (!vis.rest) return;
+  const r = vis.rest;
+  const put = (k, dx, dy, dz) => {
+    vis[k].position.set(r[k].x + dx, r[k].y + dy, r[k].z + dz);
+  };
+
+  // ---- 도발 춤 ----
+  if (p.tauntT > 0) {
+    vis.group.rotation.z = Math.sin(performance.now() * 0.03) * 0.22;
+    const u = 1 - p.tauntT / Math.max(P.coop.tauntTime, 0.01);
+    const w = performance.now() * 0.02;
+    vis.group.rotation.y += Math.sin(w * 1.7) * 0.55;         // 몸을 좌우로 흔든다
+    vis.group.position.y += Math.abs(Math.sin(w * 1.4)) * 0.22;
+    put('armL', 0, 0.75 + Math.sin(w * 2.1) * 0.28, 0);       // 두 팔 번쩍
+    put('armR', 0, 0.75 - Math.sin(w * 2.1) * 0.28, 0);
+    put('handL', 0, 1.05 + Math.sin(w * 2.1) * 0.42, 0);
+    put('handR', 0, 1.05 - Math.sin(w * 2.1) * 0.42, 0);
+    put('legL', 0, Math.max(0, Math.sin(w * 2.1)) * 0.2, 0);
+    put('legR', 0, Math.max(0, -Math.sin(w * 2.1)) * 0.2, 0);
+    put('footL', 0, Math.max(0, Math.sin(w * 2.1)) * 0.26, 0);
+    put('footR', 0, Math.max(0, -Math.sin(w * 2.1)) * 0.26, 0);
+    void u;
+    return;
+  }
+
+  const dx = p.x - (p.visPrevX ?? p.x), dz = p.z - (p.visPrevZ ?? p.z);
+  p.visPrevX = p.x; p.visPrevZ = p.z;
+  const moved = Math.hypot(dx, dz);
+  vis.walkPhase = (vis.walkPhase || 0) + (moved / STRIDE) * Math.PI * 2;
+  // 서 있으면 위상을 0으로 되돌린다 (발이 벌어진 채 멈추지 않게)
+  const speed = moved / Math.max(dt, 1e-4);
+  const amp = Math.min(speed / (P.player.speed * moveScale()), 1);
+  if (amp < 0.05) {
+    vis.walkPhase = 0;
+    vis.group.rotation.z = 0;
+    for (const k of ['footL', 'footR', 'legL', 'legR', 'armL', 'armR', 'handL', 'handR']) put(k, 0, 0, 0);
+    return;
+  }
+  const ph = vis.walkPhase;
+  // **몸통 모션이 실전에서 유일하게 읽히는 부분이다.** 기본 카메라(쿼터뷰 20m)에서
+  // 햄스터는 10픽셀 남짓이라 다리 움직임은 안 보인다. 걸음에 맞춘 상하 반동과
+  // 좌우 기울임은 그 거리에서도 "걷고 있다"로 읽힌다.
+  vis.group.position.y += Math.abs(Math.sin(ph)) * 0.055 * amp;   // 한 걸음에 한 번 튄다
+  vis.group.rotation.z = Math.sin(ph) * 0.07 * amp;               // 좌우로 살짝 흔들
+  const sw = Math.sin(ph) * 0.34 * amp;          // 앞뒤 (모델 -z가 정면)
+  const lift = Math.max(0, Math.sin(ph)) * 0.22 * amp;
+  const lift2 = Math.max(0, -Math.sin(ph)) * 0.22 * amp;
+  put('footL', 0, lift, -sw);
+  put('footR', 0, lift2, sw);
+  put('legL', 0, lift * 0.5, -sw * 0.55);
+  put('legR', 0, lift2 * 0.5, sw * 0.55);
+  // 팔은 반대로 흔든다 — 그래야 걷는 걸로 읽힌다
+  put('armL', 0, 0, sw * 0.5);
+  put('armR', 0, 0, -sw * 0.5);
+  put('handL', 0, 0, sw * 0.7);
+  put('handR', 0, 0, -sw * 0.7);
+}
+
 // 표현 — 위치·자세·채굴 리액션·바. 시뮬 값을 읽기만 한다
 function updateActorVis(p, dt) {
   const vis = visOf(p);
@@ -4858,6 +4973,7 @@ function updateActorVis(p, dt) {
   vis.group.rotation.x = 0;
   vis.group.position.set(p.x, 0, p.z);
   vis.group.rotation.y = Math.atan2(p.faceX, p.faceZ) + Math.PI;
+  vis.group.rotation.z = 0;
 
   // ---- 채굴 리액션 ----
   // 치즈 조각이 도착할 때마다 harvestPulse 가 오르고, 그동안 햄스터가
@@ -4867,12 +4983,13 @@ function updateActorVis(p, dt) {
   const bounce = p.harvestPulse * Math.abs(Math.sin(t * 1.4));
   vis.group.position.y = bounce * 0.18;
   vis.group.scale.set(R * (1 + bounce * 0.06), R * (1 - bounce * 0.08), R * (1 + bounce * 0.06));
+  animateLegs(p, vis, dt);
   if (vis.handL) {
     const swing = p.harvestPulse * 0.9;
-    vis.armL.position.y = 1.38 + Math.sin(t * 2.2) * swing * 0.22;
-    vis.armR.position.y = 1.38 - Math.sin(t * 2.2) * swing * 0.22;
-    vis.handL.position.y = 0.98 + Math.sin(t * 2.2) * swing * 0.34;
-    vis.handR.position.y = 0.98 - Math.sin(t * 2.2) * swing * 0.34;
+    vis.armL.position.y += Math.sin(t * 2.2) * swing * 0.22;
+    vis.armR.position.y -= Math.sin(t * 2.2) * swing * 0.22;
+    vis.handL.position.y += Math.sin(t * 2.2) * swing * 0.34;
+    vis.handR.position.y -= Math.sin(t * 2.2) * swing * 0.34;
   }
 
   // ---- 체력 / 작업 진행 바 ----
@@ -4969,6 +5086,8 @@ function applyCommand(p, c) {
       break;
     }
     case 'f':      tryUpgradeBuilding(p); break;
+    case 'taunt':  startTaunt(p); break;
+    case 'give':   giveTo(p, c.k); break;
     case 'remove': removeAt(p, c.i, c.j); break;
     case 'upg':    buyUpgrade(c.k, p); break;
     case 'cancel':
@@ -5008,6 +5127,7 @@ function issueCommand(c, p = localPlayer()) {
   // 안 일어나는 0.1초가 그대로 "안 먹었다"로 읽힌다. 호스트는 rollGrace로 이 시차를 인정한다.
   // 나머지(치즈 소비·건설)는 절대 예측하지 않는다 — 이중 지불 고무줄이 지연보다 나쁘다.
   if (c.t === 'roll') startRoll(p);
+  if (c.t === 'taunt') startTaunt(p);   // 눌렀는데 0.1초 뒤에 춤추면 우스꽝스러움이 죽는다
   net.send({ k: 'CMD', c });
 }
 
@@ -5439,6 +5559,13 @@ const adv = gui.addFolder('고급 — 전체 설정');
     .onChange((v) => allyVis.group.scale.setScalar(v));
   f.add(P.coop, 'enemyScale', 1, 3, 0.1).name('2P 적 배수 (재시작부터)');
   f.add(P.coop, 'wipeGrace', 0, 60, 1).name('소멸 유예(초) — 구출하면 취소');
+  f.add(P.coop, 'giveRange', 1, 8, 0.2).name('건네주기 사거리');
+  f.add(P.coop, 'giveCheese', 1, 100, 1).name('한 번에 넘길 치즈');
+  f.add(P.coop, 'giveParts', 1, 10, 1).name('한 번에 넘길 부품');
+  f.add(P.coop, 'tauntTime', 0.3, 5, 0.1).name('도발 시간(초, 못 움직임)');
+  f.add(P.coop, 'tauntCool', 1, 30, 0.5).name('도발 쿨다운');
+  f.add(P.coop, 'tauntRange', 4, 40, 1).name('도발 사거리');
+  f.add(P.coop, 'tauntPull', 0, 120, 5).name('도발 세기');
 }
 {
   const f = adv.addFolder('건물 (2번 창고 · 3번 공방)');
@@ -5807,6 +5934,9 @@ const HELP_FULL = [
   '  못 구하면 그때 무너진다. 혼자일 때는 예전대로 즉시 무너진다',
   '영토 수입은 **내가 세운 벽 비율만큼** 들어온다 — 안 쌓으면 안 번다',
   '우측 하단 미니맵에 서로의 얼굴이 뜬다. 빨갛게 깜빡이면 잡혀서 카운트다운 중이라는 뜻',
+  '**0 = 도발**. 춤을 춰서 주변 고양이를 나에게 끌어온다 — 공격이 없는 이 게임의 유일한 공격이다.',
+  '  춤추는 동안 **못 움직인다**. 끌어놓고 도망칠 준비가 돼 있어야 한다',
+  '**Q = 치즈 건네기 · Z = 부품 건네기.** 옆에 붙어야 넘어간다 — 주러 가는 것 자체가 위험이다',
   '**F9** — 접속 진단(프레임·RTT·스냅샷·보간 지연·예측 오차). 끊기거나 튈 때 여기부터 본다',
 ].join('\n');
 
@@ -5850,6 +5980,53 @@ function startRoll(p = player) {
   if (p.wallOrders.length) clearWallOrders(undefined, p);
   p.buildOrder = null;
   p.wallCast = null;
+}
+
+// ---- 도발 (D96) ----
+// 0번. 춤을 춰서 **주변의 적을 나에게 끌어온다.** 공격이 없는 게임에서 유일한 공격이고,
+// 협동에서 유일하게 "상대를 위해 내가 대신 맞아 준다"가 되는 행동이다.
+// 춤추는 동안 못 움직이는 게 대가 — 끌어놓고 도망칠 준비가 돼 있어야 한다.
+function startTaunt(p = player) {
+  if (!alive || p.stunned || p.buildJob || p.upgradeJob || p.rollT > 0 || p.tauntCd > 0) return;
+  p.tauntT = P.coop.tauntTime;
+  p.tauntCd = P.coop.tauntCool;
+  // 걸어둔 명령은 푼다 (직접 개입과 같은 취급)
+  clearMineOrder(undefined, p);
+  if (p.wallOrders.length) clearWallOrders(undefined, p);
+  p.buildOrder = null;
+  p.wallCast = null;
+  // 사거리 안의 적이 **즉시** 다시 고르게 한다 — targetHold를 안 풀면 최대 3초 늦게 온다
+  let pulled = 0;
+  for (const e of enemies) {
+    if (Math.hypot(e.x - p.x, e.z - p.z) >= P.coop.tauntRange) continue;
+    e.targetUntil = 0;
+    pulled++;
+  }
+  flashFor(p, pulled ? `도발! 주변 ${pulled}마리를 끌었다` : '도발했지만 근처에 적이 없다',
+           pulled ? '#ffb347' : '#9aa3b2');
+}
+
+// ---- 건네주기 (D96) ----
+// 가까이 붙어야만 넘어간다. 살림 분리(D43)를 안 깨면서 두 경제가 거래하게 만든다.
+function giveTo(p, kind) {
+  const mate = p === player ? ally : player;
+  if (!ally.active || mate.stunned || p.stunned) return;
+  const d = Math.hypot(mate.x - p.x, mate.z - p.z);
+  if (d > P.coop.giveRange) { flashFor(p, '너무 멀다 — 옆에 붙어야 건넨다', '#e05050'); return; }
+  if (kind === 'parts') {
+    const n = Math.min(P.coop.giveParts, p.parts);
+    if (n <= 0) { flashFor(p, '건넬 부품이 없다', '#e05050'); return; }
+    p.parts -= n; mate.parts += n;
+    flashFor(p, `부품 ${n} 건넸다`, '#8fd6ff');
+    flashFor(mate, `동료가 부품 ${n}을 줬다`, '#8fd6ff');
+  } else {
+    const n = Math.min(P.coop.giveCheese, Math.floor(p.cheese));
+    if (n <= 0) { flashFor(p, '건넬 치즈가 없다', '#e05050'); return; }
+    p.cheese -= n; mate.cheese += n;
+    flashFor(p, `치즈 ${n} 건넸다`, '#ffd24a');
+    flashFor(mate, `동료가 치즈 ${n}을 줬다`, '#ffd24a');
+  }
+  spawnBuildFx((p.x + mate.x) / 2, (p.z + mate.z) / 2);
 }
 
 // 화면 흔들림은 **카메라의 상태**지 햄스터의 상태가 아니다 (D92-1e).
@@ -5939,7 +6116,8 @@ function restart() {
   territoryGen = -1;   // 영토를 다시 센다 (세대 카운터라 시간으로 재면 안 된다 — D54의 교훈)
   for (const q of players) { q.wallOrders = []; q.wallCast = null; }
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
-  for (const p of players) { p.rollT = 0; p.rollCd = 0; p.rollGrace = 0; p.stamina = P.player.stamMax; p.stamIdle = 99; }
+  for (const p of players) { p.rollT = 0; p.rollCd = 0; p.rollGrace = 0; p.tauntT = 0; p.tauntCd = 0;
+                             p.stamina = P.player.stamMax; p.stamIdle = 99; }
   ally.cheese = startResources();   // 사람이 앉는 자리다 — P1과 같은 출발 (D95)
   ally.shelter = null;
   ally.buildCd = 0;
@@ -6687,7 +6865,7 @@ function sendSnapshot(dt) {
                             p.buildJob ? r2(p.buildJob.t / p.buildJob.dur) : -1,
                             p.upgradeJob ? r2(p.upgradeJob.t / p.upgradeJob.dur) : -1,
                             p.wallOrders.length, p.buildOrder ? 1 : 0, p.mineOrder ? 1 : 0,
-                            r2(p.wipeT || 0)]),
+                            r2(p.wipeT || 0), r2(p.tauntT || 0)]),
     en: enemies.map((e) => [e.id, r2(e.x), r2(e.z), r2(e.dirX), r2(e.dirZ), Math.round(e.hp),
                             SNAP_TYPES.indexOf(e.type), e.windupPull ? r2(e.windupPull) : 0,
                             e.isAttacking ? 1 : 0]),
@@ -6826,6 +7004,7 @@ function applySnapshot(m) {
     p.wallOrderCount = a[18]; p.hasBuildOrder = !!a[19];
     p.mineOrder = a[20] ? (p.mineOrder || { pile: null }) : null;
     p.wipeT = a[21] || 0;
+    if (!p.local) p.tauntT = a[22] || 0;
     // **내 몸은 예측한다** — rollT는 내가 굴린 걸 내가 안다 (D92 예측 규칙)
     if (!p.local) p.rollT = a[6];   // 위치는 보간이 맡는다
   });
@@ -7051,6 +7230,17 @@ function updateHUD() {
     ` · 볼주머니 ${me.carry ? me.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') + '\n' +
     (doing ? doing + '\n' : '') +
+    // 2P — 지금 내가 몇 마리를 끌고 있는가 (미끼가 기여라는 걸 숫자로 보여준다, D96)
+    (mate ? (() => {
+      const on = enemies.filter((e) => e.chaseTarget === me).length;
+      const other = enemies.filter((e) => e.chaseTarget === mate).length;
+      const cd = me.tauntCd > 0 ? ` · 도발 ${Math.ceil(me.tauntCd)}s` : ' · 0 도발';
+      return `🐈 나 ${on} / 동료 ${other}${cd}\n`;
+    })() : '') +
+    // 옆에 붙었으면 건넬 수 있다
+    (mate && !mate.stunned && !me.stunned &&
+     Math.hypot(mate.x - me.x, mate.z - me.z) <= P.coop.giveRange
+      ? `🤝 Q 치즈 ${P.coop.giveCheese} 건네기 · Z 부품 ${P.coop.giveParts} 건네기\n` : '') +
     (warn ? warn + '\n' : '') +
     // '동료'는 **상대편 햄스터**다 — 클라에서는 그게 player 쪽이다
     ((mate && mate.stunned)
@@ -7104,6 +7294,8 @@ function tickClient(dt) {
       me.x += me.rollX * spd * dt;
       me.z += me.rollZ * spd * dt;
       collideWithObstacles(me, radiusOf(me));
+    } else if (me.tauntT > 0) {
+      me.tauntT -= dt;                   // 발이 묶인다 (호스트와 같은 규칙)
     } else if (me.in.mx || me.in.mz) {
       me.x += me.in.mx * effPlayerSpeed(me) * dt;
       me.z += me.in.mz * effPlayerSpeed(me) * dt;
@@ -7111,6 +7303,7 @@ function tickClient(dt) {
       collideWithObstacles(me, radiusOf(me));
     }
     if (me.rollCd > 0) me.rollCd -= dt;
+    if (me.tauntCd > 0) me.tauntCd -= dt;
     // 호스트가 준 위치로 조용히 당겨 온다 (틀렸으면 여기서 새어 나온다)
     if (me.netX !== undefined) pullTo(me, me.netX, me.netZ, dt, 12);
   } else if (me.netX !== undefined) {
@@ -7353,6 +7546,7 @@ window.__game = {
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
   beginMatch, openStart, get started() { return started; }, get paused() { return paused; },
   applySnapshot, fullSnapshot, applyFull, sendSnapshot, drawMini,
+  playerVis, allyVis, startTaunt, giveTo,
   get renderT() { return renderT; }, get lastSnapT() { return lastSnapT; },
   applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
