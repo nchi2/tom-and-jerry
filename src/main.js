@@ -6397,9 +6397,9 @@ function flashMsg(text, color = '#6ee07a') {
 // p가 null이면(주인 없는 사건) 그냥 띄운다.
 function flashFor(p, text, color = '#6ee07a') {
   if (!p || p.local) { flashMsg(text, color); return; }
-  // 호스트가 원격 플레이어 대신 판정하므로, 그 결과는 **그쪽 화면으로 보내야** 한다.
-  // 안 보내면 P2는 벽이 안 세워지는 이유를 영영 못 본다.
-  if (net.role === 'host' && net.connected) net.send({ k: 'MSG', t: text, c: color });
+  // 호스트가 원격 플레이어 대신 판정하므로, 그 결과는 **그 사람 화면으로만** 보낸다 (D97).
+  // 전원 브로드캐스트하면 4인에서 남의 실패 메시지가 내 화면을 덮는다.
+  if (net.role === 'host' && net.connected) net.sendTo(p.slot, { k: 'MSG', t: text, c: color });
 }
 
 
@@ -6482,13 +6482,42 @@ function beginMatch() {
   restart();
 }
 
+// ---- 로비 좌석 (D97) ----
+// 3~4인 방은 다 모일 때까지 기다려야 하는데, 누가 들어왔는지 안 보이면 기다릴 수가 없다.
+function renderLobby() {
+  const paint = (el) => {
+    if (!el) return;
+    el.innerHTML = '';
+    for (let k = 0; k < net.maxPlayers; k++) {
+      const on = players[k] && players[k].active;
+      const d = document.createElement('div');
+      d.className = 'seat' + (on ? ' on' : '');
+      if (on) d.style.background = '#' + SLOT_FUR[k].toString(16).padStart(6, '0');
+      d.innerHTML = `${SLOT_NAME[k]}<span class="who">${on ? (k === net.slot ? '나' : '접속') : '비어 있음'}</span>`;
+      el.appendChild(d);
+    }
+  };
+  paint(document.getElementById('s-seats'));
+  paint(document.getElementById('s-seats2'));
+  const begin = document.getElementById('s-begin');
+  if (begin) {
+    // 2인 방은 붙는 순간 자동 시작이라 버튼이 필요 없다 (D93 그대로)
+    const show = net.role === 'host' && net.maxPlayers > 2 && !started;
+    begin.style.display = show ? 'block' : 'none';
+    const n = humans().length;
+    begin.textContent = n >= net.maxPlayers ? '시작하기 (다 모였다)' : `${n}/${net.maxPlayers} — 지금 시작하기`;
+  }
+  const lc = document.getElementById('s-lobby-code');
+  if (lc) lc.textContent = net.code;
+}
+
 function renderNet() {
   const on = net.role !== 'solo';
   netEl.classList.toggle('on', on);
   if (on) {
     const who = net.role === 'host' ? '호스트' : '참가';
     netEl.innerHTML = net.connected
-      ? `${who} · 방 <b>${net.code}</b> · ${net.rtt}ms`
+      ? `${who} · 방 <b>${net.code}</b> · ${humans().length}/${net.maxPlayers}명 · ${net.rtt}ms`
       : `${net.status}`;
   }
   netMsgEl.textContent = net.role === 'solo' ? '' : net.status;
@@ -6498,6 +6527,7 @@ function renderNet() {
     document.getElementById('s-code').textContent = net.code || '······';
     hm.textContent = net.status;
     hm.classList.toggle('bad', !net.code);
+    renderLobby();
   }
   if (net.role !== 'host' && !started && jm) {
     jm.textContent = net.connected ? '' : net.status;
@@ -6744,8 +6774,11 @@ function fullSnapshot() {
 
 // 접속 직후 클라가 호스트의 세계를 통째로 받는다.
 // **설정 동기화는 공짜다** — snapshotSettings/applySettings를 그대로 재사용한다 (D92-5단계).
-function applyFull(f) {
+function applyFull(f, msg) {
   if (!f) return;
+  // 호스트가 알려 준 내 슬롯 (D97). 이걸 받기 전에는 내가 몇 번인지 모른다
+  if (msg && msg.you !== undefined) net.slot = msg.you;
+  if (msg && msg.max !== undefined) net.maxPlayers = msg.max;
   // 맵이 다르면 통째로 다시 만든다 (setMap의 호스트 가드는 여기선 지나가야 하므로 rebuild 직접)
   if (f.map !== undefined && f.map !== mapIndex) { rebuildWorld(f.map); restart(); }
   else restart();
@@ -6768,65 +6801,104 @@ function applyFull(f) {
     if (!b.underBuild) finishBuild(nb);
   }
   markNavDirty();
-  // 클라는 자기 몸(동료 슬롯)만 예측한다. 나머지는 스냅샷이 채운다
+  // 클라는 **자기 슬롯만** 예측한다. 나머지는 스냅샷이 채운다
   P.ally.radius = P.player.radius;
-  for (const q of players) q.vis.group.scale.setScalar(P.ally.radius);
-  ally.active = true; ally.ai = false; ally.local = true;
-  player.local = false;
-  if (!started) beginMatch();   // 시작 화면을 닫고 호스트와 같은 출발선에서 시작 (D93)
+  for (const q of players) q.vis.group.scale.setScalar(radiusOf(q));
+  const me = players[net.slot] || ally;
+  for (const q of players) q.local = (q === me);
+  me.active = true; me.ai = false;
+  // 판이 이미 돌고 있으면 바로 들어간다. 아직이면 로비에서 기다린다 (3~4인)
+  if (!started && (!msg || msg.started || net.maxPlayers === 2)) beginMatch();
+  else if (!started) showStep('s-lobby');
   // 재시작 때도 같은 HELLO가 오므로 인사는 처음 한 번만 (안 그러면 매번 화면을 덮는다)
   if (!greeted) { greeted = true; flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a'); }
 }
 let greeted = false;
 
+// 슬롯을 켜고 끈다 (D97). 사람이 앉으면 active, 나가면 빈자리로 돌린다.
+function seatPlayer(slot) {
+  const q = players[slot];
+  if (!q) return null;
+  q.ai = false;
+  q.active = true;
+  q.stunned = false;
+  q.local = (slot === net.slot);
+  // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 접속 때만 덮어쓴다 (D92)
+  P.ally.radius = P.player.radius;      // 안 맞추면 참가자 히트박스가 35% 크다
+  for (const r of players) r.vis.group.scale.setScalar(radiusOf(r));
+  if (!started) q.cheese = startResources();
+  const sp = spawnSlotAt(slot);
+  q.x = sp.x; q.z = sp.z;
+  return q;
+}
+
+function unseatPlayer(slot) {
+  const q = players[slot];
+  if (!q || slot === 0) return;
+  q.active = false;
+  q.ai = true;
+  q.local = false;
+  q.vis.group.visible = false;
+  // 나간 사람 것은 그대로 둔다 — 다시 들어오면 이어서 쓴다.
+  // (판 중간에 나갔다고 그 사람 벽까지 무너뜨리면 남은 사람이 통째로 열린다)
+}
+
 const netHooks = {
   onStatus: renderNet,
+
+  // ---- 호스트: 참가자 한 명이 들어왔다 ----
+  onJoin(slot) {
+    net.fakeLag = P.net.fakeLag;
+    seatPlayer(slot);
+    // 정원이 2인 방은 예전처럼 **붙는 순간 바로 시작**한다 (D93 그대로).
+    // 3~4인 방은 다 모일 때까지 기다린다 — 호스트가 로비에서 시작을 누른다.
+    const autoStart = net.maxPlayers === 2;
+    if (!started && autoStart) beginMatch();
+    // 새로 들어온 사람에게만 세계를 통째로 보낸다. 이미 있던 사람은 스냅샷으로 충분하다
+    net.sendTo(slot, { k: 'HELLO', you: slot, max: net.maxPlayers, started, full: fullSnapshot() });
+    if (started) flashMsg(`${players[slot].name}가 들어왔다`, '#6ee07a');
+    renderNet();
+    renderLobby();
+  },
+
+  // ---- 호스트: 참가자가 나갔다 ----
+  onLeave(slot) {
+    unseatPlayer(slot);
+    if (started) flashMsg(`${players[slot].name}가 나갔다`, '#ffb347');
+    renderNet();
+    renderLobby();
+  },
+
+  // ---- 참가자: 호스트에 붙었다 (슬롯은 HELLO로 온다) ----
   onOpen() {
     net.fakeLag = P.net.fakeLag;
-    if (net.isHost) {
-      // 2P 시작 — 동료 슬롯을 사람에게 넘긴다
-      ally.ai = false;
-      ally.local = false;
-      player.local = true;
-      ally.active = true;
-      ally.stunned = false;
-      // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 여기서만 덮어쓴다 (D92)
-      P.ally.radius = P.player.radius;      // 안 맞추면 참가자 히트박스가 35% 크다
-      for (const q of players) q.vis.group.scale.setScalar(P.ally.radius);
-      // **처음 붙을 때만** 판을 새로 시작한다 (D93). 예전에는 호스트가 하던 솔로 판에
-      // 상대를 얹어서, 참가자가 이미 굴러가던 세계 한복판에 떨어졌다.
-      // 다만 끊겼다 다시 붙는 것까지 재시작하면 **잠깐 끊긴 것만으로 판이 날아간다** (D94) —
-      // 그때는 지금 상태를 통째로 다시 보내 주기만 하면 된다.
-      const resumed = started;
-      if (!resumed) {
-        ally.cheese = startResources();    // 솔로 동료는 벽 12개분뿐이라 창고를 못 짓는다 (D64)
-        beginMatch();
-      }
-      net.send({ k: 'HELLO', full: fullSnapshot() });
-      flashMsg(resumed ? '친구가 다시 붙었다' : '친구가 들어왔다! 같이 시작', '#6ee07a');
-    }
     renderNet();
   },
+
   onClose() {
     greeted = false;
-    // 상대가 나가면 동료 자리를 AI에게 돌려준다 (게임이 안 끊긴다)
-    if (ally.local) { ally.local = false; player.local = true; }
-    ally.ai = true;
-    // 아직 시작 화면에 있었다면(방을 열어 두고 기다리는 중) 거기 머문다
+    // 호스트를 잃었다 — 내 자리를 0번으로 되돌리고 혼자가 된다
+    for (const q of players) { q.local = q.slot === 0; if (q.slot) { q.active = false; q.ai = true; } }
     renderNet();
+    renderLobby();
   },
-  onMessage: (m) => onNetMessage(m),
+
+  onMessage: (m, fromSlot) => onNetMessage(m, fromSlot),
 };
 
-function onNetMessage(m) {
+function onNetMessage(m, fromSlot) {
   if (!m || !m.k) return;
+  // 호스트로 오는 것은 **보낸 사람 슬롯**에 적용해야 한다 (D97).
+  // 하나로 뭉뚱그리면 3인부터 입력이 뒤섞인다.
+  const from = players[fromSlot] || ally;
   switch (m.k) {
-    case 'HELLO':  applyFull(m.full); break;
-    case 'IN':     ally.in.mx = m.mx; ally.in.mz = m.mz; break;
-    case 'CMD':    applyCommand(ally, m.c); break;
+    case 'HELLO':  applyFull(m.full, m); break;
+    case 'IN':     from.in.mx = m.mx; from.in.mz = m.mz; break;
+    case 'CMD':    applyCommand(from, m.c); break;
     case 'SNAP':   noteSnap(); applySnapshot(m); break;
     case 'MSG':    flashMsg(m.t, m.c); break;
     case 'SET':    applySettings(m.s); break;
+    case 'BEGIN':  if (!started) beginMatch(); break;
   }
 }
 
@@ -6854,7 +6926,10 @@ const netAuthoring = () => net.role !== 'client';
 // D91의 어그로 회전이 압박을 정확히 반으로 나눠 주기 때문이다.
 // 적 수를 정하는 곳이 셋(시작 마릿수·스테이지 표·웨이브 보충)이라 배수를 한 군데로 모았다.
 const humanCount = () => humans().length;
-const coopScale = () => (humanCount() > 1 ? P.coop.enemyScale : 1);
+// 인원수에 **선형으로** 붙인다 (D97). 2인 1.8배 → 3인 2.6 → 4인 3.4.
+// 곱으로 하면(1.8^3 = 5.8) 4인에서 감당이 안 되고, 어그로가 갈리는 만큼만 채우면 되므로
+// "한 명 늘 때마다 0.8배씩"이 실제 압박에 가깝다.
+const coopScale = () => 1 + Math.max(0, humanCount() - 1) * (P.coop.enemyScale - 1);
 const scaled = (n) => Math.round(n * coopScale());
 
 // 호스트가 튜닝 패널을 열고 있는 동안은 P를 계속 흘려 보낸다 (D92-6단계).
@@ -6879,6 +6954,7 @@ function sendSnapshot(dt) {
     k: 'SNAP',
     t: r2(survival), st: stage, sT: r2(stageT), al: alive ? 1 : 0, ki: killCount,
     tr: Math.round(territoryArea), vi: victory ? 1 : 0,
+    act: players.map((p) => (p.active ? 1 : 0)),
     ps: players.map((p) => [r2(p.x), r2(p.z), r2(p.faceX), r2(p.faceZ), Math.round(p.hp),
                             p.stunned ? 1 : 0, r2(p.rollT), r2(p.rollSpin), r2(p.cheese),
                             p.parts, Math.round(p.stamina), r2(p.carry || 0),
@@ -7009,9 +7085,15 @@ function applySnapshot(m) {
   }
 
   // ---- 플레이어 둘 ----
+  // 누가 앉아 있는지도 호스트가 정한다 (D97)
+  if (m.act) m.act.forEach((on, k) => {
+    if (!players[k]) return;
+    players[k].active = !!on;
+    if (!on) players[k].vis.group.visible = false;
+  });
   m.ps.forEach((a, k) => {
     const p = players[k];
-    if (!p) return;
+    if (!p || !p.active) return;
     p.netX = a[0]; p.netZ = a[1];
     if (!p.local) pushSample(p, m.t, a[0], a[1], a[2], a[3]);
     else { p.faceX = a[2]; p.faceZ = a[3]; }
@@ -7126,14 +7208,29 @@ $('s-solo').onclick = () => {
   player.local = true; ally.local = false; ally.ai = true;
   beginMatch();
 };
-$('s-two').onclick = () => showStep('s-two-menu');
+// 2인 / 3~4인 모두 같은 흐름을 쓴다. 다른 건 정원(maxPlayers) 하나뿐이다 (D97)
+let wantSeats = 2;
+$('s-two').onclick = () => { wantSeats = 2; showStep('s-two-menu'); };
+$('s-four').onclick = () => showStep('s-size');
+$('s-size3').onclick = () => { wantSeats = 3; showStep('s-two-menu'); };
+$('s-size4').onclick = () => { wantSeats = 4; showStep('s-two-menu'); };
+$('s-back4').onclick = () => showStep('s-mode');
 $('s-back1').onclick = () => showStep('s-mode');
+$('s-back5').onclick = () => { net.leave(); openStart('s-mode'); renderNet(); };
 
 $('s-create').onclick = () => {
   showStep('s-hosting');
   $('s-code').textContent = '······';
-  net.host(netHooks);
+  net.host(wantSeats, netHooks);
   renderNet();
+  renderLobby();
+};
+// 3~4인 방은 방장이 눌러야 시작한다 — 다 안 모여도 지금 시작할 수 있다
+$('s-begin').onclick = () => {
+  if (net.role !== 'host' || started) return;
+  beginMatch();
+  net.send({ k: 'BEGIN' });
+  for (const l of net.slots()) if (l) net.sendTo(l, { k: 'HELLO', you: l, max: net.maxPlayers, started: true, full: fullSnapshot() });
 };
 $('s-back2').onclick = () => { net.leave(); showStep('s-two-menu'); renderNet(); };
 
@@ -7143,10 +7240,8 @@ $('s-back3').onclick = () => { net.leave(); showStep('s-two-menu'); renderNet();
 function doJoin() {
   const code = $('s-code-in').value.trim();
   if (code.length < 4) { net.status = '여섯 글자 코드를 입력하세요'; renderNet(); return; }
+  // 내 슬롯은 호스트가 HELLO로 알려 준다 (D97) — 그전까지는 아무것도 정하지 않는다
   net.join(code, netHooks);
-  // 클라는 동료 슬롯을 자기 몸으로 쓴다
-  player.local = false;
-  ally.local = true; ally.ai = false; ally.active = true;
   renderNet();
 }
 $('s-connect').onclick = doJoin;
@@ -7212,7 +7307,7 @@ function updateHUD() {
   // 클라에서는 job 객체가 스냅샷이 만든 **진행도만 든 껍데기**라 b가 없다 —
   // 라벨은 있으면 쓰고 없으면 생략한다
   const me = localPlayer();
-  const mate = ally.active ? (me === player ? ally : player) : null;
+  const mates = others(me);
   const lbl = (j) => (j && j.b ? BLDG_INFO[j.b.kind].label + ' ' : '');
   const nWall = me.wallOrders.length || me.wallOrderCount || 0;
   const doing =
@@ -7252,22 +7347,27 @@ function updateHUD() {
     ` · 볼주머니 ${me.carry ? me.carry.toFixed(0) : 0}/${P.carry.playerLoad}` +
     (selectedUnits.size ? ` · 선택 ${selectedUnits.size}` : '') + '\n' +
     (doing ? doing + '\n' : '') +
-    // 2P — 지금 내가 몇 마리를 끌고 있는가 (미끼가 기여라는 걸 숫자로 보여준다, D96)
-    (mate ? (() => {
+    // 협동 — 지금 내가 몇 마리를 끌고 있는가 (미끼가 기여라는 걸 숫자로 보여준다, D96)
+    (mates.length ? (() => {
       const on = enemies.filter((e) => e.chaseTarget === me).length;
-      const other = enemies.filter((e) => e.chaseTarget === mate).length;
+      const rest = mates.map((q) => `${q.name} ${enemies.filter((e) => e.chaseTarget === q).length}`).join(' · ');
       const cd = me.tauntCd > 0 ? ` · 도발 ${Math.ceil(me.tauntCd)}s` : ' · 0 도발';
-      return `🐈 나 ${on} / 동료 ${other}${cd}\n`;
+      return `🐈 나 ${on} / ${rest}${cd}\n`;
     })() : '') +
     // 옆에 붙었으면 건넬 수 있다
-    (mate && !mate.stunned && !me.stunned &&
-     Math.hypot(mate.x - me.x, mate.z - me.z) <= P.coop.giveRange
-      ? `🤝 Q 치즈 ${P.coop.giveCheese} 건네기 · Z 부품 ${P.coop.giveParts} 건네기\n` : '') +
+    (!me.stunned && nearestMate(me, P.coop.giveRange)
+      ? `🤝 ${nearestMate(me, P.coop.giveRange).name}에게 — Q 치즈 ${P.coop.giveCheese} · Z 부품 ${P.coop.giveParts}\n` : '') +
     (warn ? warn + '\n' : '') +
-    // '동료'는 **상대편 햄스터**다 — 클라에서는 그게 player 쪽이다
-    ((mate && mate.stunned)
-      ? (mate.wipeT > 0 ? `🆘 동료 기절 — ${Math.ceil(mate.wipeT)}초 뒤 동료 기지가 무너진다!\n`
-                        : '동료 기절 — 구하러 가자!\n') : '') +
+    // 누운 사람이 여럿일 수 있다 (D97) — 가장 급한 사람부터 보여준다
+    (() => {
+      const down = mates.filter((q) => q.stunned).sort((a, b) => (a.wipeT || 99) - (b.wipeT || 99));
+      if (!down.length) return '';
+      const d = down[0];
+      const more = down.length > 1 ? ` (외 ${down.length - 1}명)` : '';
+      return d.wipeT > 0
+        ? `🆘 ${d.name} 기절 — ${Math.ceil(d.wipeT)}초 뒤 기지가 무너진다!${more}\n`
+        : `${d.name} 기절 — 구하러 가자!${more}\n`;
+    })() +
     (me.stunned ? (me.wipeT > 0 ? `🆘 잡혔다 — ${Math.ceil(me.wipeT)}초 뒤 내 것이 전부 무너진다\n`
                                 : '나: 기절!\n') : '') +
     (paused ? '⏸ 일시정지 (P)' : '');
@@ -7566,7 +7666,7 @@ window.__game = {
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
   beginMatch, openStart, get started() { return started; }, get paused() { return paused; },
   applySnapshot, fullSnapshot, applyFull, sendSnapshot, drawMini,
-  startTaunt, giveTo, humans, others, OWNERS,
+  startTaunt, giveTo, humans, others, OWNERS, players, MAX_PLAYERS, nearestMate,
   get playerVis() { return player.vis; },
   get renderT() { return renderT; }, get lastSnapT() { return lastSnapT; },
   applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,

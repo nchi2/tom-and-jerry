@@ -81,6 +81,14 @@
     #start .msg.bad { color: #ff8b8b; }
     #start .step { display: none; }
     #start .step.on { display: block; }
+    /* 로비 좌석 — 누가 들어왔는지가 보여야 기다릴 수 있다 (D97) */
+    #start .seats { display: flex; gap: 8px; justify-content: center; margin: 14px 0 4px; }
+    #start .seat {
+      width: 62px; padding: 9px 0; border-radius: 9px; font-size: 12px;
+      border: 1px solid #3f4a6b; background: #171c28; color: #6b7488;
+    }
+    #start .seat.on { color: #12151d; font-weight: 700; border-color: transparent; }
+    #start .seat .who { display: block; font-size: 11px; opacity: .75; margin-top: 2px; }
     /* 미니맵 (D95) — 우측 하단. 상대가 어디 있는지 아는 게 협동의 전제다 */
     #mini {
       position: fixed; right: 12px; bottom: 12px; z-index: 12;
@@ -252,7 +260,7 @@
       <div class="step on" id="s-mode">
         <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 지은 게 무너지고 적 본진에서 다시 시작</span></button>
         <button id="s-two">2인 협동<span class="k">살림은 따로. 적은 1.8배. 잡혀도 20초 안에 구해 주면 기지가 산다</span></button>
-        <button id="s-four" disabled>3~4인 협동<span class="k">예정 — 아직 안 됩니다</span></button>
+        <button id="s-four">3~4인 협동<span class="k">최대 넷. 다 모이면 방장이 시작한다 — 적은 인원수만큼 는다</span></button>
       </div>
 
       <div class="step" id="s-two-menu">
@@ -261,11 +269,27 @@
         <button class="back" id="s-back1">← 뒤로</button>
       </div>
 
+      <div class="step" id="s-size">
+        <div class="sub">몇 명이 할까요?</div>
+        <button id="s-size3">3인 방<span class="k">적 2.6배</span></button>
+        <button id="s-size4">4인 방<span class="k">적 3.4배</span></button>
+        <button class="back" id="s-back4">← 뒤로</button>
+      </div>
+
       <div class="step" id="s-hosting">
         <div class="sub">친구에게 이 코드를 불러 주세요</div>
         <div class="code" id="s-code">······</div>
         <div class="msg" id="s-hostmsg">방 여는 중…</div>
+        <div class="seats" id="s-seats"></div>
+        <button id="s-begin" style="display:none">시작하기</button>
         <button class="back" id="s-back2">← 취소</button>
+      </div>
+
+      <div class="step" id="s-lobby">
+        <div class="sub">방 <b id="s-lobby-code"></b> — 방장이 시작하기를 기다리는 중</div>
+        <div class="seats" id="s-seats2"></div>
+        <div class="msg" id="s-lobbymsg"></div>
+        <button class="back" id="s-back5">← 나가기</button>
       </div>
 
       <div class="step" id="s-joining">

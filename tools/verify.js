@@ -582,3 +582,87 @@ window.__interact = () => {
   a.ai = true; a.active = false;
   return out;
 };
+
+// ---- H. 3~4인 (D97) ----
+// 접속 없이 슬롯만 켜서 **게임 로직이 N명을 견디는지** 본다.
+// 네트워크는 별도 (탭 3~4개로 손으로 확인).
+window.__manyPlayers = () => {
+  const g = window.__game;
+  const out = [];
+  const R = (v) => Math.round(v * 10) / 10;
+  const seat = (n) => {
+    g.players.forEach((q, k) => { q.ai = k >= n; q.active = k < n; q.local = k === 0; });
+    g.beginMatch();
+    g.players.forEach((q, k) => { q.ai = k >= n; q.active = k < n; });
+  };
+
+  // --- 적이 인원수만큼 는다 ---
+  const counts = [];
+  for (const n of [1, 2, 3, 4]) {
+    g.P.enemy.spawnDelay = 0;
+    seat(n);
+    counts.push({ n, enemies: g.enemies.length, humans: g.humans().length });
+  }
+  out.push({ t: 'H1.scaling', counts });
+
+  // --- 4인: 추격 목표가 넷으로 갈리는가 ---
+  seat(4);
+  g.players.forEach((q, k) => {
+    const a = k * Math.PI / 2;
+    q.x = g.PLAYER_SPAWN.x + Math.cos(a) * 12; q.z = g.PLAYER_SPAWN.z + Math.sin(a) * 12;
+  });
+  for (const e of g.enemies) e.targetUntil = 0;
+  g.step(6);
+  const spread = g.players.map((q) => g.enemies.filter((e) => e.chaseTarget === q).length);
+  out.push({ t: 'H2.aggroSpread', perPlayer: spread,
+             distinctTargets: spread.filter((v) => v > 0).length });
+
+  // --- 소유자 넷이 각자 벽/건물을 갖는다 ---
+  g.P.enemy.count = 0; g.P.patrol.count = 0; g.P.enemy.spawnDelay = 1e9;
+  seat(4); g.setEnemyCount(0);
+  const owners = g.OWNERS;
+  g.players.forEach((q) => { q.cheese = 500; });
+  const built = {};
+  g.players.forEach((q, k) => {
+    const c = g.worldToCell(q.x, q.z);
+    let n = 0;
+    for (let dj = -2; dj <= 2 && n < 3 + k; dj++) for (let di = -2; di <= 2 && n < 3 + k; di++) {
+      if (g.wallSpotOk(c.i + di, c.j + dj, q)) continue;
+      g.addObstacle(c.i + di, c.j + dj, false, false, q.owner); n++;
+    }
+    built[q.owner] = n;
+  });
+  const wallsBy = (o) => [...g.obstacles.values()].filter((w) => !w.bedrock && !w.bldgRef && w.owner === o).length;
+  out.push({ t: 'H3.fourOwners', built, onMap: owners.map((o) => `${o}:${wallsBy(o)}`).join(' ') });
+
+  // --- 한 명이 잡혀도 나머지 셋은 멀쩡 ---
+  const p2 = g.players[1];
+  const before = owners.map(wallsBy);
+  p2.hp = 1; g.hurtHamster(p2, 5);
+  g.step(g.P.coop.wipeGrace + 1);
+  const after = owners.map(wallsBy);
+  out.push({ t: 'H4.oneWipedOnly', before, after,
+             onlySlot1Gone: after[1] === 0 && after[0] === before[0] && after[2] === before[2] && after[3] === before[3] });
+
+  // --- 전멸은 전원이 누웠을 때만 ---
+  seat(4);
+  g.players.forEach((q) => { q.stunned = false; });
+  for (let k = 0; k < 3; k++) { g.players[k].hp = 1; g.hurtHamster(g.players[k], 5); }
+  const aliveWith3Down = g.alive;
+  g.players[3].hp = 1; g.hurtHamster(g.players[3], 5);
+  out.push({ t: 'H5.gameOverOnlyWhenAllDown', aliveWith3Down, aliveWith4Down: g.alive });
+
+  // --- 아무나 아무나를 구할 수 있다 ---
+  seat(4);
+  g.players.forEach((q) => { q.stunned = false; q.wipeT = 0; });
+  const down = g.players[2];
+  down.hp = 1; g.hurtHamster(down, 5);
+  const wasStunned = down.stunned;
+  const saver = g.players[3];
+  saver.x = down.x + 0.5; saver.z = down.z + 0.5;
+  g.step(0.2);
+  out.push({ t: 'H6.anyoneRescues', wasStunned, nowStunned: down.stunned, savedWipe: R(down.wipeT) });
+
+  g.players.forEach((q, k) => { q.ai = k > 0; q.active = k === 0; q.local = k === 0; });
+  return out;
+};
