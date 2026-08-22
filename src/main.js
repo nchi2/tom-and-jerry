@@ -1217,42 +1217,43 @@ function swapVis(vis, template, tint, tintAmt = 0.22) {
   if (typeof measureTop === 'function') measureTop(vis);
 }
 
-const playerVis = makeHamster();
-playerVis.group.scale.setScalar(P.player.radius);
-// **햄스터는 절차적 모델을 쓴다** (D96). Kenney GLB는 뼈가 하나도 없는 정적 메시라
-// 다리를 움직일 수가 없다 — makeHamster 쪽은 애초에 "두 발로 선 자세"로 짜여 있고
-// 발·다리·팔·손이 따로 있어서 걷는 모션을 줄 수 있다. 고양이는 GLB 그대로 쓴다.
-let playerBar = null, playerWorkBar = null, allyBar = null, allyWorkBar = null;
-
-// 두 번째 햄스터 (회색). **사람이 앉는 자리다** (D95에서 AI를 걷어냈다).
-// 잡히면 적 본진에서 기절 — 상대가 가서 터치하면 구출된다 (D7).
-const allyVis = makeHamster(0xb8b8c4);
-allyVis.group.scale.setScalar(P.ally.radius);
-// (동료도 같은 이유로 절차적 모델. 색만 다르다)
-const ally = {
-  active: false,
-  x: 0, z: 0, faceX: 0, faceZ: -1,
-  stunned: false,
-  path: [], repathT: 0,
-  goalX: 0, goalZ: 0,
-  carry: 0, mode: '대기', buildCd: 0, shelter: null,
-};
-
 let PLAYER_SPAWN = cellToWorld(28, 28);
 let ENEMY_SPAWN = cellToWorld(28, 4);
 
-const player = { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z, faceX: 0, faceZ: -1 };
+// ============================================================
+// 플레이어 슬롯 (D92 2인 → D97에서 4인으로)
+// ============================================================
+// 슬롯은 **처음부터 네 개 만들어 두고** 사람이 앉은 것만 active로 켠다.
+// 나중에 늘리는 것보다 이 편이 안전하다 — "정확히 둘"을 전제한 코드가
+// 어디에 숨어 있는지 컴파일러가 안 알려주기 때문이다 (D92에서 겪었다).
+//
+//   owner : 지갑·건물·벽·일꾼을 가르는 태그 (D43). 코드 전반이 이걸 본다.
+//           'p'/'a'는 2인 시절 그대로 두고 뒤에 'b','c'를 붙였다 — 기존 세이브·주석과 안 어긋나게
+//   local : 이 기계에서 키보드로 조종하는 쪽인가 (참가자에서는 자기 슬롯이 local이 된다)
+//   ai    : AI가 운전하는가 (D95에서 AI를 걷어내서 지금은 늘 false지만, 판정은 남겨 둔다)
+//   active: 사람이 앉아 있는가
+const MAX_PLAYERS = 4;
+const OWNERS = ['p', 'a', 'b', 'c'];
+// 슬롯 색 — 미니맵 초상과 벽 색이 이걸 따른다. 한눈에 갈려야 한다
+const SLOT_FUR = [0xe8b45a, 0xb8b8c4, 0x8fcf9a, 0xc39ae0];   // 갈색 · 회색 · 초록 · 보라
+const SLOT_WALL = [0x9fb0c6, 0x7f93c8, 0x86c69a, 0xb192cf];
+const SLOT_NAME = ['1P', '2P', '3P', '4P'];
 
-// ---- 플레이어 목록 (D92 · 멀티 1단계) ----
-// **새 객체를 만들지 않는다.** player/ally는 이미 40여 곳에서 동일성(`who === player`,
-// `t === player`, `[player, ally]`)으로 참조된다 — 병렬 객체를 만들면 그걸 전부 고쳐야 한다.
-// 그래서 기존 두 객체에 역할 필드만 붙이고 배열로 묶는다. 솔로 동작은 완전히 그대로다.
-//   owner : 지갑·건물·벽·일꾼을 가르는 기존 태그 (D43). 이미 코드 전반이 이걸 본다
-//   local : 이 기계에서 키보드로 조종하는 쪽인가 (클라에서는 ally가 local이 된다)
-//   ai    : AI가 운전하는가 (솔로에서 동료는 true, 2P에서는 false)
-player.id = 0; player.owner = 'p'; player.local = true;  player.ai = false;
-ally.id   = 1; ally.owner   = 'a'; ally.local   = false; ally.ai   = true;
-const players = [player, ally];
+const players = [];
+for (let k = 0; k < MAX_PLAYERS; k++) {
+  const vis = makeHamster(SLOT_FUR[k]);
+  vis.group.scale.setScalar(k === 0 ? P.player.radius : P.ally.radius);
+  players.push({
+    id: k, slot: k, owner: OWNERS[k], name: SLOT_NAME[k],
+    local: k === 0, ai: k !== 0, active: k === 0,
+    x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z, faceX: 0, faceZ: -1,
+    stunned: false, carry: 0,
+    vis, bar: null, workBar: null,
+  });
+}
+// 기존 이름은 그대로 남긴다 — `who === player` 같은 동일성 비교가 코드 곳곳에 있다
+const player = players[0];
+const ally = players[1];
 // 지갑(D92-1a) · 개조(1b) · 체력/무적/기절(1c)이 전부 구조체 필드로 들어왔다.
 // 예전엔 resources/allyRes, playerHp/allyHp, grace/allyGrace처럼 **같은 개념이 두 벌로
 // 흩어져 있었고**, 그래서 한쪽에만 있는 규칙이 생겼다 (구르기 회피가 플레이어 전용이었던 것 등).
@@ -1294,8 +1295,26 @@ for (const p of players) {
   p.tauntT = 0; p.tauntCd = 0;   // 도발 춤 / 재사용 대기 (D96)
 }
 player.cheese = startResources();
-const ownerOf = (o) => (o === 'a' ? ally : player);
+const ownerOf = (o) => players[OWNERS.indexOf(o)] || player;
 const localPlayer = () => players.find((p) => p.local) || player;
+// 사람이 앉아 있는 슬롯들. "정확히 둘"을 전제하지 않으려면 전부 이걸 거쳐야 한다
+const humans = () => players.filter((q) => q.active);
+const others = (p) => players.filter((q) => q !== p && q.active);
+// 건네주기·구출처럼 "가장 가까운 남" 이 필요한 곳
+function nearestMate(p, maxD = Infinity) {
+  let best = null, bd = maxD;
+  for (const q of others(p)) {
+    const d = Math.hypot(q.x - p.x, q.z - p.z);
+    if (d < bd) { bd = d; best = q; }
+  }
+  return best;
+}
+// 슬롯이 겹쳐 스폰하지 않게 — 시작 지점 둘레로 흩는다
+function spawnSlotAt(k) {
+  if (k === 0) return { x: PLAYER_SPAWN.x, z: PLAYER_SPAWN.z };
+  const a = (k - 1) * (Math.PI * 2 / 3) + 0.6;
+  return { x: PLAYER_SPAWN.x + Math.cos(a) * 1.8, z: PLAYER_SPAWN.z + Math.sin(a) * 1.8 };
+}
 
 // ---- 적 무리 ----
 // 각자 자기 경로/AI 상태를 따로 가진다. 서로 밀어내기(분리)만 공유.
@@ -1948,7 +1967,7 @@ function nearestPile(x, z, maxD = Infinity) {
 
 // 치즈를 나르는 존재들 (플레이어 + 동료 + 일꾼)
 const workers = [];
-const carriers = () => [player, ...(ally.active ? [ally] : []), ...workers];
+const carriers = () => [...humans(), ...workers];
 
 // 볼주머니 채굴 (스타 프로브 리듬)
 //  더미 옆에서 mineTime 동안 캐서 한 짐(load)을 담고 → 창고까지 날라 한 번에 부린다.
@@ -2131,8 +2150,8 @@ function wallSpotOk(i, j, p = player) {
   for (const e of enemies)
     if (Math.hypot(w.x - e.x, w.z - e.z) < pr + enemyR(e) + 0.02) return '적이 서 있는 자리';
   for (const q of players) {
-    if (q === p || (q !== player && !q.active)) continue;
-    const qr = q === ally ? P.ally.radius : P.player.radius;
+    if (q === p || !q.active) continue;
+    const qr = radiusOf(q);
     if (Math.hypot(w.x - q.x, w.z - q.z) < pr + qr + 0.02) return '동료가 서 있는 자리';
   }
   return null;
@@ -2823,8 +2842,8 @@ function detonate(e) {
     if (Math.hypot(b.cx - e.x, b.cz - e.z) < R + 1.2) damageBuilding(b, P.bomber.dmg * 2);
   // 폭풍도 벽을 넘지 않는다. 벽 제거를 먼저 했으므로, **남아 있는 벽**(지형·건물)만
   // 가려준다 — 자기가 뚫은 구멍으로는 그대로 들이친다
-  for (const h of [player, ally])
-    if (h.active !== false && Math.hypot(h.x - e.x, h.z - e.z) < R + 0.6
+  for (const h of players)
+    if (h.active && Math.hypot(h.x - e.x, h.z - e.z) < R + 0.6
         && !segmentBlocked(e.x, e.z, h.x, h.z)) hurtHamster(h, P.bomber.dmg);
   for (const g of [...guards])
     if (Math.hypot(g.x - e.x, g.z - e.z) < R + 0.6 && !segmentBlocked(e.x, e.z, g.x, g.z))
@@ -3396,7 +3415,7 @@ function updatePickups(dt) {
     // 2P에서는 그게 곧 "P2가 주운 부품이 P1 것이 된다"가 된다.
     let taker = null;
     for (const q of players) {
-      if (q !== player && (!q.active || q.stunned)) continue;
+      if (!q.active || q.stunned) continue;
       if (Math.hypot(q.x - u.x, q.z - u.z) < 1.1) { taker = q; break; }
     }
     if (!taker) continue;
@@ -3506,8 +3525,7 @@ function distToObstacle(ent, ob) {
 // 살아있고 기절 안 한 햄스터들 (적의 추격 대상)
 function chaseTargets() {
   const out = [];
-  if (!player.stunned) out.push(player);
-  if (ally.active && !ally.stunned) out.push(ally);
+  for (const q of players) if (q.active && !q.stunned) out.push(q);
   return out;
 }
 
@@ -3515,7 +3533,7 @@ function chaseTargets() {
 // 좌표 차분을 지수평활해서 순간적인 흔들림에 적이 휘둘리지 않게 한다.
 function trackTargetVelocity(dt) {
   if (dt <= 0) return;
-  for (const t of [player, ally]) {
+  for (const t of players) {
     if (t.pvx === undefined) { t.pvx = t.x; t.pvz = t.z; t.vx = 0; t.vz = 0; }
     const nx = (t.x - t.pvx) / dt, nz = (t.z - t.pvz) / dt;
     const a = Math.min(1, dt * 6);
@@ -4809,10 +4827,10 @@ function updateWallPops(dt) {
 // 예전엔 셋이 updatePlayer 하나에 섞여 있었고, 그래서 "두 번째 햄스터를 돌린다"가
 // 곧 "두 번째 마우스와 두 번째 카메라를 만든다"는 뜻이 됐다.
 // ============================================================
-const visOf = (p) => (p === ally ? allyVis : playerVis);
-const barOf = (p) => (p === ally ? allyBar : playerBar);
-const workBarOf = (p) => (p === ally ? allyWorkBar : playerWorkBar);
-const radiusOf = (p) => (p === ally ? P.ally.radius : P.player.radius);
+const visOf = (p) => p.vis;
+const barOf = (p) => p.bar;
+const workBarOf = (p) => p.workBar;
+const radiusOf = (p) => (p.slot === 0 ? P.player.radius : P.ally.radius);
 
 // 로컬 입력 표본. **카메라와 키보드를 읽는 유일한 곳이다.**
 // 카메라 기준 축(moveBasis)을 여기서 월드 좌표 단위벡터로 풀어서 넘기므로,
@@ -5290,7 +5308,7 @@ function updateLocalUI(dt) {
 }
 
 // 사람이 운전하는 햄스터인가 (빈 슬롯이 아닌)
-const isDriven = (p) => !p.ai && (p === player || p.active);
+const isDriven = (p) => p.active && !p.ai;
 
 // 입력 송신 (D92-6단계) — 바뀌었을 때 + 최소 주기로. 30Hz면 ~180 B/s다.
 let inSendT = 0, inLastX = 0, inLastZ = 0;
@@ -5454,7 +5472,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'attackWindup', 0.1, 2, 0.05).name('적 예비동작(피할 시간)');
   f.add(P.chaser, 'radius', 0.3, 3, 0.05).name('순찰묘 몸집');
   f.add(P.player, 'radius', 0.1, 0.8, 0.02).name('내 몸집')
-    .onChange((v) => playerVis.group.scale.setScalar(v));
+    .onChange((v) => { player.vis.group.scale.setScalar(v); });
   f.add(P.player, 'rollDist', 0, 10, 0.2).name('구르기 거리');
   f.add(P.player, 'rollTime', 0.1, 1, 0.02).name('구르기 시간(무적)');
   f.add(P.player, 'rollCool', 0, 5, 0.1).name('구르기 쿨다운');
@@ -5478,7 +5496,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   const f = adv.addFolder('플레이어');
   f.add(P.player, 'speed', 1, 18, 0.1).name('이동 속도');
   f.add(P.player, 'radius', 0.15, 0.8, 0.01).name('반지름')
-    .onChange((v) => playerVis.group.scale.setScalar(v));
+    .onChange((v) => { player.vis.group.scale.setScalar(v); });
   f.add(P.player, 'graceTime', 0, 5, 0.1).name('피격 뒤 무적(초)');
   f.add(P.player, 'respawnGrace', 0, 8, 0.5).name('잡힌 뒤 무적(초)');
   f.add(P.player, 'hp', 20, 400, 10).name('체력 (재시작부터)');
@@ -5556,7 +5574,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
 {
   const f = adv.addFolder('동료 (AI 햄스터)');
   f.add(P.ally, 'radius', 0.15, 0.8, 0.01).name('2P 햄스터 반지름')
-    .onChange((v) => allyVis.group.scale.setScalar(v));
+    .onChange((v) => { for (const q of players) if (q.slot) q.vis.group.scale.setScalar(v); });
   f.add(P.coop, 'enemyScale', 1, 3, 0.1).name('2P 적 배수 (재시작부터)');
   f.add(P.coop, 'wipeGrace', 0, 60, 1).name('소멸 유예(초) — 구출하면 취소');
   f.add(P.coop, 'giveRange', 1, 8, 0.2).name('건네주기 사거리');
@@ -5760,7 +5778,8 @@ function applySettings(s) {
   if (s.camera)
     for (const m of CAM_MODES) if (s.camera[m.key]) Object.assign(m.params, s.camera[m.key]);
   // 슬라이더 표시 갱신 + 값에 연동된 것들 반영
-  playerVis.group.scale.setScalar(P.player.radius);
+  player.vis.group.scale.setScalar(P.player.radius);
+  for (const q of players) if (q.slot) q.vis.group.scale.setScalar(P.ally.radius);
   for (const e of enemies) e.vis.group.scale.setScalar(enemyR(e));
   for (const ob of obstacles.values()) {
     if (ob.bedrock || ob.building) continue;
@@ -6009,22 +6028,22 @@ function startTaunt(p = player) {
 // ---- 건네주기 (D96) ----
 // 가까이 붙어야만 넘어간다. 살림 분리(D43)를 안 깨면서 두 경제가 거래하게 만든다.
 function giveTo(p, kind) {
-  const mate = p === player ? ally : player;
-  if (!ally.active || mate.stunned || p.stunned) return;
-  const d = Math.hypot(mate.x - p.x, mate.z - p.z);
-  if (d > P.coop.giveRange) { flashFor(p, '너무 멀다 — 옆에 붙어야 건넨다', '#e05050'); return; }
+  if (p.stunned) return;
+  // 여럿일 수 있으므로 **가장 가까운 사람**에게 준다 (D97)
+  const mate = nearestMate(p, P.coop.giveRange);
+  if (!mate || mate.stunned) { flashFor(p, '너무 멀다 — 옆에 붙어야 건넨다', '#e05050'); return; }
   if (kind === 'parts') {
     const n = Math.min(P.coop.giveParts, p.parts);
     if (n <= 0) { flashFor(p, '건넬 부품이 없다', '#e05050'); return; }
     p.parts -= n; mate.parts += n;
-    flashFor(p, `부품 ${n} 건넸다`, '#8fd6ff');
-    flashFor(mate, `동료가 부품 ${n}을 줬다`, '#8fd6ff');
+    flashFor(p, `${mate.name}에게 부품 ${n} 건넸다`, '#8fd6ff');
+    flashFor(mate, `${p.name}가 부품 ${n}을 줬다`, '#8fd6ff');
   } else {
     const n = Math.min(P.coop.giveCheese, Math.floor(p.cheese));
     if (n <= 0) { flashFor(p, '건넬 치즈가 없다', '#e05050'); return; }
     p.cheese -= n; mate.cheese += n;
-    flashFor(p, `치즈 ${n} 건넸다`, '#ffd24a');
-    flashFor(mate, `동료가 치즈 ${n}을 줬다`, '#ffd24a');
+    flashFor(p, `${mate.name}에게 치즈 ${n} 건넸다`, '#ffd24a');
+    flashFor(mate, `${p.name}가 치즈 ${n}을 줬다`, '#ffd24a');
   }
   spawnBuildFx((p.x + mate.x) / 2, (p.z + mate.z) / 2);
 }
@@ -6118,11 +6137,7 @@ function restart() {
   // 구르기·기운은 두 햄스터 모두 초기화 (D92-1d)
   for (const p of players) { p.rollT = 0; p.rollCd = 0; p.rollGrace = 0; p.tauntT = 0; p.tauntCd = 0;
                              p.stamina = P.player.stamMax; p.stamIdle = 99; }
-  ally.cheese = startResources();   // 사람이 앉는 자리다 — P1과 같은 출발 (D95)
-  ally.shelter = null;
-  ally.buildCd = 0;
-  player.carry = 0;
-  ally.carry = 0;
+  for (const q of players) { q.cheese = startResources(); q.carry = 0; }
   killCount = 0;
   for (const b of [...buildings]) destroyBuilding(b, false);
   for (const p of players) { p.parts = 0; p.upg = newUpg(); }
@@ -6136,19 +6151,20 @@ function restart() {
   for (const p of players) { p.hp = P.player.hp; p.hurtT = 99; p.grace = 0; p.stunned = false; p.wipeT = 0; }
   camShake = 0;
   surgeDone = 0;
-  ally.active = !ally.ai;   // 사람이 붙어 있을 때만 존재한다 (D95)
-  ally.stunned = false;
-  ally.path = [];
-  ally.x = PLAYER_SPAWN.x + 1.4;
-  ally.z = PLAYER_SPAWN.z + 0.6;
-  allyVis.group.rotation.x = 0;
-  allyVis.setOpacity(1);
-  playerVis.group.rotation.x = 0;
-  playerVis.setOpacity(1);
+  // 슬롯마다 제자리에서 시작. 사람이 앉은 슬롯만 켠다 (D97)
+  for (const q of players) {
+    q.active = q.slot === 0 || !q.ai;
+    q.stunned = false;
+    const sp = spawnSlotAt(q.slot);
+    q.x = sp.x; q.z = sp.z;
+    q.faceX = 0; q.faceZ = -1;
+    q.vis.group.rotation.x = 0;
+    q.vis.group.rotation.z = 0;
+    q.vis.setOpacity(1);
+    q.vis.group.visible = q.active;
+  }
   for (const ob of [...obstacles.values()]) if (!ob.bedrock) removeObstacle(ob);
   refreshClearance();
-  player.x = PLAYER_SPAWN.x; player.z = PLAYER_SPAWN.z;
-  player.faceX = 0; player.faceZ = -1;
   // 적 무리 초기화 — 마릿수 슬라이더 변경분도 여기서 반영
   for (const e of enemies) {
     scene.remove(e.vis.group); disposeBar(e.bar);
@@ -6178,7 +6194,7 @@ function restart() {
 //   구르기 회피(D77) · 화면 흔들림 · hurtT(재생 지연) 갱신.
 // 2P에서는 그게 곧 "P2는 구르기로 못 피한다"가 되므로 하나로 합쳤다.
 function hurtHamster(who, dmg) {
-  if (!who.active && who !== player) return;   // 동료가 꺼져 있으면 무시
+  if (!who.active) return;   // 빈 슬롯은 무시
   if (who.grace > 0 || who.stunned) return;
   // 구르는 중이면 **회피** (D77) — 예비동작이 끝나기 전에 굴러야 한다.
   // rollGrace는 원격 플레이어의 지연 보정분이다 (D92-7단계)
@@ -6198,7 +6214,7 @@ function caught(who) {
   cancelBuild(true, who);   // 각자의 채널링만 취소한다 (D92-1e)
   spawnBuildFx(who.x, who.z); // 잡힌 자리에서 펑
   who.x = ENEMY_SPAWN.x;
-  who.z = ENEMY_SPAWN.z + (who === ally ? 1.2 : 0);
+  who.z = ENEMY_SPAWN.z + who.slot * 1.2;   // 슬롯마다 조금씩 어긋나게 떨군다
   who.faceX = 0; who.faceZ = 1;
   collideWithObstacles(who, P.player.radius);
   spawnBuildFx(who.x, who.z); // 떨어진 자리에서도 펑
@@ -6218,7 +6234,7 @@ function caught(who) {
   // **"혼자면 다 잃는다. 친구가 있으면 구할 수 있다"**(사회적)로 바뀐다 — D7의 정체성이다.
   who.carry = 0;
   if (P.player.wipeOnCatch && !who.ai) {
-    if (ally.active && P.coop.wipeGrace > 0) {
+    if (humans().length > 1 && P.coop.wipeGrace > 0) {
       who.wipeT = P.coop.wipeGrace;
       flashFor(who, `${Math.round(P.coop.wipeGrace)}초 안에 구출되지 않으면 전부 무너진다`, '#ffb347');
     } else {
@@ -6228,16 +6244,15 @@ function caught(who) {
   if (who.local) camTarget.set(who.x, 0, who.z); // 카메라가 끌려간 걸 보여줌
   // 혼자면 기절할 이유가 없다 — 구해 줄 사람이 없다 (D95).
   // 원작처럼 **본진에 떨궈지고 다시 시작**한다. 잃은 건 지은 것이고, 판은 계속된다.
-  if (!ally.active) {
+  if (humans().length < 2) {
     flashMsg('잡혔다! 적 본진으로 끌려났다', '#ff6b6b');
     return;
   }
   who.stunned = true;
-  if (who === ally) ally.path = [];
-  const other = who === player ? ally : player;
-  if (other.stunned) return gameOver();   // 둘 다 누우면 전멸
+  // **전원이 누우면** 전멸이다 (D97 — 예전엔 "둘 다"였다)
+  if (humans().every((q) => q.stunned)) return gameOver();
   if (who.local) flashMsg('잡혔다! 동료가 구하러 올 때까지 기절', '#ff6b6b');
-  else flashMsg('동료가 잡혔다! 적 본진에서 기절 — 구하러 가자', '#ff6b6b');
+  else flashMsg(`${who.name}가 잡혔다! 적 본진에서 기절 — 구하러 가자`, '#ff6b6b');
 }
 
 function gameOver() {
@@ -6278,9 +6293,9 @@ function updateWipeGrace(dt) {
 }
 
 function updateRescue() {
-  if (!ally.active) return;
+  if (humans().length < 2) return;
   const near = (a, b) => Math.hypot(a.x - b.x, a.z - b.z) < 1.2;
-  const save = (who, mine) => {
+  const save = (who, mine, by) => {
     who.stunned = false;
     who.hp = P.player.hp;
     who.grace = P.player.graceTime;
@@ -6288,11 +6303,18 @@ function updateRescue() {
     // **구출이 소멸을 취소한다** (D95) — 구하러 가는 것에 처음으로 이해관계가 붙는다
     const saved = who.wipeT > 0;
     who.wipeT = 0;
-    flashMsg(mine ? (saved ? '구출됐다! 지은 것도 지켰다' : '구출됐다!')
-                  : (saved ? '동료를 구했다 — 기지도 지켰다' : '동료를 구출했다!'), '#6ee07a');
+    if (mine) flashMsg(saved ? '구출됐다! 지은 것도 지켰다' : '구출됐다!', '#6ee07a');
+    else if (by && by.local) flashMsg(saved ? `${who.name}를 구했다 — 기지도 지켰다` : `${who.name}를 구출했다!`, '#6ee07a');
+    else flashMsg(`${by ? by.name : '누군가'}가 ${who.name}를 구했다`, '#6ee07a');
   };
-  if (player.stunned && !ally.stunned && near(ally, player)) save(player, player.local);
-  if (ally.stunned && !player.stunned && near(player, ally)) save(ally, ally.local);
+  // 누구든 누구를 구할 수 있다 (D97). 서 있는 사람이 누운 사람에게 닿으면 된다
+  for (const down of players) {
+    if (!down.active || !down.stunned) continue;
+    for (const up of players) {
+      if (up === down || !up.active || up.stunned) continue;
+      if (near(up, down)) { save(down, down.local, up); break; }
+    }
+  }
 }
 
 // ---- 업그레이드 패널 (U) ----
@@ -6547,7 +6569,7 @@ function renderNetDev() {
 const miniEl = document.getElementById('mini');
 const miniCtx = miniEl.getContext('2d');
 const MINI_PAD = 10;                     // 아이콘이 테두리를 넘지 않게 두는 여백
-const avatars = { p: null, a: null };
+const avatars = {};
 
 // 햄스터 모델을 작은 오프스크린 렌더로 한 번 찍어 원형 초상으로 만든다.
 // 색 원반보다 "누구인지"가 훨씬 빨리 읽힌다. 실패하면 색 원반으로 떨어진다.
@@ -6594,8 +6616,8 @@ function makeAvatar(vis, tint) {
 }
 
 function buildAvatars() {
-  if (!avatars.p) avatars.p = makeAvatar(playerVis, '#f0c070');
-  if (!avatars.a) avatars.a = makeAvatar(allyVis, '#8fa8e8');
+  for (const q of players)
+    if (!avatars[q.owner]) avatars[q.owner] = makeAvatar(q.vis, '#' + SLOT_FUR[q.slot].toString(16).padStart(6, '0'));
 }
 
 // 정적인 층(영토·벽·치즈더미)은 **바뀔 때만** 다시 그려 오프스크린에 캐시한다.
@@ -6682,7 +6704,7 @@ function drawMini(dt) {
   buildAvatars();
   const me = localPlayer();
   for (const q of players) {
-    if (q !== player && !q.active) continue;
+    if (!q.active) continue;
     const art = avatars[q.owner];
     const R = q === me ? 11 : 9;
     const cx = clamp2(sx(q.x)), cy = clamp2(sz(q.z));
@@ -6748,7 +6770,7 @@ function applyFull(f) {
   markNavDirty();
   // 클라는 자기 몸(동료 슬롯)만 예측한다. 나머지는 스냅샷이 채운다
   P.ally.radius = P.player.radius;
-  allyVis.group.scale.setScalar(P.ally.radius);
+  for (const q of players) q.vis.group.scale.setScalar(P.ally.radius);
   ally.active = true; ally.ai = false; ally.local = true;
   player.local = false;
   if (!started) beginMatch();   // 시작 화면을 닫고 호스트와 같은 출발선에서 시작 (D93)
@@ -6769,8 +6791,8 @@ const netHooks = {
       ally.active = true;
       ally.stunned = false;
       // ⚠ 솔로 균형을 위해 일부러 남겨 둔 두 비대칭을 여기서만 덮어쓴다 (D92)
-      P.ally.radius = P.player.radius;      // 안 맞추면 P2 히트박스가 35% 크다
-      allyVis.group.scale.setScalar(P.ally.radius);
+      P.ally.radius = P.player.radius;      // 안 맞추면 참가자 히트박스가 35% 크다
+      for (const q of players) q.vis.group.scale.setScalar(P.ally.radius);
       // **처음 붙을 때만** 판을 새로 시작한다 (D93). 예전에는 호스트가 하던 솔로 판에
       // 상대를 얹어서, 참가자가 이미 굴러가던 세계 한복판에 떨어졌다.
       // 다만 끊겼다 다시 붙는 것까지 재시작하면 **잠깐 끊긴 것만으로 판이 날아간다** (D94) —
@@ -6831,7 +6853,7 @@ const netAuthoring = () => net.role !== 'client';
 // 사람이 둘이면 적도 늘어야 한다. 안 그러면 표적만 둘로 갈려서 **2인이 1인보다 쉽다** —
 // D91의 어그로 회전이 압박을 정확히 반으로 나눠 주기 때문이다.
 // 적 수를 정하는 곳이 셋(시작 마릿수·스테이지 표·웨이브 보충)이라 배수를 한 군데로 모았다.
-const humanCount = () => players.filter((q) => !q.ai && (q === player || q.active)).length;
+const humanCount = () => humans().length;
 const coopScale = () => (humanCount() > 1 ? P.coop.enemyScale : 1);
 const scaled = (n) => Math.round(n * coopScale());
 
@@ -7256,12 +7278,12 @@ function updateHUD() {
 // ============================================================
 // 초기화 & 루프
 // ============================================================
-// 체력/작업 바 (makeBar 정의 이후에 만들어야 한다)
-playerBar = makeBar(0x5fd07a, 1.1);
-playerWorkBar = makeBar(0xf0c040, 1.1);
-allyBar = makeBar(0x5fd07a, 1.0);
-allyWorkBar = makeBar(0xf0c040, 1.0);
-measureTop(playerVis); measureTop(allyVis);
+// 체력/작업 바 (makeBar 정의 이후에 만들어야 한다). 슬롯마다 한 벌씩 (D97)
+for (const q of players) {
+  q.bar = makeBar(0x5fd07a, q.slot === 0 ? 1.1 : 1.0);
+  q.workBar = makeBar(0xf0c040, q.slot === 0 ? 1.1 : 1.0);
+  measureTop(q.vis);
+}
 
 rebuildWorld(mapIndex);      // 지형·광맥·바닥·스폰 생성 + clearance
 restart();                   // 동료·스테이지·업그레이드까지 초기 상태로
@@ -7321,9 +7343,8 @@ function tickClient(dt) {
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) flashEl.style.opacity = '0'; }
   flushNavDirty();   // 스냅샷이 벽을 바꿨으면 영토·은신처 계산도 따라가야 한다
   presentWorld(dt);
-  updateActorVis(player, dt);
-  updateActorVis(ally, dt);
-  allyVis.group.visible = ally.active;
+  for (const q of players) if (q.active) updateActorVis(q, dt);
+  for (const q of players) q.vis.group.visible = q.active;
   updateLocalUI(dt);
   updateCheeseBits(dt);
   updateWallPops(dt);
@@ -7382,8 +7403,7 @@ function tick(dt) {
     }
     // 동료 슬롯은 사람이 앉았을 때만 존재한다 (D95에서 AI를 걷어냈다).
     // updatePlayer가 이미 updateActor로 돌렸으므로 여기서는 보이기만 맞춘다.
-    if (!ally.ai) { ally.active = true; ally.local = net.role === 'client'; }
-    allyVis.group.visible = ally.active;
+    for (const q of players) q.vis.group.visible = q.active;
     updateRescue();
     updateWipeGrace(dt);
     flushNavDirty();           // 이번 프레임에 바뀐 벽을 한 번에 반영 (D70)
@@ -7410,7 +7430,7 @@ function tick(dt) {
     // 재생은 두 햄스터가 같은 규칙이다 (D92-1c). 예전엔 동료만 hurtT 게이트가 없어서
     // **맞는 중에도 계속 회복**했다 (대신 0.6배). 2P에서는 그게 그대로 불공평이 된다.
     for (const p of players) {
-      if (p !== player && !p.active) continue;
+      if (!p.active) continue;
       p.hurtT += dt;
       if (!p.stunned && p.hurtT > P.player.regenDelay)
         p.hp = Math.min(p.hp + P.player.regen * dt, P.player.hp);
@@ -7420,7 +7440,7 @@ function tick(dt) {
     // 나르기는 사람이 모는 햄스터 전부가 한다 (D92-2단계).
     // 솔로에서는 player 하나라 예전과 같다.
     for (const p of players)
-      if (isDriven(p)) p.job = p.stunned ? null : doCarryWork(p, dt, P.carry.playerLoad, p.owner);
+      if (p.active) p.job = p.stunned ? null : doCarryWork(p, dt, P.carry.playerLoad, p.owner);
     updateWorkers(dt);
     updateGuards(dt);
     updateProjectiles(dt);
@@ -7440,7 +7460,7 @@ function tick(dt) {
     // 살림이 각자라면 수입도 각자여야 하고, 균등이면 한 명이 안 쌓아도 같이 번다.
     // 혼자면 지분이 1이라 솔로 수입은 그대로다.
     if (P.res.terrIncome > 0) {
-      const share = players.filter((q) => !q.ai && (q === player || q.active));
+      const share = humans();
       const total = territoryArea * P.res.terrIncome * dt;
       if (share.length === 1) share[0].cheese += total;
       else {
@@ -7546,7 +7566,8 @@ window.__game = {
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
   beginMatch, openStart, get started() { return started; }, get paused() { return paused; },
   applySnapshot, fullSnapshot, applyFull, sendSnapshot, drawMini,
-  playerVis, allyVis, startTaunt, giveTo,
+  startTaunt, giveTo, humans, others, OWNERS,
+  get playerVis() { return player.vis; },
   get renderT() { return renderT; }, get lastSnapT() { return lastSnapT; },
   applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
