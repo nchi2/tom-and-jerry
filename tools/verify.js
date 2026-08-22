@@ -425,6 +425,7 @@ window.__interpTest = (secs = 2, hz = 20) => {
 // ally를 사람이 앉은 것처럼 다뤄서 (ai=false) 2P 경로를 그대로 밟는다.
 window.__coop = () => {
   const g = window.__game;
+  g.applySettings(g.DEFAULT_SETTINGS);
   const out = [];
   const R = (v) => Math.round(v * 10) / 10;
   const a = g.ally;
@@ -492,6 +493,7 @@ window.__coop = () => {
 // 건네주기(가까이) · 도발(어그로 당기기 + 이동 봉쇄) · 걷는 모션
 window.__interact = () => {
   const g = window.__game;
+  g.applySettings(g.DEFAULT_SETTINGS);
   const out = [];
   const R = (v) => Math.round(v * 10) / 10;
   const a = g.ally;
@@ -589,6 +591,8 @@ window.__interact = () => {
 window.__manyPlayers = () => {
   const g = window.__game;
   const out = [];
+  // 앞 단계가 적을 꺼 놓고 끝났을 수 있다 — 순서에 안 휘둘리게 여기서 기본값을 복구한다
+  g.applySettings(g.DEFAULT_SETTINGS);
   const R = (v) => Math.round(v * 10) / 10;
   const seat = (n) => {
     g.players.forEach((q, k) => { q.ai = k >= n; q.active = k < n; q.local = k === 0; });
