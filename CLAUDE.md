@@ -34,12 +34,13 @@
 ## 코드 구조
 
 - `src/main.js` — 게임 전부 (약 7,100줄). 튜닝 파라미터 `P`가 파일 최상단
-- `src/net.js` — 2P 접속만 (PeerJS, D92). **게임을 모른다** — 봉투와 바이트만 다룬다
+- `src/net.js` — 접속만 (PeerJS, 최대 4인 별 모양, D92·D97). **게임을 모른다** — 봉투와 바이트만 다룬다
 - `index.html` — HUD/도움말/로비 DOM
 - `tools/verify.js` — 회귀 하니스. 브라우저에서
   `fetch('/tools/verify.js').then(r=>r.text()).then(eval)` 후 `__verify()`.
-  **A 150초 무입력 / B 명령·작업 경로 / D 2P 경제 / E 명령 계층 / C 전투.**
-  변경할 때마다 돌리고 `errs: 0`을 확인할 것
+  **A 150초 무입력 / B 명령·작업 경로 / D 2P 경제 / E 명령 계층 / C 전투 /
+  F 2인 컨텐츠 / G 상호작용 / H 3~4인.** 변경할 때마다 돌리고 `errs: 0`을 확인할 것.
+  `__profile()`(틱당 CPU)·`__interpTest()`(보간)도 같은 파일에 있다
 - 개발 서버: `npm run dev` (기본 5173). `.claude/launch.json`은 `--port 5299 --strictPort`로 고정
 - 디버그 훅: `window.__game` — `step(seconds)`로 헤드리스 진행 가능
 
@@ -48,7 +49,7 @@
 2. 길찾기 — `computeClearance` + `planEnemyPath` (clearance ≥ 반지름인 칸만 밟음 = 시도조차 안 함)
 3. 돌파 — `planEnemyPath` 후반 + 정체 감지 (우회로가 없을 때만 벽 공격)
 
-## 2P가 만든 규칙 (D92) — 어기면 조용히 깨진다
+## 멀티가 만든 규칙 (D92·D97) — 어기면 조용히 깨진다
 
 - **`updateActor(p, dt)`는 `p`와 `p.in`만 읽는다.** `keys`·`mouseDown`·`activeCam()` 금지.
   카메라·키보드를 읽는 곳은 `sampleLocalInput` 하나뿐이다
@@ -57,7 +58,10 @@
 - **스폰·재시작은 `netAuthoring()` 가드 안**(`makeEnemy`·`spawnPickup`·`advanceStage`·`setMap`).
   참가자가 id를 만들면 스냅샷이 엉뚱한 개체에 값을 써 넣고 **물리 버그처럼 보인다**
 - **화면에 쓰는 값은 `player`가 아니라 `localPlayer()`** — 참가자 쪽에서는 그게 동료 슬롯이다
-- 소유자가 있는 알림은 `flashMsg`가 아니라 **`flashFor(p, ...)`**
+- 소유자가 있는 알림은 `flashMsg`가 아니라 **`flashFor(p, ...)`** (지목 전송이라 남의 화면을 안 덮는다)
+- **"상대"를 단수로 쓰지 말 것** — 슬롯은 넷이다. `humans()`·`others(p)`·`nearestMate(p)`를 쓴다.
+  `player`/`ally`는 슬롯 0·1의 이름일 뿐이다
+- **호스트가 받은 메시지는 보낸 사람 슬롯에 적용**한다. 안 그러면 3인부터 입력이 뒤섞인다
 
 ## 작업할 때 지킬 것
 
