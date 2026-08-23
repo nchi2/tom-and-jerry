@@ -69,6 +69,9 @@ export const net = {
   _pingSeq: 0,
   _bye: false,       // 내가 일부러 나갔는가 (그러면 재접속을 시도하지 않는다)
   _tries: 0,
+  _retryT: null,
+  _dialT: null,
+  _seen: false,        // 이 방에 **한 번이라도** 붙어 봤나 (호스트 실종과 오타를 가른다)
 
   // 지금 방에 있는 사람 수 (호스트 포함)
   count() {
@@ -125,6 +128,9 @@ export const net = {
   leave() {
     this._bye = true;
     this._stopPing();
+    // 예약된 재접속을 안 끄면 나간 방에 다시 전화를 건다
+    if (this._retryT) { clearTimeout(this._retryT); this._retryT = null; }
+    if (this._dialT) { clearTimeout(this._dialT); this._dialT = null; }
     for (const l of this._links) closeLink(l);
     closeLink(this._self);
     this._links = []; this._self = null;
@@ -141,6 +147,7 @@ export const net = {
     this.leave();
     this._bye = false;
     this._tries = 0;
+    this._seen = false;
     this._hooks = hooks;
     this.role = role;
     this.isHost = role === 'host';
@@ -166,6 +173,11 @@ export const net = {
       const t = err && err.type;
       // 참가자 하나가 사라진 것뿐이면 방은 안 닫는다 (호스트는 계속 기다린다)
       if (this.role === 'host' && t === 'peer-unavailable') return;
+      // **한 번 붙었던** 참가자에게 오는 peer-unavailable은 오타가 아니라
+      // 호스트가 사라졌다는 뜻이다. 여기서 _fail로 끝내면 남은 재시도가 통째로
+      // 날아가고(호스트가 새로고침 중일 수도 있다) 화면에는 엉뚱하게
+      // "코드를 확인하세요"가 뜬다.
+      if (t === 'peer-unavailable' && this.role === 'client' && this._seen) { this._retryOrGiveUp(); return; }
       if (t === 'unavailable-id') this._fail('그 방 코드는 이미 쓰이는 중입니다 — 다시 시도하세요');
       else if (t === 'peer-unavailable') this._fail('그런 방이 없습니다 — 코드를 확인하세요');
       else if (t === 'network' || t === 'server-error') this._fail('브로커에 연결하지 못했습니다');
@@ -230,6 +242,18 @@ export const net = {
   _dial(peer, code) {
     const link = { peerId: PREFIX + code, slot: -1, main: null, fast: null, rtt: 0, pingAt: new Map() };
     this._self = link;
+    // 호스트가 방금 사라졌으면 브로커에는 아직 그 id가 남아 있다. 그러면 이 connect는
+    // **에러도 close도 없이 영원히 매달린다** — 화면은 "다시 붙는 중 (1/3)"에서 멈춘다.
+    // 재접속일 때만 시계를 걸어 둔다 (첫 접속의 오타는 peer-unavailable이 제대로 잡는다).
+    if (this._seen) {
+      if (this._dialT) clearTimeout(this._dialT);
+      this._dialT = setTimeout(() => {
+        this._dialT = null;
+        if (this.connected || this._bye) return;
+        closeLink(link);
+        this._retryOrGiveUp();
+      }, 4000);
+    }
     this._bindMain(link, peer.connect(PREFIX + code, { reliable: true, label: 'main' }));
     // fast는 실패해도 게임이 도므로 최선 노력이다
     try { this._bindFast(link, peer.connect(PREFIX + code, { reliable: false, label: 'fast' })); }
@@ -259,6 +283,8 @@ export const net = {
         this._hostStatus();
         if (this._hooks.onJoin) this._hooks.onJoin(link.slot);
       } else {
+        this._seen = true;
+        if (this._dialT) { clearTimeout(this._dialT); this._dialT = null; }
         this.status = `연결됨 (방 ${this.code})`;
         if (this._hooks.onOpen) this._hooks.onOpen();
       }
@@ -285,19 +311,33 @@ export const net = {
     }
     this.connected = false;
     this._stopPing();
-    // 데이터 채널이 끊겼다고 판이 끝나면 안 된다 (D94).
-    // 참가자는 몇 번 다시 걸어 본다 — 호스트는 방을 열어 둔 채 기다리면 그만이다.
+    this._retryOrGiveUp();
+  },
+
+  // 참가자 전용. 데이터 채널이 끊겼다고 판이 끝나면 안 된다 (D94).
+  // 몇 번 다시 걸어 본다 — 호스트가 새로고침 중이면 그 사이에 돌아온다.
+  // 채널 닫힘과 dial 실패가 **둘 다** 여기로 들어오므로 예약이 겹치지 않게 막는다.
+  _retryOrGiveUp() {
+    if (this._retryT) return;
     if (!this._bye && this._tries < 3 && this._peer && !this._peer.destroyed) {
       this._tries++; this.retries++;
       this.status = `연결이 끊겼다 — 다시 붙는 중 (${this._tries}/3)`;
       if (this._hooks.onStatus) this._hooks.onStatus();
-      setTimeout(() => {
+      // 호스트가 브로커에 이름을 다시 올리는 데 시간이 걸린다 — 짧게 세 번 두드리면
+      // 새로고침한 호스트를 놓친다. 1.2 / 2.4 / 3.6초로 벌린다.
+      this._retryT = setTimeout(() => {
+        this._retryT = null;
         if (this._bye || this.connected || !this._peer || this._peer.destroyed) return;
         this._dial(this._peer, this.code);
-      }, 600 * this._tries);
+      }, 1200 * this._tries);
       return;
     }
-    this.status = this._bye ? '' : '호스트와 연결이 끊겼습니다';
+    // 여기까지 왔으면 호스트는 정말 없다. **왜 없는지**를 구분해서 말해 준다.
+    this.status = this._bye ? '' : (this._seen ? '호스트가 나갔다 — 방이 닫혔다' : '호스트와 연결이 끊겼습니다');
+    // role을 'client'로 남겨 두면 안 된다 — netAuthoring()이 계속 false라
+    // 혼자가 된 화면에서 적도 아이템도 영영 안 생긴다 (얼어붙은 판처럼 보인다).
+    this.role = 'solo'; this.isHost = true; this.slot = 0; this.code = ''; this.rtt = 0;
+    this._self = null; this.fastOpen = false;
     if (this._hooks.onClose) this._hooks.onClose('끊김');
     if (this._hooks.onStatus) this._hooks.onStatus();
   },

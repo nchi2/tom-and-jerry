@@ -6881,10 +6881,17 @@ const netHooks = {
     renderNet();
   },
 
-  onClose() {
+  // ---- 참가자: 호스트를 잃었다 (D98) ----
+  // reason이 '나감'이면 내가 누른 것이라 화면은 부른 쪽이 이미 챙겼다.
+  // 그 외에는 **호스트가 사라진 것**이다 — 판 한가운데서 조용히 0번 슬롯을
+  // 넘겨받으면 남의 햄스터로 남의 판을 계속하게 된다. 말해 주고 처음으로 돌린다.
+  onClose(reason) {
     greeted = false;
-    // 호스트를 잃었다 — 내 자리를 0번으로 되돌리고 혼자가 된다
-    for (const q of players) { q.local = q.slot === 0; if (q.slot) { q.active = false; q.ai = true; } }
+    for (const q of players) { q.local = q.slot === 0; if (q.slot) { q.active = false; q.ai = true; q.vis.group.visible = false; } }
+    if (reason !== '나감' && started) {
+      openStart('s-mode');
+      flashMsg('호스트가 나갔다 — 방이 닫혔다', '#ff7a7a');
+    }
     renderNet();
     renderLobby();
   },
