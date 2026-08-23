@@ -6476,12 +6476,15 @@ function openStart(step = 's-mode') {
 // 실제로 판을 시작한다. 여기 한 곳만 지나면 되도록 모아 뒀다 —
 // 솔로도 2P도 **같은 출발선**(재시작 + 기본 시점)에서 시작해야
 // "어째서인지 시점이 바뀐다" 같은 게 안 생긴다.
-function beginMatch() {
+// fresh=false는 **참가자가 남의 판에 끼어드는 경우**다 (D98). 이때 restart를 돌리면
+// 방금 applyFull이 세워 놓은 벽과 건물을 그대로 쓸어버린다 — 첫 접속에는 호스트도
+// 막 시작한 참이라 안 보이지만, 끊겼다 다시 붙으면 지어 둔 게 전부 사라진다.
+function beginMatch(fresh = true) {
   startEl.classList.add('hidden');
   started = true;
   setMenu(false);
   setCamera(DEFAULT_CAM);
-  restart();
+  if (fresh) restart();
 }
 
 // ---- 로비 좌석 (D97) ----
@@ -6811,7 +6814,7 @@ function applyFull(f, msg) {
   for (const q of players) q.local = (q === me);
   me.active = true; me.ai = false;
   // 판이 이미 돌고 있으면 바로 들어간다. 아직이면 로비에서 기다린다 (3~4인)
-  if (!started && (!msg || msg.started || net.maxPlayers === 2)) beginMatch();
+  if (!started && (!msg || msg.started || net.maxPlayers === 2)) beginMatch(false);
   else if (!started) showStep('s-lobby');
   // 재시작 때도 같은 HELLO가 오므로 인사는 처음 한 번만 (안 그러면 매번 화면을 덮는다)
   if (!greeted) { greeted = true; flashMsg('연결됐다! 너는 회색 햄스터다', '#6ee07a'); }
