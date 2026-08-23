@@ -60,6 +60,7 @@ export const net = {
   fakeLag: 0,
   // 통계
   sent: 0, recv: 0, dropped: 0, buffered: 0, fastOpen: false, retries: 0,
+  errs: [],            // 최근 브로커 오류 (F9 패널용). 조용히 죽는 걸 눈으로 보려고 남긴다
 
   _peer: null,
   _links: [],        // 호스트: 참가자마다 하나 { peerId, slot, main, fast, rtt, pingAt }
@@ -148,6 +149,7 @@ export const net = {
     this._bye = false;
     this._tries = 0;
     this._seen = false;
+    this.errs = [];
     this._hooks = hooks;
     this.role = role;
     this.isHost = role === 'host';
@@ -160,7 +162,7 @@ export const net = {
     try {
       ({ default: Peer } = await import('peerjs'));
     } catch {
-      this._fail('네트워크 모듈을 못 불러왔습니다');
+      this._fail('네트워크 모듈을 못 불러왔습니다', true);
       return;
     }
 
@@ -170,7 +172,9 @@ export const net = {
     this._peer = peer;
 
     peer.on('error', (err) => {
-      const t = err && err.type;
+      const t = (err && err.type) || String(err);
+      this.errs.push(t);
+      if (this.errs.length > 8) this.errs.shift();
       // 참가자 하나가 사라진 것뿐이면 방은 안 닫는다 (호스트는 계속 기다린다)
       if (this.role === 'host' && t === 'peer-unavailable') return;
       // **한 번 붙었던** 참가자에게 오는 peer-unavailable은 오타가 아니라
@@ -178,11 +182,11 @@ export const net = {
       // 날아가고(호스트가 새로고침 중일 수도 있다) 화면에는 엉뚱하게
       // "코드를 확인하세요"가 뜬다.
       if (t === 'peer-unavailable' && this.role === 'client' && this._seen) { this._retryOrGiveUp(); return; }
-      if (t === 'unavailable-id') this._fail('그 방 코드는 이미 쓰이는 중입니다 — 다시 시도하세요');
-      else if (t === 'peer-unavailable') this._fail('그런 방이 없습니다 — 코드를 확인하세요');
-      else if (t === 'network' || t === 'server-error') this._fail('브로커에 연결하지 못했습니다');
+      if (t === 'unavailable-id') this._fail('그 방 코드는 이미 쓰이는 중입니다 — 다시 시도하세요', true);
+      else if (t === 'peer-unavailable') this._fail('그런 방이 없습니다 — 코드를 확인하세요', true);
+      else if (t === 'network' || t === 'server-error') this._fail('방 서버가 불안정하다 — 새로 들어오는 건 안 될 수 있다');
       else if (t === 'webrtc' || t === 'unavailable') this._fail('P2P 연결이 막혔습니다 (회사망·일부 모바일망)');
-      else this._fail(`연결 오류: ${t || err}`);
+      else this._fail(`연결 오류: ${t}`);
     });
 
     // 브로커와의 연결이 끊기면 **방 코드가 조용히 죽는다.**
@@ -381,8 +385,22 @@ export const net = {
     this._pingT = null;
   },
 
-  _fail(msg) {
+  // hard=true는 **방이 서지도 못한** 경우다 (코드 중복, 모듈 로드 실패, 없는 방).
+  // 그 외의 오류는 브로커 쪽 잡음일 뿐이다 — 브로커는 서로를 찾아 줄 때만 쓰고
+  // 그다음은 P2P 직통이라, 이미 열린 방을 브로커 오류로 닫으면 **멀쩡히 붙어
+  // 있는 사람들이 통째로 끊긴다.** 실제로 그랬다: 라이브에서 호스트가 조용히
+  // role='solo'로 떨어져 방이 사라졌다 (D98).
+  _fail(msg, hard = false) {
     this.status = msg;
+    // 지킬 게 있으면 지킨다 — 호스트는 방 자체를, 참가자는 살아 있는 채널을.
+    // 아직 아무것도 못 붙은 참가자에게는 지킬 게 없으므로 그대로 실패시킨다
+    // (안 그러면 "접속 중…"에서 조용히 멈춘다).
+    const worthKeeping = this._peer && !this._peer.destroyed
+      && (this.role === 'host' || this.connected);
+    if (!hard && worthKeeping) {
+      if (this._hooks.onStatus) this._hooks.onStatus();
+      return;
+    }
     this.connected = false;
     this.role = 'solo'; this.isHost = true;
     if (this._hooks.onStatus) this._hooks.onStatus();

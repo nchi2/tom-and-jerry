@@ -6593,7 +6593,10 @@ function renderNetDev() {
 ` +
     `예측오차 <span class="${cls(err, 0.4, 1.2)}">${err.toFixed(2)}m</span> (스냅 임계 ${P.net.smoothMax}m)
 ` +
-    `개체     적 ${enemies.length} · 일꾼 ${workers.length} · 방어병 ${guards.length} · 벽 ${obstacles.size}`;
+    `개체     적 ${enemies.length} · 일꾼 ${workers.length} · 방어병 ${guards.length} · 벽 ${obstacles.size}` +
+    // 브로커 오류는 화면 어디에도 안 나와서 **조용히 방을 죽이고 있었다** (D98)
+    (net.errs.length ? `
+브로커   <span class="warn">${net.errs.join(' · ')}</span>` : '');
 }
 
 // ============================================================
