@@ -141,7 +141,11 @@ const P = {
   // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
   // (smashCooldown·smashWindup) — 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다.
   boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 6000, reward: 0, dmg: 55,
-          smashCooldown: 8.0, smashWindup: 0.9 },
+          smashCooldown: 8.0, smashWindup: 0.9,
+          // 강타 **몇 번**에 벽이 무너지는가 (D99). 한 방이면 벽을 세우는 행위가
+          // 보스 앞에서 무의미해진다 — 한 번 맞고 금이 간 벽은 아직 막고 있으므로
+          // "고칠 것인가 물러설 것인가"를 고를 시간이 생긴다.
+          smashHits: 2 },
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
   // post = 벽 **원기둥의 지름** (D57·D59·D74). 셀(1.5)보다 작아서 틈이 생긴다:
@@ -710,8 +714,9 @@ function applyCrackVisual(ob) {
 }
 
 // 폭발 한 번 = 금 하나. 넘치면 무너진다. 무너졌으면 true를 돌려준다.
-function crackWall(ob) {
-  ob.cracks = (ob.cracks || 0) + 1;
+// n은 한 번에 내는 금의 수 — 보스 강타는 자폭묘보다 세게 친다 (D99).
+function crackWall(ob, n = 1) {
+  ob.cracks = (ob.cracks || 0) + n;
   if (ob.cracks > P.wall.crackMax) { removeObstacle(ob); return true; }
   applyCrackVisual(ob);
   wallEv({ a: 2, i: ob.i, j: ob.j, c: ob.cracks });
@@ -4325,10 +4330,15 @@ function updateEnemy(enemy, dt) {
       const f = enemy.smashT / P.boss.smashWindup;
       enemy.vis.group.scale.setScalar(enemyR(enemy) * (1 + 0.3 * f));
       if (enemy.smashT >= P.boss.smashWindup) {
-        removeObstacle(smashWall);
-        markNavDirty();
+        // 한 방에 없애지 않고 **금을 낸다** (D99). smashHits번째에 무너지도록
+        // 한 번에 낼 금의 수를 crackMax에서 거꾸로 계산한다 — crackMax를
+        // 슬라이더로 만져도 "톰은 두 번"이 유지된다.
+        const per = Math.max(1, Math.ceil((P.wall.crackMax + 1) / Math.max(1, P.boss.smashHits)));
+        const broke = crackWall(smashWall, per);
+        if (broke) markNavDirty();
         spawnBuildFx(enemy.x, enemy.z);
-        flashMsg('톰이 벽을 강타해 부쉈다!', '#ff4d4d');
+        flashMsg(broke ? '톰이 벽을 강타해 부쉈다!' : '톰이 벽을 내리쳤다 — 금이 갔다',
+                 broke ? '#ff4d4d' : '#ffb347');
         enemy.smashT = 0;
         enemy.smashCd = P.boss.smashCooldown;
       }
@@ -5636,6 +5646,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.boss, 'dmg', 5, 200, 1).name('접촉 피해');
   f.add(P.boss, 'bldgDps', 5, 200, 1).name('건물 공격력');
   f.add(P.boss, 'smashCooldown', 1, 30, 0.5).name('벽 강타 쿨다운(초)');
+  f.add(P.boss, 'smashHits', 1, 5, 1).name('벽 강타 몇 번에 부서지나');
   f.add(P.boss, 'smashWindup', 0.2, 3, 0.1).name('벽 강타 예비동작(초)');
 }
 {
