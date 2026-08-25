@@ -2694,7 +2694,14 @@ function commandUnitsMove(x, z, list = [...selectedUnits].filter((u) => myUnits(
     const a = k * 2.399963, r = k === 0 ? 0 : 0.6 * Math.sqrt(k);
     const tx = x + Math.cos(a) * r, tz = z + Math.sin(a) * r;
     if (u.kind === 'guard') { u.gx = tx; u.gz = tz; }
-    else { u.moveGoal = { x: tx, z: tz }; u.idle = false; u.forced = false; }
+    else {
+      u.moveGoal = { x: tx, z: tz }; u.idle = false; u.forced = false;
+      // **더미 자리를 즉시 놓는다** (D102). 예전엔 `pile`을 쥔 채 떠나서
+      // 라벨이 계속 `3/3`이었다 — 목적지에 닿으면 idle이 되어 영영 안 캐는데도
+      // 자리는 잡고 있으니, 남은 일꾼을 붙일 수가 없었다.
+      u.pile = null;
+      u.mineT = 0;
+    }
     u.path.length = 0; u.repathT = 0;
   });
   if (list.length) flashFor(p, `${list.length}기 이동`, '#9fe8a0');
