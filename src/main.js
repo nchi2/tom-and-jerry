@@ -3151,6 +3151,11 @@ function clearGuards(owner) {
 // scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
 // owner = 이 투사체를 쏜 쪽. 처치 보상이 그 사람에게 간다 (D92-2단계)
 function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p') {
+  // 참가자 화면에서는 **경비탑이 아무것도 안 하는 것처럼 보였다** (D101).
+  // 시뮬은 호스트만 도니까 updateTower가 클라에서 안 돌고, 그래서 포탑 머리도
+  // 안 돌고 투사체도 안 날았다. 피해만 조용히 들어가서 "포탑이 공격을 안 한다"가 된다.
+  // 던지는 순간을 그대로 알려 주고, 클라는 **피해 없는 껍데기**로 같은 걸 그린다.
+  wallEv({ a: 4, x: r2(x), y: r2(y), z: r2(z), e: e.id, s: scale, o: owner });
   const m = new THREE.Mesh(projGeo, scale > 1 ? projMat.clone() : projMat);
   if (scale > 1) {
     m.material.emissiveIntensity = 0.5 + (scale - 1) * 0.6;
@@ -3180,7 +3185,10 @@ function updateProjectiles(dt) {
     );
     q.mesh.rotation.x += dt * 10;
     if (p >= 1) {
-      if (q.target && enemies.includes(q.target)) damageEnemy(q.target, q.dmg, ownerOf(q.owner));
+      // 클라의 투사체는 껍데기다 (dmg 0). 그래도 damageEnemy를 태우면 처치·보상
+      // 경로까지 밟으므로 호스트에서만 때린다 (D101).
+      if (q.dmg > 0 && netAuthoring() && q.target && enemies.includes(q.target))
+        damageEnemy(q.target, q.dmg, ownerOf(q.owner));
       scene.remove(q.mesh);
       if (q.mesh.material !== projMat) q.mesh.material.dispose();
       projectiles.splice(k, 1);
@@ -7238,6 +7246,23 @@ function applySnapshot(m) {
     } else if (e.a === 2 && ob) {
       ob.cracks = e.c;
       applyCrackVisual(ob);
+    } else if (e.a === 4) {
+      // 경비탑·사수가 던졌다 (D101) — **그림만** 그린다.
+      // dmg 0이라 맞아도 아무 일이 없다. 피해는 호스트가 이미 계산했고
+      // 그 결과는 스냅샷의 체력으로 온다.
+      const tgt = enemies.find((q) => q.id === e.e);
+      if (tgt) {
+        lobProjectile(e.x, e.y, e.z, tgt, 0, e.s, e.o);
+        // 던진 포탑의 머리를 목표 쪽으로 돌려 준다 — 안 돌면 여전히 죽어 보인다
+        let best = null, bd = 2.6;
+        for (const b of buildings) {
+          if (b.kind !== 'tower') continue;
+          const d = Math.hypot(b.cx - e.x, b.cz - e.z);
+          if (d < bd) { bd = d; best = b; }
+        }
+        const head = best && best.mesh.userData.head;
+        if (head) head.rotation.y = Math.atan2(tgt.x - best.cx, tgt.z - best.cz) + Math.PI;
+      }
     } else if (e.a === 3) {
       // 소유자 하나의 벽을 통째로 (잡힘 소멸)
       wallEvMute++;
@@ -7507,6 +7532,7 @@ function tickClient(dt) {
 
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) flashEl.style.opacity = '0'; }
   flushNavDirty();   // 스냅샷이 벽을 바꿨으면 영토·은신처 계산도 따라가야 한다
+  updateProjectiles(dt);   // 호스트가 알려 준 투척을 날려 준다 (D101)
   presentWorld(dt);
   for (const q of players) if (q.active) updateActorVis(q, dt);
   for (const q of players) q.vis.group.visible = q.active;
