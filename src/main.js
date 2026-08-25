@@ -4595,7 +4595,10 @@ function beginSelectDrag(e) {
   if (!alive) return false;
   const mod = e.ctrlKey || e.metaKey;
   const onUnit = unitAtScreen(e.clientX, e.clientY);
-  if (!mod && buildSlot >= 0 && !onUnit) return false;
+  // 철거 모드도 "손에 뭘 들고 있는" 상태다 (D105). 여기서 removeMode를 빠뜨려서
+  // X를 켜면 buildSlot이 -1이 되고, 그러면 이 줄이 좌클릭을 전부 **선택 드래그로**
+  // 삼켰다 — 철거 클릭이 시뮬에 도달한 적이 아예 없다.
+  if (!mod && (buildSlot >= 0 || removeMode) && !onUnit) return false;
   // 드래그를 시작한 유닛은 항상 포함한다 — 기준점이 상자 모서리 밖으로
   // 삐져나가 "잡은 놈이 안 잡히는" 일이 없게
   selDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY,
