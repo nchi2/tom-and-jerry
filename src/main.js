@@ -5782,7 +5782,10 @@ function applySettings(s) {
   for (const q of players) if (q.slot) q.vis.group.scale.setScalar(P.ally.radius);
   for (const e of enemies) e.vis.group.scale.setScalar(enemyR(e));
   for (const ob of obstacles.values()) {
-    if (ob.bedrock || ob.building) continue;
+    // 건물 칸은 `bldgRef`를 달고 **mesh가 null**이다 (건물 쪽에서 그린다).
+    // 여기 가드가 `ob.building`이라는 없는 속성을 보고 있어서, 건물이 하나라도
+    // 서 있으면 설정을 불러올 때마다 터졌다 — 실제 플레이에서는 늘 서 있다.
+    if (ob.bedrock || !ob.mesh) continue;
     ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
     ob.mesh.position.y = P.wall.height / 2;
   }
