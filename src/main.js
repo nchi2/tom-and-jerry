@@ -317,6 +317,12 @@ const P = {
   // 사람도 고양이도 같이 느려지므로 **상대 속도 관계는 그대로**고 템포만 내려간다.
   // 술래잡기의 판단 시간을 벌어주는 값이라, 손맛에 가장 크게 영향을 준다.
   tempo: { moveScale: 0.75 },
+  // 난이도 배율 (D104). "너무 어렵다"는 평에 대응하는 다이얼 두 개.
+  // 종류별 hp·STAGES 표를 하나하나 고치는 대신 **지출 지점에서 곱한다** —
+  // P.res.costScale과 같은 방식이라 원래 값이 소스에 그대로 남는다.
+  //  enemyCount 는 웨이브 구성과 순찰조 **둘 다** 지난다 (scaled()가 유일한 깔때기)
+  //  enemyHp    는 보스를 뺀 고양이에게만 (톰은 D83에서 고정 스탯으로 정한 대상이다)
+  balance: { enemyCount: 0.7, enemyHp: 0.5 },
   threat: {
     // speedGain 0 = 후반에도 더 빨라지지 않는다 (2026-08-13).
     // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
@@ -1399,7 +1405,9 @@ const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 // 보스는 위협 레벨 스케일링에서 제외한다 (D83) — 등장 시점 고정 스탯으로 승부해야
 // 생존시간에 안 묻힌다. 나머지 3종은 그대로 위협 레벨을 받는다.
-const typeMaxHp = (type) => P[type].hp + (type === 'boss' ? 0 : threatLevel() * P.threat.hpGain);
+const typeMaxHp = (type) => (type === 'boss'
+  ? P.boss.hp                                       // 톰은 고정 스탯 (D83) — 배율도 안 받는다
+  : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp);
 const enemyMaxHp = (e) => typeMaxHp(e.type);
 
 // 멀티에서 명령·스냅샷이 엔티티를 가리키려면 **이름이 필요하다** (D92-0단계).
@@ -4078,12 +4086,13 @@ function unlockedTypes() {
 }
 
 // 스테이지 시작 증원: 표의 add 대로 스폰. 새 종류면 등장 플래시
+// **여기서는 스폰하지 않는다** (D104). 실제 마릿수는 바로 뒤의 topUpToCurve가
+// cumulativeComposition에 맞춰 채운다 — 그래야 배율이 누적 합계에 한 번만 걸린다.
+// 예전엔 이 함수가 항마다 `scaled(1)`씩 직접 스폰해서, 배율을 낮춰도
+// 단계 추가분은 하나도 안 줄었다 (10스테이지 실측 -14%, 요청은 -30%).
 function spawnStageAdds(idx) {
   const add = STAGES[idx].add;
   const before = new Set(enemies.map((e) => e.type));
-  for (const [ty, cnt] of Object.entries(add))
-    for (let k = 0; k < scaled(cnt); k++) enemies.push(makeEnemy(ty, enemies.length));
-  refreshReach();
   for (const ty of Object.keys(add))
     if (!before.has(ty)) flashMsg(`새로운 적 등장: ${TYPE_INFO[ty].label}!`, '#ff8b5e');
 }
@@ -4097,13 +4106,19 @@ function updateStageTimer(dt) {
 
 // 스테이지 표가 의도한 누적 구성. 처치로 줄어들었으면 웨이브 때 다시 채운다.
 function cumulativeComposition() {
-  const c = { chaser: scaled(P.enemy.count), runner: 0, bomber: 0 };
+  // 먼저 **날것으로 합산**하고, 배율은 합계에 한 번만 건다 (D104).
+  // 단계마다 들어오는 `+1`에 배율을 각각 곱하면 반올림으로 전부 1로 남아서,
+  // 10스테이지 기준 감소폭이 요청한 30%의 절반도 안 됐다 (실측 -14%).
+  const raw = { chaser: P.enemy.count, runner: 0, bomber: 0 };
   for (let k = 0; k < Math.min(stage, STAGES.length); k++)
-    for (const [ty, n] of Object.entries(STAGES[k].add)) c[ty] += scaled(n);
+    for (const [ty, n] of Object.entries(STAGES[k].add)) raw[ty] += n;
+  const c = {};
+  for (const ty of Object.keys(raw)) c[ty] = scaled(raw[ty]);
   return c;
 }
 
-function topUpToCurve() {
+// quiet = 스테이지 전환처럼 배너가 이미 알린 경우 (알림을 두 번 띄우지 않는다)
+function topUpToCurve(quiet = false) {
   const want = cumulativeComposition();
   const have = { chaser: 0, runner: 0, bomber: 0 };
   // 순찰조는 웨이브 구성과 별개다 (죽여도 웨이브가 대신 채워주지 않는다 = 정리한 보람)
@@ -4111,7 +4126,7 @@ function topUpToCurve() {
   let added = 0;
   for (const ty of Object.keys(want))
     while (have[ty] < want[ty]) { enemies.push(makeEnemy(ty, enemies.length)); have[ty]++; added++; }
-  if (added) { refreshReach(); flashMsg(`새 무리가 몰려온다! (+${added})`, '#ff8b5e'); }
+  if (added) { refreshReach(); if (!quiet) flashMsg(`새 무리가 몰려온다! (+${added})`, '#ff8b5e'); }
 }
 
 // 10스테이지에 다다르면 톰이 쳐들어온다 — 그 뒤로는 시간이 승리를 안 준다 (D83).
@@ -4129,7 +4144,7 @@ function advanceStage() {
   stage++;
   stageT = 0;
   spawnStageAdds(stage - 1);
-  topUpToCurve();   // 처치로 줄어든 만큼 보충 — 처치는 한숨 돌릴 시간을 줄 뿐
+  topUpToCurve(true);   // 이번 단계 구성까지 채운다 (배너가 이미 알렸으니 조용히)
   if (stage === STAGES.length) {
     flashMsg('스테이지 10 — 톰이 나타났다!', '#ff4d4d');
     spawnBoss();
@@ -5547,6 +5562,9 @@ const gui = new GUI({ title: '튜닝' });
   });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
   f.add(P.res, 'costScale', 0.5, 3, 0.1).name('★ 전체 치즈 물가 배율');
+  f.add(P.balance, 'enemyCount', 0.2, 2, 0.05).name('★ 고양이 마릿수 배율')
+    .onChange(() => { if (netAuthoring()) topUpToCurve(); });
+  f.add(P.balance, 'enemyHp', 0.2, 2, 0.05).name('★ 고양이 체력 배율');
   f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
 
   f.add(P.carry, 'playerLoad', 1, 60, 1).name('한 짐 — 나');
@@ -7072,7 +7090,9 @@ const humanCount = () => humans().length;
 // 곱으로 하면(1.8^3 = 5.8) 4인에서 감당이 안 되고, 어그로가 갈리는 만큼만 채우면 되므로
 // "한 명 늘 때마다 0.8배씩"이 실제 압박에 가깝다.
 const coopScale = () => 1 + Math.max(0, humanCount() - 1) * (P.coop.enemyScale - 1);
-const scaled = (n) => Math.round(n * coopScale());
+// 1마리 추가는 0마리로 반올림되지 않게 최소 1을 지킨다 —
+// 스테이지 표의 `+1`이 배율 때문에 통째로 사라지면 그 스테이지의 성격이 없어진다
+const scaled = (n) => (n <= 0 ? 0 : Math.max(1, Math.round(n * coopScale() * P.balance.enemyCount)));
 
 // 호스트가 튜닝 패널을 열고 있는 동안은 P를 계속 흘려 보낸다 (D92-6단계).
 // 슬라이더를 만지는 그 순간부터 두 사람이 다른 규칙으로 보게 되므로,
