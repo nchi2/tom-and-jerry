@@ -495,6 +495,9 @@ let HALF = (CELLS * CS) / 2;
 // 2(0.75m)로는 **대각 관문의 통로 폭 0.52m를 표현할 수 없어서**, 길찾기가
 // 은신처 밖으로 나가는 길 자체를 못 찾았다 (기둥 사이로 못 나감).
 // 4(0.375m)면 관문이 확실히 잡히고, 직교 틈(통로 0m)은 여전히 막힌다.
+// ⚠ 그런데 값은 2다. 4로 올려 실측하니 `refreshClearance`가 **36.5ms**(2일 때 3.3ms) —
+// 벽이 바뀔 때마다 프레임이 무너진다. 그래서 해상도를 올리는 대신,
+// 사람 쪽 유닛은 **기둥을 아예 안 보는 필드**로 길을 찾게 했다 (D106).
 const NAVPC = 2;
 const navRes = CS / NAVPC;
 let NAV = CELLS * NAVPC;
@@ -934,6 +937,42 @@ function seedPillarClearance(d) {
         const k = nj * NAV + ni;
         if (dist < d[k]) d[k] = dist;
       }
+  }
+  seedPillarGates(d);
+}
+
+// 관문은 **기둥 한 개의 성질이 아니라 두 개 사이의 성질이다** (D106).
+// 위 루프는 칸 중심에서만 재는데, 0.75m 격자에서는 관문 한가운데에 칸 중심이
+// 오지 않는다 — 대각 관문(실폭 1.12m)이 통째로 막힌 것으로 잡혔다.
+// 실측: 관문 칸 값 -0.345 → 플레이어(0.26)도 일꾼(0.3)도 못 지나감.
+// (해상도를 4로 올리면 잡히지만 `refreshClearance`가 3.3ms → 36.5ms가 된다)
+//
+// 두 기둥 사이에 들어가는 가장 큰 원은 **(중심거리 - 2R) / 2**로 정확히 나온다.
+// 물리(원-원 밀어내기)가 쓰는 바로 그 값이다. 그걸 두 기둥의 중점 칸에 **올려 쓴다**
+// (내리지는 않는다 — 직교 틈은 그대로 막혀 있어야 한다).
+//   직교 이웃(1.5m) → (1.5-1.0)/2 = 0.25  → 몸 0.26도 못 지나감 = 물리와 일치
+//   대각 이웃(2.12m) → (2.12-1.0)/2 = 0.56 → 정예병(0.47)까지 통과 = 물리와 일치
+// 관문이 생기는 상대는 **격자에서 붙어 있는 기둥뿐**이므로 이웃 8칸만 본다.
+// (모든 쌍을 도는 O(n²)로 짜면 벽 500장에서 12만 쌍이 된다)
+const GATE_NB = [[1, 0], [0, 1], [1, 1], [1, -1]];   // 반대쪽은 중복이라 뺀다
+function seedPillarGates(d) {
+  const R = P.wall.post / 2;
+  for (const ob of obstacles.values()) {
+    if (ob.bedrock || ob.bldgRef) continue;
+    const a = cellToWorld(ob.i, ob.j);
+    for (const [di, dj] of GATE_NB) {
+      const nb = obstacles.get(cellKey(ob.i + di, ob.j + dj));
+      if (!nb || nb.bedrock || nb.bldgRef) continue;
+      const b = cellToWorld(nb.i, nb.j);
+      const half = (Math.hypot(a.x - b.x, a.z - b.z) - 2 * R) / 2;
+      if (half <= 0) continue;
+      const ni = Math.floor(((a.x + b.x) / 2 + HALF) / navRes);
+      const nj = Math.floor(((a.z + b.z) / 2 + HALF) / navRes);
+      if (ni < 0 || nj < 0 || ni >= NAV || nj >= NAV) continue;
+      const k = nj * NAV + ni;
+      const v = half - navRes * 0.5;      // canPass가 다시 더하므로 같은 규약으로 저장
+      if (v > d[k]) d[k] = v;
+    }
   }
 }
 
@@ -7857,6 +7896,7 @@ window.__game = {
   applyCommand, issueCommand, queueWall, removeAt, unitById, guardsOf, isDriven, flashFor,
   worldToCell, cellToWorld, buildingPlacement, get CELLS() { return CELLS; }, CS,
   worldToNav, navToWorld, nearestPassableNav, canPass, get clearAll() { return clearAll; }, get NAV() { return NAV; },
+  get clearHam() { return clearHam; },   // 통행권 실측용 (D106)
   selectedUnits, unitAtScreen, commandWorkersToPile, commandUnitsMove, worldToScreen,
   selWorkers, selGuards, GUARD_TYPES,
   get playerOrder() { return player.mineOrder; },
