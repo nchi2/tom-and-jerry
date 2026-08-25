@@ -807,6 +807,34 @@ let clearNoBldg = null; // 지형+벽만 막힘 — 순찰묘/날쌘묘의 "건�
 let clearHam = null;    // 지형+건물만 막힘 — **햄스터 전용** (기둥은 물리로 비껴간다, D61)
 
 // mode: 'all' = 전부 막힘 / 'bed' = 지형만 / 'noBldg' = 지형+벽 (건물은 통과 취급)
+// 장애물 종류를 **정수 격자에 미리 구워 둔다** (D103).
+// 예전엔 나브 칸마다 `obstacles.get(i + ',' + j)`를 불렀다 — 필드 하나에 NAV²번,
+// 한 번 갱신에 네 필드니 **문자열 5만 개와 Map 조회 5만 번**이 나왔다.
+// 장애물은 300개뿐이므로 거꾸로 도는 게 훨씬 싸다.
+//   0 = 없음 · 1 = 지형(bedrock) · 2 = 건물 칸 · 3 = 플레이어 벽
+let obKind = new Int8Array(0);
+function bakeObstacleKinds() {
+  const n = CELLS * CELLS;
+  if (obKind.length !== n) obKind = new Int8Array(n);
+  else obKind.fill(0);
+  for (const ob of obstacles.values()) {
+    if (ob.i < 0 || ob.j < 0 || ob.i >= CELLS || ob.j >= CELLS) continue;
+    obKind[ob.j * CELLS + ob.i] = ob.bedrock ? 1 : ob.bldgRef ? 2 : 3;
+  }
+}
+// mode별 "이 종류는 막는가" — 안쪽 루프에서 문자열 비교를 없앤다.
+// 아래 navBlocked의 원래 식과 한 줄씩 대응한다:
+//   bed    = ob.bedrock                  → 1만
+//   noBldg = ob.bedrock || !ob.bldgRef   → 1과 3 (건물 칸만 통과)
+//   ham    = ob.bedrock || !!ob.bldgRef  → 1과 2 (기둥은 물리에 맡긴다, D61)
+//   all    = 전부
+const BLOCK_BY_MODE = {
+  all:    [0, 1, 1, 1],
+  bed:    [0, 1, 0, 0],
+  noBldg: [0, 1, 0, 1],
+  ham:    [0, 1, 1, 0],
+};
+
 function navBlocked(i, j, mode) {
   if (i <= 0 || j <= 0 || i >= NAV - 1 || j >= NAV - 1) return true; // 외곽 림
   const ob = obstacles.get(cellKey((i / NAVPC) | 0, (j / NAVPC) | 0));
@@ -823,13 +851,33 @@ function navBlocked(i, j, mode) {
   return true;
 }
 
+// 필드마다 버퍼를 하나씩 들고 재사용한다 (D103). 예전엔 갱신 한 번에
+// Float32Array 네 개(약 200KB)를 새로 만들어 버렸다 — 벽이 자주 바뀌는 후반에는
+// 그 쓰레기가 계속 쌓여서, 느려지는 게 아니라 **간헐적으로 툭툭 끊기는** 형태로 나온다.
+// 어차피 매번 전 칸을 덮어쓰므로 같은 버퍼를 다시 채우면 된다.
+const clearBuf = new Map();
+function clearanceBuffer(mode) {
+  const n = NAV * NAV;
+  let b = clearBuf.get(mode);
+  if (!b || b.length !== n) { b = new Float32Array(n); clearBuf.set(mode, b); }
+  return b;
+}
+
 function computeClearance(mode) {
-  const d = new Float32Array(NAV * NAV);
+  const d = clearanceBuffer(mode);
   const INF = 1e9;
   const S2 = Math.SQRT2;
-  for (let j = 0; j < NAV; j++)
-    for (let i = 0; i < NAV; i++)
-      d[j * NAV + i] = navBlocked(i, j, mode) ? 0 : INF;
+  // 구워 둔 격자에서 바로 읽는다 (D103). navBlocked와 결과가 같아야 하므로
+  // 표(BLOCK_BY_MODE)가 그 함수의 조건식과 한 줄씩 대응하도록 맞춰 뒀다.
+  const blk = BLOCK_BY_MODE[mode] || BLOCK_BY_MODE.all;
+  for (let j = 0; j < NAV; j++) {
+    const cj = (j / NAVPC) | 0;
+    const rimJ = j <= 0 || j >= NAV - 1;
+    for (let i = 0; i < NAV; i++) {
+      const rim = rimJ || i <= 0 || i >= NAV - 1;
+      d[j * NAV + i] = (rim || blk[obKind[cj * CELLS + ((i / NAVPC) | 0)]]) ? 0 : INF;
+    }
+  }
   // forward pass
   for (let j = 0; j < NAV; j++)
     for (let i = 0; i < NAV; i++) {
@@ -895,6 +943,7 @@ function flushNavDirty() {
 }
 
 function refreshClearance(terrainChanged = false) {
+  bakeObstacleKinds();          // 네 필드가 같은 격자를 나눠 쓴다 (D103)
   clearAll = computeClearance('all');
   // 'bed'는 지형만 본다 — 벽을 세워도 안 바뀌므로 맵 생성 때만 계산한다
   if (terrainChanged || !clearBed) clearBed = computeClearance('bed');
@@ -1510,17 +1559,29 @@ const earn = (o, v) => { ownerOf(o).cheese += v; };
 let enemyReach = null;
 let safeField = null;   // 은신처 칸 (enemyReach를 safeMargin만큼 부풀린 여집합)
 let safeGen = 0;        // 필드 세대 — 벽이 바뀌거나 재시작하면 오르고, 캐시는 이걸로 무효화한다
+const reachBuf = new Map();
+function reachBuffer(key) {
+  const n = NAV * NAV;
+  let b = reachBuf.get(key);
+  if (!b || b.length !== n) { b = new Uint8Array(n); reachBuf.set(key, b); }
+  return b;
+}
+
 function refreshReach() {
   if (!clearAll) return;  // clearance 필드가 아직 없으면 건너뜀 (초기화 순서 보호)
   // 반지름이 다르면 지나갈 수 있는 칸도 다르다.
   // 반지름별로 따로 flood fill 하고 합집합을 취한다.
   //  → 광맥은 "어떤 종류의 어떤 적도 도달 못 할 때"만 확보로 친다.
   //  (날쌘묘가 등장하면 2칸 틈으로 뚫려서, 넓게 막았던 확보가 깨질 수 있다)
-  const vis = new Uint8Array(NAV * NAV);
+  // 여기도 버퍼를 재사용한다 (D103) — 반지름 종류마다 Uint8Array를 새로 만들면
+  // 갱신 한 번에 50KB가 쓰레기로 나간다. 벽이 자주 바뀌면 그게 곧 GC 끊김이다.
+  const vis = reachBuffer('vis');
+  vis.fill(0);   // 반지름별 결과를 합집합으로 쌓으므로 **매번 0에서 시작해야 한다**
   const radii = [...new Set(enemies.map((e) => enemyR(e)))];
+  const seen = reachBuffer('seen');
   for (const r of radii) {
     const pass = (i) => canPass(clearAll, i, r);
-    const seen = new Uint8Array(NAV * NAV);
+    seen.fill(0);
     const stack = [];
     for (const e of enemies) {
       if (enemyR(e) !== r) continue;
@@ -1545,7 +1606,8 @@ function refreshReach() {
   // 그래서 도달 가능 영역을 safeMargin만큼 **부풀린 뒤** 그 밖에 남는 칸만 은신처로 친다.
   // (= 공격 사거리만큼 떨어진 진짜 주머니. 3x3 링 안쪽은 남고, 벽 옆 한 칸은 걸러진다)
   const k = Math.max(1, Math.round(P.player.safeMargin / navRes));
-  const safe = new Uint8Array(NAV * NAV);
+  const safe = reachBuffer('safe');
+  safe.fill(0);
   for (let z = 0; z < NAV; z++) {
     for (let x = 0; x < NAV; x++) {
       const idx = z * NAV + x;
@@ -7742,6 +7804,8 @@ loop();
 
 // 자동 검증용 디버그 훅
 window.__game = {
+  scene, renderer, activeCam,   // 렌더 비용을 밖에서 재려고 (D103)
+  navBlocked, computeClearance, bakeObstacleKinds, get NAV() { return NAV; },
   P, player, enemies, obstacles, keys, tick, restart, setCamera, addObstacle,
   refreshClearance, planEnemyPath,
   get alive() { return alive; },
