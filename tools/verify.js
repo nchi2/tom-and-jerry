@@ -670,3 +670,85 @@ window.__manyPlayers = () => {
   g.players.forEach((q, k) => { q.ai = k > 0; q.active = k === 0; q.local = k === 0; });
   return out;
 };
+
+// ---- I. 후반 경제 · 보스 강타 (D99·D100) ----
+window.__lateGame = () => {
+  const g = window.__game;
+  const P = g.P;
+  const out = [];
+  g.applySettings(g.DEFAULT_SETTINGS);
+  const R = (v) => Math.round(v * 10) / 10;
+
+  // I1) 톰의 강타는 smashHits번에 벽을 부순다 —
+  //     자폭묘를 끄지 말고 **적 마릿수만** 0으로 둔다. spawnDelay를 무한대로 두면
+  //     enemyActive()가 false가 되어 **보스까지 통째로 안 움직인다** (이걸로 한 번 속았다).
+  const smashRun = (hits) => {
+    P.boss.smashHits = hits;
+    P.enemy.count = 0; P.patrol.count = 0; P.threat.everyLevels = 0;
+    g.restart();
+    g.setEnemyCount(0);
+    const me = g.player;
+    // 벽은 플레이어에게서 멀리 — 가까우면 보스가 햄스터를 때리느라 벽을 안 친다
+    const c = g.worldToCell(me.x + 18, me.z + 18);
+    g.addObstacle(c.i, c.j, false, false, 'p');
+    const w = g.cellToWorld(c.i, c.j);
+    g.spawnBoss();
+    const b = g.enemies.find((e) => e.type === 'boss');
+    if (!b) return -1;
+    b.introT = 0;
+    const wall = () => [...g.obstacles.values()].find((o) => o.i === c.i && o.j === c.j);
+    let smashes = 0, prev = 0;
+    for (let k = 0; k < 3000; k++) {
+      b.x = w.x + 1.6; b.z = w.z;          // 벽 옆에 붙들어 둔다
+      g.step(1 / 60);
+      const ob = wall();
+      const cr = ob ? (ob.cracks || 0) : 'gone';
+      if (cr !== prev) { smashes++; prev = cr; }
+      if (!ob) break;
+    }
+    return smashes;
+  };
+  const h1 = smashRun(1), h2 = smashRun(2), h3 = smashRun(3);
+  P.boss.smashHits = 2;
+  out.push({ t: 'I1.bossSmash', hits1: h1, hits2: h2, hits3: h3, want: '1/2/3' });
+
+  // I2) 부품 환전 — 공방 등급과 거리 두 관문
+  g.applySettings(g.DEFAULT_SETTINGS);
+  g.restart();
+  g.setEnemyCount(0);
+  const me = g.player;
+  me.cheese = 1000; me.parts = 5;
+  const spot = (kind) => {
+    const c = g.worldToCell(me.x, me.z);
+    let best = null, bd = 1e9;
+    for (let dj = -9; dj <= 9; dj++) for (let di = -9; di <= 9; di++) {
+      const i = c.i + di, j = c.j + dj;
+      if (g.buildingPlacement(i, j, kind, false, me)) continue;
+      const w = g.cellToWorld(i, j);
+      const d = Math.hypot(w.x - me.x, w.z - me.z);
+      if (d < bd) { bd = d; best = { i, j }; }
+    }
+    return best;
+  };
+  const wc = spot('workshop');
+  const ws = wc ? g.placeBuilding('workshop', wc.i, wc.j, 'p') : null;
+  if (ws) { ws.underBuild = false; me.x = ws.cx + 2; me.z = ws.cz; }
+  const c0 = me.cheese, p0 = me.parts;
+  g.applyCommand(me, { t: 'sell' });                       // Lv.1 — 거부
+  out.push({ t: 'I2.tierGate', tier: g.maxWorkshopTier(), parts: me.parts, spent: me.parts !== p0 });
+  if (ws) ws.tier = P.upgrade.sellTier;
+  g.applyCommand(me, { t: 'sell' });                       // Lv.3 — 통과
+  out.push({ t: 'I3.sold', parts: me.parts, gained: R(me.cheese - c0), rate: P.upgrade.sellRate });
+  if (ws) { me.x = ws.cx + 30; }
+  const p2 = me.parts, c2 = me.cheese;
+  g.applyCommand(me, { t: 'sell' });                       // 멀리서 — 거부
+  out.push({ t: 'I4.rangeGate', parts: me.parts, refused: me.parts === p2 && me.cheese === c2 });
+  // 부품이 없으면 치즈가 안 생긴다
+  me.x = ws.cx + 2; me.parts = 0;
+  const c3 = me.cheese;
+  g.applyCommand(me, { t: 'sell' });
+  out.push({ t: 'I5.noParts', cheeseUnchanged: me.cheese === c3, errs: window.__errs.length });
+
+  g.applySettings(g.DEFAULT_SETTINGS);
+  return out;
+};

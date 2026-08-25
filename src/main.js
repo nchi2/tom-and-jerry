@@ -303,6 +303,11 @@ const P = {
   upgrade: {
     maxLevel: 8,
     baseCost: 1, costStep: 1,   // n레벨 비용 = baseCost + costStep * n
+    // 부품 → 치즈 환전 (D100). 후반에 부품 수급이 소모처를 넘어선다 —
+    // 10스테이지 한 판에만 30개가 들어오는데 그때는 살 게 남아 있지 않다.
+    // sellTier 이상 공방이 있어야 열린다: 기술을 다 올린 사람만 쓰는 출구다.
+    sellRate: 1000,             // 부품 1개당 치즈
+    sellTier: 3,                // 필요한 공방 등급
     speedStep: 0.9,             // 햄스터 이동 속도
     radiusStep: 0.2,            // 채굴 시간 단축(초)
     towerStep: 9,               // 경비탑 화력
@@ -4447,7 +4452,7 @@ window.addEventListener('keydown', (e) => {
   // 안 그러면 내 공방 옆에서 건물을 못 짓는다
   for (let k = 0; k < 8; k++) {
     if (e.code === 'Digit' + (k + 1)) {
-      if (upgOpen) issueCommand({ t: 'upg', k });
+      if (upgOpen) issueCommand(k === UPGRADES.length ? { t: 'sell' } : { t: 'upg', k });
       // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
       else if (k < BUILD_SLOTS.length) {
         removeMode = false;
@@ -5118,6 +5123,7 @@ function applyCommand(p, c) {
     case 'give':   giveTo(p, c.k); break;
     case 'remove': removeAt(p, c.i, c.j); break;
     case 'upg':    buyUpgrade(c.k, p); break;
+    case 'sell':   sellParts(p); break;
     case 'cancel':
       if (c.lvl === 'buildJob') cancelBuild(true, p);
       else if (c.lvl === 'upgradeJob') cancelUpgrade(true, p);
@@ -5706,6 +5712,8 @@ const adv = gui.addFolder('고급 — 전체 설정');
   // 개조(U 패널) — 후반 화력 대응이 여기 걸려 있다 (D87)
   const f = adv.addFolder('개조 (U · 부품으로 구매)');
   f.add(P.upgrade, 'maxLevel', 1, 20, 1).name('최대 레벨');
+  f.add(P.upgrade, 'sellRate', 0, 3000, 50).name('부품 환전 (치즈/개)').onChange(renderUpgrade);
+  f.add(P.upgrade, 'sellTier', 1, 3, 1).name('환전 필요 공방 등급').onChange(renderUpgrade);
   f.add(P.upgrade, 'baseCost', 0, 10, 1).name('1레벨 부품 비용');
   f.add(P.upgrade, 'costStep', 0, 5, 1).name('레벨당 비용 증가');
   f.add(P.upgrade, 'towerStep', 0, 60, 1).name('경비탑 화력/레벨');
@@ -6351,6 +6359,22 @@ function buyUpgrade(k, p = player) {
   renderUpgrade();
 }
 
+// ---- 부품 → 치즈 (D100) ----
+// 부품은 밖에서만 얻는 위험 화폐인데(D22), 후반에는 살 게 없어서 그냥 쌓인다.
+// 공방을 끝까지 올린 사람에게만 출구를 하나 열어 준다 — **환전도 공방 옆에서**.
+// 그래야 "밖에서 주워 와 공방으로 돌아간다"는 왕복이 끝까지 유지된다.
+const canSellParts = (p) => maxWorkshopTier() >= P.upgrade.sellTier;
+
+function sellParts(p = player) {
+  if (!nearWorkshop(p)) { flashFor(p, '공방 옆에서만 환전할 수 있습니다', '#e05050'); return; }
+  if (!canSellParts(p)) { flashFor(p, `공방 Lv.${P.upgrade.sellTier} 필요`, '#e05050'); return; }
+  if (p.parts < 1) { flashFor(p, '부품이 없습니다', '#e05050'); return; }
+  p.parts -= 1;
+  p.cheese += P.upgrade.sellRate;
+  flashFor(p, `부품 1 → 치즈 ${P.upgrade.sellRate}`, '#ffd24a');
+  renderUpgrade();
+}
+
 // 공방 옆(4m)에 서 있어야 개조할 수 있다 — 공방을 지키고 드나들 이유
 function nearWorkshop(p = player) {
   return buildings.some((b) => b.kind === 'workshop' &&
@@ -6380,7 +6404,18 @@ function renderUpgrade() {
         `<b>${k + 1}</b> ${u.label} <span class="lv">Lv.${lv}/${P.upgrade.maxLevel}</span>` +
         `<span class="cost">${max ? 'MAX' : `⚙️${cost}`}</span>` +
         `<span class="eff">${u.unit()}</span></div>`;
-    }).join('');
+    }).join('') +
+    // 환전 줄 (D100). 공방을 다 올리기 전에는 **왜 못 쓰는지**를 대신 보여준다 —
+    // 줄 자체를 숨기면 이런 게 있다는 걸 영영 모른다 (D88과 같은 이유)
+    (() => {
+      const open = canSellParts(me);
+      const can = ws && upgOpen && open && me.parts >= 1;
+      return `<div class="urow${can ? '' : ' dim'}">` +
+        `<b>${UPGRADES.length + 1}</b> 부품 환전 ` +
+        `<span class="lv">${open ? `보유 ⚙️${me.parts}` : `공방 Lv.${P.upgrade.sellTier} 필요`}</span>` +
+        `<span class="cost">⚙️1</span>` +
+        `<span class="eff">치즈 +${P.upgrade.sellRate}</span></div>`;
+    })();
 }
 
 const hotbarEl = document.getElementById('hotbar');
