@@ -710,7 +710,14 @@ window.__lateGame = () => {
   };
   const h1 = smashRun(1), h2 = smashRun(2), h3 = smashRun(3);
   P.boss.smashHits = 2;
-  out.push({ t: 'I1.bossSmash', hits1: h1, hits2: h2, hits3: h3, want: '1/2/3' });
+  // ⚠ smashHits는 crackMax에 묶여 있다. 금은 정수라 한 번에 낼 수 있는 최소가 1이고,
+  // 벽은 crackMax를 **넘을 때** 무너지므로 표현 가능한 최대 타격수는 crackMax + 1이다.
+  // D107에서 crackMax를 2 → 1로 내렸으므로(자폭묘 두 방에 붕괴) 이제 상한은 2다 —
+  // smashHits를 3으로 올려도 2에서 무너진다. 기본값 2는 정확히 동작한다.
+  const cap = P.wall.crackMax + 1;
+  out.push({ t: 'I1.bossSmash', hits1: h1, hits2: h2, hits3: h3,
+             cap, want: `1/2/${Math.min(3, cap)} (상한 crackMax+1 = ${cap})`,
+             ok: h1 === 1 && h2 === 2 && h3 === Math.min(3, cap) });
 
   // I2) 부품 환전 — 공방 등급과 거리 두 관문
   g.applySettings(g.DEFAULT_SETTINGS);

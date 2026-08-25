@@ -223,6 +223,25 @@
       color: #ff6b6b; text-shadow: 0 2px 10px rgba(0,0,0,.9);
       opacity: 0; transition: opacity .35s;
     }
+    /* 톰 체력바 (D107) — 화면 상단 가운데. 등장했을 때만 보인다 */
+    #bossbar {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      width: min(560px, 70vw); display: none; z-index: 6; pointer-events: none;
+      font: 12px/1.5 ui-monospace, Menlo, monospace;
+    }
+    #bossbar .row { margin-bottom: 6px; }
+    #bossbar .lbl {
+      display: flex; justify-content: space-between; color: #ffd9d9;
+      text-shadow: 0 1px 3px #000; margin-bottom: 2px; letter-spacing: .04em;
+    }
+    #bossbar .track {
+      height: 12px; background: #2a0f14; border: 1px solid #6d2b33;
+      border-radius: 3px; overflow: hidden;
+    }
+    #bossbar .fill {
+      height: 100%; background: linear-gradient(90deg, #ff3b3b, #ff8b5e);
+      transition: width .15s linear;
+    }
   </style>
 </head>
 <body>
@@ -232,6 +251,8 @@
   <canvas id="mini" width="168" height="168"></canvas>
   <div id="res"></div>
   <div id="help"></div>
+  <!-- 톰 체력바 (D107) — 둘이 오므로 여러 줄이 될 수 있다 -->
+  <div id="bossbar"></div>
   <div id="flash"></div>
   <div id="selbox"></div>
   <div id="hotbar"></div>

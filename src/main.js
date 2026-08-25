@@ -140,12 +140,19 @@ const P = {
   // 고정 스탯으로 승부한다 (typeMaxHp·건물 dps 가산 둘 다 boss는 예외 처리).
   // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
   // (smashCooldown·smashWindup) — 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다.
-  boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 6000, reward: 0, dmg: 55,
+  boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 12000, reward: 0, dmg: 55,
           smashCooldown: 8.0, smashWindup: 0.9,
           // 강타 **몇 번**에 벽이 무너지는가 (D99). 한 방이면 벽을 세우는 행위가
           // 보스 앞에서 무의미해진다 — 한 번 맞고 금이 간 벽은 아직 막고 있으므로
           // "고칠 것인가 물러설 것인가"를 고를 시간이 생긴다.
-          smashHits: 2 },
+          smashHits: 2,
+          // 톰은 둘이 온다 (D107)
+          count: 2,
+          spawnRadius: 26,      // 맵 중앙에서 이만큼 떨어진 곳에 선다
+          spawnAngle: 0.6,      // 전체 배치를 돌리는 각(라디안) — 매판 같은 자리가 되지 않게
+          keepApart: 18,        // 톰끼리 이 거리 안으로는 안 붙는다
+          keepApartForce: 4,    // 밀어내는 세기(초당)
+          smashRadius: 2.6 },   // 강타가 닿는 반경 — 한 번에 여러 장을 친다
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
   // post = 벽 **원기둥의 지름** (D57·D59·D74). 셀(1.5)보다 작아서 틈이 생긴다:
@@ -4182,11 +4189,41 @@ function topUpToCurve(quiet = false) {
 
 // 10스테이지에 다다르면 톰이 쳐들어온다 — 그 뒤로는 시간이 승리를 안 준다 (D83).
 // 보스를 처치해야만 끝난다. 시간이 다 돼도 스테이지는 10에 머물고 전투가 계속될 뿐이다.
+// 톰은 **둘이 서로 다른 방향에서** 온다 (D107). 하나면 한쪽만 막으면 되고,
+// 겹쳐서 오면 두 마리인 의미가 없다 — 그래서 서로 최소 거리를 유지시킨다.
 function spawnBoss() {
-  const b = makeEnemy('boss', enemies.length);
-  b.introT = 3.0;   // 등장 경고 후 잠깐 멈춰 있다가 움직이기 시작
-  enemies.push(b);
+  const n = Math.max(1, P.boss.count);
+  const R = Math.min(HALF - 3, P.boss.spawnRadius);
+  for (let k = 0; k < n; k++) {
+    const b = makeEnemy('boss', enemies.length);
+    // 맵 중앙을 기준으로 정반대편에 세운다 (n=2면 180°, n=3이면 120°)
+    const a = (k / n) * Math.PI * 2 + P.boss.spawnAngle;
+    b.x = clamp(Math.cos(a) * R, -HALF + 2, HALF - 2);
+    b.z = clamp(Math.sin(a) * R, -HALF + 2, HALF - 2);
+    b.introT = 3.0;   // 등장 경고 후 잠깐 멈춰 있다가 움직이기 시작
+    enemies.push(b);
+  }
   refreshReach();
+}
+
+// 톰끼리는 서로 **밀어낸다** (D107). 둘이 같은 햄스터에 겹쳐 붙으면 화면에서
+// 한 마리로 보이고, 두 방향에서 몰린다는 압박도 사라진다.
+function separateBosses(dt) {
+  const list = enemies.filter((e) => e.type === 'boss');
+  if (list.length < 2) return;
+  const want = P.boss.keepApart;
+  for (let a = 0; a < list.length; a++)
+    for (let b = a + 1; b < list.length; b++) {
+      const A = list[a], B = list[b];
+      let dx = B.x - A.x, dz = B.z - A.z;
+      let d = Math.hypot(dx, dz);
+      if (d >= want) continue;
+      if (d < 0.001) { dx = 1; dz = 0; d = 1; }
+      const push = (want - d) * 0.5 * Math.min(1, dt * P.boss.keepApartForce);
+      dx /= d; dz /= d;
+      A.x -= dx * push; A.z -= dz * push;
+      B.x += dx * push; B.z += dz * push;
+    }
 }
 
 function advanceStage() {
@@ -4482,10 +4519,22 @@ function updateEnemy(enemy, dt) {
         // 한 번에 낼 금의 수를 crackMax에서 거꾸로 계산한다 — crackMax를
         // 슬라이더로 만져도 "톰은 두 번"이 유지된다.
         const per = Math.max(1, Math.ceil((P.wall.crackMax + 1) / Math.max(1, P.boss.smashHits)));
-        const broke = crackWall(smashWall, per);
+        // 한 장만 치면 벽선이 사실상 안 뚫린다 (D107) — 내리친 자리 **주변까지** 닿는다.
+        // 자폭묘 폭발(detonate)과 같은 모양의 범위 판정이다.
+        const R = P.boss.smashRadius;
+        const hit = cellToWorld(smashWall.i, smashWall.j);
+        const span = Math.ceil(R / CS) + 1;
+        let broke = 0;
+        for (let dj = -span; dj <= span; dj++)
+          for (let di = -span; di <= span; di++) {
+            const ob = obstacles.get(cellKey(smashWall.i + di, smashWall.j + dj));
+            if (!ob || ob.bedrock || ob.bldgRef) continue;
+            if (distCellToPoint(ob.i, ob.j, hit.x, hit.z) > R) continue;
+            if (crackWall(ob, per)) broke++;
+          }
         if (broke) markNavDirty();
         spawnBuildFx(enemy.x, enemy.z);
-        flashMsg(broke ? '톰이 벽을 강타해 부쉈다!' : '톰이 벽을 내리쳤다 — 금이 갔다',
+        flashMsg(broke ? `톰이 벽을 강타해 부쉈다! (${broke}장)` : '톰이 벽을 내리쳤다 — 금이 갔다',
                  broke ? '#ff4d4d' : '#ffb347');
         enemy.smashT = 0;
         enemy.smashCd = P.boss.smashCooldown;
@@ -7522,7 +7571,25 @@ function enemyModeSummary() {
     + (atk ? ` · ${atk}마리 벽 부수는 중!` : '');
 }
 
+// 톰 체력바 (D107) — 12000짜리를 머리 위 작은 막대로만 보여 주면
+// "얼마나 깎았는지"가 안 읽힌다. 등장한 동안만 상단에 크게 띄운다.
+const bossBarEl = document.getElementById('bossbar');
+function updateBossBar() {
+  const list = enemies.filter((e) => e.type === 'boss');
+  if (!list.length) { bossBarEl.style.display = 'none'; return; }
+  bossBarEl.style.display = 'block';
+  const max = typeMaxHp('boss');
+  bossBarEl.innerHTML = list.map((b, k) => {
+    const f = Math.max(0, Math.min(1, b.hp / max));
+    const name = list.length > 1 ? `톰 ${k + 1}` : '톰';
+    return `<div class="row"><div class="lbl"><span>${name}</span>` +
+      `<span>${Math.max(0, Math.round(b.hp))} / ${max}</span></div>` +
+      `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%"></div></div></div>`;
+  }).join('');
+}
+
 function updateHUD() {
+  updateBossBar();
   const mode = CAM_MODES[camIndex];
   let wallCount = 0;
   for (const ob of obstacles.values()) if (!ob.bedrock && !ob.bldgRef) wallCount++;
@@ -7752,6 +7819,7 @@ function tick(dt) {
         updateEnemy(e, dt);
       }
       separateEnemies();
+      separateBosses(dt);   // 톰끼리는 더 넓게 떨어뜨린다 (D107)
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
       // 접촉 즉사는 없다 — updateEnemy 안의 공격 로직이 체력을 깎는다
     } else {
