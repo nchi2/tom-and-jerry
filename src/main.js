@@ -176,7 +176,9 @@ const P = {
   //   금 간 벽은 **F로 수리**한다 (repairCost). 자폭묘 하나로 방어선이 뚫리던 걸 막고,
   //   대신 "터진 자리를 제때 메우는" 유지 노동을 만든다.
   wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 1.0,
-          castTime: 0.3, crackMax: 2, repairCost: 2 },
+          // crackMax = 폭발을 **몇 번까지 버티는가** (D90 → D107).
+          // 1이면 첫 폭발은 금만 가고 **두 번째 폭발에 무너진다.**
+          castTime: 0.3, crackMax: 1, repairCost: 2 },
   // 건물 — 원작의 "넥서스 지을 공간이 필요하다"의 이식.
   // 2x2 발자국이라 광맥을 벽 4개로 두르는 최소 확보가 불가능해지고,
   // 채굴하려면 광맥 곁에 건물이 들어갈 공터까지 함께 감싸야 한다.
@@ -220,8 +222,10 @@ const P = {
   // 치즈는 안에서 벌 수 있어도 부품은 못 번다 = 웅크리기로는 테크가 안 올라간다.
   // 경비탑 업그레이드는 치즈만 든다 — 부품 관문은 기술 트리의 뿌리(공방)에만 건다.
   workshop: { cost: 15, hp: 100,
+              // 부품은 2단계 2개 · 3단계 4개 (D107). 치즈는 3단계를 더 비싸게 —
+              // 기술 트리의 마지막 계단이 값이 싸면 "언제 올리나"가 선택이 아니게 된다
               tier2Cost: 80, tier2Parts: 2, tier2Time: 2.5,
-              tier3Cost: 250, tier3Parts: 5, tier3Time: 3.5 },
+              tier3Cost: 400, tier3Parts: 4, tier3Time: 3.5 },
   // 경비탑 — 원작 포토캐논. 던진다. 2x2 고정, 3단계 제자리 업그레이드(D82).
   //  t1(배치 시 기본): 약하고 저렴 — 좁은 구간을 값싸게 메우는 용도
   //  t2(업그레이드): 지금까지의 기본값 그대로. t3(업그레이드): 겁나 세고 겁나 비쌈
@@ -229,7 +233,8 @@ const P = {
   tower: {
     t1Cost: 20, t1Hp: 70, t1Range: 8.0, t1Dmg: 14, t1Reload: 1.1,
     t2Cost: 60, t2Hp: 110, t2Range: 10.5, t2Dmg: 30, t2Reload: 1.0,
-    t3Cost: 1000, t3Hp: 500, t3Range: 16.0, t3Dmg: 130, t3Reload: 0.8,
+    // 1000은 실지출 1500이라(costScale 1.5) 후반에도 손이 안 갔다 — 600(실 900)으로 내린다 (D107)
+    t3Cost: 600, t3Hp: 500, t3Range: 16.0, t3Dmg: 130, t3Reload: 0.8,
   },
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
@@ -313,8 +318,12 @@ const P = {
     // 부품 → 치즈 환전 (D100). 후반에 부품 수급이 소모처를 넘어선다 —
     // 10스테이지 한 판에만 30개가 들어오는데 그때는 살 게 남아 있지 않다.
     // sellTier 이상 공방이 있어야 열린다: 기술을 다 올린 사람만 쓰는 출구다.
-    sellRate: 1000,             // 부품 1개당 치즈
+    sellRate: 1000,             // 부품 1개당 치즈 (환전, D100)
     sellTier: 3,                // 필요한 공방 등급
+    // 반대 방향 — **치즈로 부품을 산다** (D107). 값이 살 때마다 오른다:
+    // 1개째 1000 · 2개째 1500 · 3개째 2000 … 사면 살수록 비싸지므로
+    // "밖에 나가 줍는다"가 여전히 싸다 — 픽업을 대체하지 않고 보험이 된다
+    buyBase: 1000, buyStep: 500,
     speedStep: 0.9,             // 햄스터 이동 속도
     radiusStep: 0.2,            // 채굴 시간 단축(초)
     towerStep: 9,               // 경비탑 화력
@@ -329,7 +338,8 @@ const P = {
   // P.res.costScale과 같은 방식이라 원래 값이 소스에 그대로 남는다.
   //  enemyCount 는 웨이브 구성과 순찰조 **둘 다** 지난다 (scaled()가 유일한 깔때기)
   //  enemyHp    는 보스를 뺀 고양이에게만 (톰은 D83에서 고정 스탯으로 정한 대상이다)
-  balance: { enemyCount: 0.7, enemyHp: 0.5 },
+  // enemyHp 0.5 → 0.65 (D107): D104의 절반 너프가 과했다는 판단 → 30% 되돌린다
+  balance: { enemyCount: 0.7, enemyHp: 0.65 },
   threat: {
     // speedGain 0 = 후반에도 더 빨라지지 않는다 (2026-08-13).
     // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
@@ -1407,6 +1417,7 @@ for (const p of players) {
   p.buildCooldown = 0;
   p.upgradeJob = null;     // { b, t, dur, cost, parts } — 제자리 업그레이드 채널링 (D82)
   p.parts = 0;             // 부품 (D92-1e). 치즈와 같은 이유로 각자 살림이다 (D43)
+  p.partsBought = 0;       // 치즈로 산 부품 수 — 살수록 값이 오른다 (D107)
   // 이동 입력 — **월드 좌표 단위벡터**다 (D92-1f). 카메라 기준 축이 아니라서
   // 두 사람이 서로 다른 카메라 모드를 써도 시뮬은 영향을 안 받는다
   p.in = { mx: 0, mz: 0 };
@@ -4644,7 +4655,10 @@ window.addEventListener('keydown', (e) => {
   // 안 그러면 내 공방 옆에서 건물을 못 짓는다
   for (let k = 0; k < 8; k++) {
     if (e.code === 'Digit' + (k + 1)) {
-      if (upgOpen) issueCommand(k === UPGRADES.length ? { t: 'sell' } : { t: 'upg', k });
+      if (upgOpen) issueCommand(
+        k === UPGRADES.length ? { t: 'sell' }
+        : k === UPGRADES.length + 1 ? { t: 'buyprt' }
+        : { t: 'upg', k });
       // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
       else if (k < BUILD_SLOTS.length) {
         removeMode = false;
@@ -5319,6 +5333,7 @@ function applyCommand(p, c) {
     case 'remove': removeAt(p, c.i, c.j); break;
     case 'upg':    buyUpgrade(c.k, p); break;
     case 'sell':   sellParts(p); break;
+    case 'buyprt': buyParts(p); break;
     case 'cancel':
       if (c.lvl === 'buildJob') cancelBuild(true, p);
       else if (c.lvl === 'upgradeJob') cancelUpgrade(true, p);
@@ -5831,7 +5846,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.tower, 't2Range', 2, 24, 0.5).name('경비탑 Lv.2 사거리');
   f.add(P.tower, 't2Dmg', 2, 150, 1).name('경비탑 Lv.2 투척 피해');
   f.add(P.tower, 't2Reload', 0.2, 4, 0.1).name('경비탑 Lv.2 투척 간격');
-  f.add(P.tower, 't3Cost', 50, 3000, 25).name('경비탑 Lv.3 업그레이드 비용 (겁나 비쌈)');
+  f.add(P.tower, 't3Cost', 50, 3000, 25).name('경비탑 Lv.3 업그레이드 비용');
   f.add(P.tower, 't3Hp', 50, 3000, 10).name('경비탑 Lv.3 내구도');
   f.add(P.tower, 't3Range', 2, 30, 0.5).name('경비탑 Lv.3 사거리');
   f.add(P.tower, 't3Dmg', 2, 300, 1).name('경비탑 Lv.3 투척 피해 (겁나 쎔)');
@@ -5912,6 +5927,8 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.upgrade, 'maxLevel', 1, 20, 1).name('최대 레벨');
   f.add(P.upgrade, 'sellRate', 0, 3000, 50).name('부품 환전 (치즈/개)').onChange(renderUpgrade);
   f.add(P.upgrade, 'sellTier', 1, 3, 1).name('환전 필요 공방 등급').onChange(renderUpgrade);
+  f.add(P.upgrade, 'buyBase', 0, 5000, 50).name('부품 구매 첫 값').onChange(renderUpgrade);
+  f.add(P.upgrade, 'buyStep', 0, 2000, 50).name('부품 구매 값 증가폭').onChange(renderUpgrade);
   f.add(P.upgrade, 'baseCost', 0, 10, 1).name('1레벨 부품 비용');
   f.add(P.upgrade, 'costStep', 0, 5, 1).name('레벨당 비용 증가');
   f.add(P.upgrade, 'towerStep', 0, 60, 1).name('경비탑 화력/레벨');
@@ -6188,10 +6205,33 @@ function renderHelp() {
 renderHelp();
 
 // ---- 자원 — 우측 상단 아이콘 + 수치 (D88) ----
+// 영토 수입은 좌상단 모노 HUD 한 줄에만 있어서 **눈에 안 띈다**는 지적이 있었다 (D107).
+// "넓히면 번다"가 이 시스템의 전부인데 그 인과가 안 보이면 벽을 넓힐 이유가 안 생긴다.
+// 치즈 **바로 밑에** 초당 수입을 붙인다 — 숫자가 오르는 곳과 이유가 같은 자리에 있게.
+//
+// 2P에서는 수입이 **내 벽 비율만큼**이므로(D95) 화면에도 내 몫을 보여준다.
+// "같이 벌고 있다"가 아니라 "내가 쌓은 만큼 번다"가 읽혀야 한다.
+function myTerritoryRate(me) {
+  if (P.res.terrIncome <= 0 || territoryArea <= 0) return 0;
+  const total = territoryArea * P.res.terrIncome;
+  const share = humans();
+  if (share.length <= 1) return total;
+  let mine = 0, all = 0;
+  for (const ob of obstacles.values())
+    if (!ob.bedrock && !ob.bldgRef) { all++; if (ob.owner === me.owner) mine++; }
+  return all ? total * (mine / all) : total / share.length;
+}
+
 function updateRes() {
+  const me = localPlayer();
+  const rate = myTerritoryRate(me);
   resEl.innerHTML =
-    `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(localPlayer().cheese)}</div>` +
-    `<div class="r parts"><span class="ic">⚙️</span>${localPlayer().parts}</div>`;
+    `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}</div>` +
+    (rate > 0
+      ? `<div class="r terr"><span class="ic">🌿</span>${territoryArea.toFixed(0)}㎡` +
+        `<b class="rate">+${rate.toFixed(1)}/s</b></div>`
+      : '') +
+    `<div class="r parts"><span class="ic">⚙️</span>${me.parts}</div>`;
 }
 
 let alive = true;
@@ -6364,7 +6404,7 @@ function restart() {
   for (const q of players) { q.cheese = startResources(); q.carry = 0; }
   killCount = 0;
   for (const b of [...buildings]) destroyBuilding(b, false);
-  for (const p of players) { p.parts = 0; p.upg = newUpg(); }
+  for (const p of players) { p.parts = 0; p.partsBought = 0; p.upg = newUpg(); }
   upgOpen = false;
   renderUpgrade();
   stage = 1;
@@ -6565,6 +6605,20 @@ function buyUpgrade(k, p = player) {
 // 그래야 "밖에서 주워 와 공방으로 돌아간다"는 왕복이 끝까지 유지된다.
 const canSellParts = (p) => maxWorkshopTier() >= P.upgrade.sellTier;
 
+// 지금까지 산 개수에 따라 다음 한 개의 값 (D107)
+const partsBuyCost = (p) => P.upgrade.buyBase + P.upgrade.buyStep * (p.partsBought || 0);
+
+function buyParts(p = player) {
+  if (!nearWorkshop(p)) { flashFor(p, '공방 옆에서만 살 수 있습니다', '#e05050'); return; }
+  const cost = partsBuyCost(p);
+  if (p.cheese < cost) { flashFor(p, `치즈 ${cost} 필요 (지금 ${Math.floor(p.cheese)})`, '#e05050'); return; }
+  p.cheese -= cost;
+  p.parts += 1;
+  p.partsBought = (p.partsBought || 0) + 1;
+  flashFor(p, `부품 +1 (치즈 ${cost}) — 다음 ${partsBuyCost(p)}`, '#8fd6ff');
+  renderUpgrade();
+}
+
 function sellParts(p = player) {
   if (!nearWorkshop(p)) { flashFor(p, '공방 옆에서만 환전할 수 있습니다', '#e05050'); return; }
   if (!canSellParts(p)) { flashFor(p, `공방 Lv.${P.upgrade.sellTier} 필요`, '#e05050'); return; }
@@ -6610,11 +6664,19 @@ function renderUpgrade() {
     (() => {
       const open = canSellParts(me);
       const can = ws && upgOpen && open && me.parts >= 1;
+      const buyCost = partsBuyCost(me);
+      const canBuy = ws && upgOpen && me.cheese >= buyCost;
       return `<div class="urow${can ? '' : ' dim'}">` +
         `<b>${UPGRADES.length + 1}</b> 부품 환전 ` +
         `<span class="lv">${open ? `보유 ⚙️${me.parts}` : `공방 Lv.${P.upgrade.sellTier} 필요`}</span>` +
         `<span class="cost">⚙️1</span>` +
-        `<span class="eff">치즈 +${P.upgrade.sellRate}</span></div>`;
+        `<span class="eff">치즈 +${P.upgrade.sellRate}</span></div>` +
+        // 반대 방향 — 치즈로 부품 사기 (D107). 살수록 비싸진다
+        `<div class="urow${canBuy ? '' : ' dim'}">` +
+        `<b>${UPGRADES.length + 2}</b> 부품 구매 ` +
+        `<span class="lv">${me.partsBought || 0}개째</span>` +
+        `<span class="cost">🧀${buyCost}</span>` +
+        `<span class="eff">⚙️ +1</span></div>`;
     })();
 }
 
