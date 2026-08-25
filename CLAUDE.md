@@ -39,7 +39,11 @@
 - `tools/verify.js` — 회귀 하니스. 브라우저에서
   `fetch('/tools/verify.js').then(r=>r.text()).then(eval)` 후 `__verify()`.
   **A 150초 무입력 / B 명령·작업 경로 / D 2P 경제 / E 명령 계층 / C 전투 /
-  F 2인 컨텐츠 / G 상호작용 / H 3~4인.** 변경할 때마다 돌리고 `errs: 0`을 확인할 것.
+  F 2인 컨텐츠 / G 상호작용 / H 3~4인 / I 후반 경제·보스 강타.**
+  변경할 때마다 돌리고 `errs: 0`을 확인할 것.
+  ⚠ **`tools/`는 `server.watch.ignored`라 Vite가 변환 결과를 갱신하지 않는다** —
+  하니스를 고쳤으면 `?t=`를 붙여도 옛 코드가 온다. **개발 서버를 다시 띄워야 한다.**
+  ⚠ A~E는 시작할 때 설정을 되돌리지 않는다. 앞에서 `P`를 만졌으면 A의 150초 결과는 거짓이다
   `__profile()`(틱당 CPU)·`__interpTest()`(보간)도 같은 파일에 있다
 - 개발 서버: `npm run dev` (기본 5173). `.claude/launch.json`은 `--port 5299 --strictPort`로 고정
 - 디버그 훅: `window.__game` — `step(seconds)`로 헤드리스 진행 가능
