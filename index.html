@@ -136,6 +136,9 @@
       background: rgba(24, 18, 28, 0.82);
     }
     #hotbar .slot.locked .why { color: #d08fb0; }
+    /* 슬롯이 뭘 하는 물건인지 (D111) — 이름만으로는 안 읽힌다 */
+    #hotbar .slot .role { color: #8b93a5; font-size: 10px; }
+    #hotbar .slot.sel .role { color: #cfd6e4; }
     #hotbar .slot.rm.sel { border-color: #ffb347; background: rgba(52, 38, 20, 0.9); color: #ffe0b0; }
     #upgrade {
       position: fixed; top: 50%; right: 18px; transform: translateY(-50%);
@@ -245,6 +248,29 @@
       height: 100%; background: linear-gradient(90deg, #ff3b3b, #ff8b5e);
       transition: width .15s linear;
     }
+    /* 튜토리얼 (D111) — 왼쪽 세로 목록. 지금 할 것 하나만 밝게 */
+    #tut {
+      position: fixed; left: 12px; top: 168px; width: 300px; display: none; z-index: 6;
+      font: 12px/1.5 ui-monospace, Menlo, monospace; pointer-events: none;
+      background: rgba(16,20,30,.86); border: 1px solid #3a4054; border-radius: 8px;
+      padding: 9px 11px; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+    #tut .tstep { display: flex; align-items: baseline; gap: 7px; padding: 1px 0; }
+    #tut .tstep b {
+      display: inline-block; width: 15px; text-align: center; flex: none;
+      color: #6b7385;
+    }
+    #tut .tstep .tt { flex: 1; }
+    #tut .tstep .tn { color: #8fd6ff; font-size: 11px; }
+    #tut .todo { color: #5c6373; }
+    #tut .done { color: #6ee07a; }
+    #tut .done b { color: #6ee07a; }
+    #tut .now { color: #ffd24a; font-weight: 700; }
+    #tut .now b { color: #ffd24a; }
+    #tut .thint {
+      color: #cfd6e4; font-size: 11px; margin: 3px 0 5px 22px;
+      padding-left: 8px; border-left: 2px solid #ffd24a;
+    }
   </style>
 </head>
 <body>
@@ -256,6 +282,8 @@
   <div id="help"></div>
   <!-- 톰 체력바 (D107) — 둘이 오므로 여러 줄이 될 수 있다 -->
   <div id="bossbar"></div>
+  <!-- 튜토리얼 단계 목록 (D111) — 좌측, 진행 중일 때만 -->
+  <div id="tut"></div>
   <div id="flash"></div>
   <div id="selbox"></div>
   <div id="hotbar"></div>
@@ -282,8 +310,9 @@
       <div class="sub">작은 햄스터, 큰 고양이. 틈이 좁으면 못 지나간다</div>
 
       <div class="step on" id="s-mode">
-        <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 지은 게 무너지고 적 본진에서 다시 시작</span></button>
-        <button id="s-two">2인 협동<span class="k">붙는 순간 시작. 적 1.8배. 잡혀도 20초 안에 구해 주면 기지가 산다</span></button>
+        <button id="s-tut">연습 (처음이라면 여기)<span class="k">벽 세우기부터 병사 고용까지 8단계. 고양이는 한 마리뿐</span></button>
+        <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 5분 안에 내 땅으로 돌아와야 지은 게 산다</span></button>
+        <button id="s-two">2인 협동<span class="k">붙는 순간 시작. 적 1.8배. 잡혀도 구해 주면 기지가 산다</span></button>
         <button id="s-four">3~4인 협동<span class="k">최대 넷. 다 모이면 방장이 시작한다 — 적은 인원수만큼 는다</span></button>
       </div>
 

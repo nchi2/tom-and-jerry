@@ -393,15 +393,17 @@ const STAGES = [
 // 순서는 **실제로 짓는 순서**다 (D88): 벽 → 창고 → 일꾼 → 공방 → 그 뒤로 기술이 열린다.
 // 철거는 슬롯에서 뺐다 — X키 전용이다 (슬롯 하나를 늘 잡아먹을 만한 행동이 아니다).
 // need: 이 슬롯을 쓰려면 필요한 공방 등급 (0 = 조건 없음). D82의 기술 트리를 핫바에 그대로 비춘다.
+// `role` = 이게 **뭘 하는 물건인지** 한 단어 (D111).
+// 실제 플레이 후기에서 "근접병으로 치즈캐는거냐"가 나왔다 — 이름만으로는 안 읽힌다.
 const BUILD_SLOTS = [
-  { key: 'wall', label: '벽', size: 1, need: 0, cost: () => P.wall.cost },
-  { key: 'depot', label: '치즈 창고', size: 2, need: 0, cost: () => cheeseCost(P.depot.cost) },
-  { key: 'worker', label: '일꾼 고용', size: 1, need: 0, cost: () => cheeseCost(P.worker.cost) },
-  { key: 'workshop', label: '공방', size: 2, need: 0, cost: () => cheeseCost(P.workshop.cost) },
-  { key: 'tower', label: '경비탑', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
-  { key: 'melee', label: '근접병', size: 1, need: 1, cost: () => guardCost('melee', localPlayer().owner) },
-  { key: 'archer', label: '사수', size: 1, need: 2, cost: () => guardCost('archer', localPlayer().owner) },
-  { key: 'elite', label: '정예병', size: 1, need: 3, cost: () => guardCost('elite', localPlayer().owner) },
+  { key: 'wall', label: '벽', role: '길막기', size: 1, need: 0, cost: () => P.wall.cost },
+  { key: 'depot', label: '치즈 창고', role: '치즈 부리기', size: 2, need: 0, cost: () => cheeseCost(P.depot.cost) },
+  { key: 'worker', label: '일꾼 고용', role: '치즈 캐기', size: 1, need: 0, cost: () => cheeseCost(P.worker.cost) },
+  { key: 'workshop', label: '공방', role: '기술 해금', size: 2, need: 0, cost: () => cheeseCost(P.workshop.cost) },
+  { key: 'tower', label: '경비탑', role: '자동 사격', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
+  { key: 'melee', label: '근접병', role: '싸움', size: 1, need: 1, cost: () => guardCost('melee', localPlayer().owner) },
+  { key: 'archer', label: '사수', role: '싸움(원거리)', size: 1, need: 2, cost: () => guardCost('archer', localPlayer().owner) },
+  { key: 'elite', label: '정예병', role: '싸움(강함)', size: 1, need: 3, cost: () => guardCost('elite', localPlayer().owner) },
 ];
 
 // 잠긴 이유 (없으면 null) — 핫바와 실제 거부 판정이 같은 함수를 본다
@@ -768,6 +770,7 @@ function crackWall(ob, n = 1) {
 }
 
 function repairWall(ob) {
+  tutStats.repaired++;      // 튜토리얼 5단계 판정 (D111)
   ob.cracks = 0;
   applyCrackVisual(ob);
   wallEv({ a: 2, i: ob.i, j: ob.j, c: 0 });
@@ -2187,6 +2190,7 @@ function doCarryWork(c, dt, load, owner = 'p') {
   const dep = nearestDepot(c.x, c.z, owner);
   if (dep && c.carry > 0 && Math.hypot(dep.cx - c.x, dep.cz - c.z) <= P.depot.dropRange) {
     earn(owner, c.carry);
+    if (c === player) tutStats.dropped++;   // 튜토리얼 2단계 판정 (D111)
     for (let k = 0; k < 3; k++) spawnCheeseBit(c.x, c.z, { x: dep.cx, z: dep.cz });
     c.carry = 0;
     c.mineT = 0;
@@ -6541,6 +6545,7 @@ function restart() {
   stageT = 0;
   victory = false;
   finalPhase = 'none'; finalT = 0;
+  if (tut) { tut = null; renderTut(); }   // 재시작하면 연습판을 벗어난다 (D111)
   growthSpawned = 0;
   // 두 햄스터를 같은 초기 상태로 (D92-1c)
   for (const p of players) { p.hp = P.player.hp; p.hurtT = 99; p.grace = 0; p.stunned = false; p.wipeT = 0; }
@@ -6834,7 +6839,9 @@ function updateHotbar() {
     const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
     const costTxt = cost > 0 ? `${cost}🧀` : '무료';
     const how = isUnitSlot(sl) ? ' ⏎' : '';
-    return `<div class="${cls}"><b>${k + 1}${how}</b>${sl.label}<br>${costTxt}</div>`;
+    return `<div class="${cls}"><b>${k + 1}${how}</b>${sl.label}` +
+      (sl.role ? `<br><span class="role">${sl.role}</span>` : '') +
+      `<br>${costTxt}</div>`;
   }).join('') +
   `<div class="slot rm${removeMode ? ' sel' : ''}"><b>X</b>철거<br>${P.wall.removeCost}🧀</div>` +
   `<div class="slot hand${buildSlot < 0 && !removeMode ? ' sel' : ''}"><b>ESC</b>${buildSlot < 0 && !removeMode ? '빈손' : '내려놓기'}<br>—</div>`;
@@ -6914,6 +6921,120 @@ const netMsgEl = document.getElementById('m-netmsg');
 // 이제 **몇 명이 할지 고르기 전에는 시뮬이 시작되지 않는다.**
 const startEl = document.getElementById('start');
 let started = false;
+
+// ============================================================
+// 튜토리얼 (D111)
+//  병욱의 플레이 후기: 30분을 웃으며 했지만 **게임이 가르친 건 하나도 없었다.**
+//  "키뭐노" "우클릭?" "근접병으로 치즈캐는거냐"가 전부 옆사람이 알려 준 것이다.
+//  혼자 들어온 사람은 그 지점마다 그냥 나간다.
+//
+//  설계 규칙 셋:
+//   1. **읽는 게 아니라 하는 것** — 각 단계는 실제로 그 동작을 해야 넘어간다
+//   2. **되돌아가지 않는다** — 한 번 통과한 단계는 다시 안 잠근다
+//   3. **진짜 게임과 같은 코드** — 별도 모드가 아니라 판 위에 안내만 얹는다.
+//      그래야 튜토리얼에서 배운 게 본편에서 그대로 통한다
+// ============================================================
+const tutStats = { repaired: 0, dropped: 0 };
+let tut = null;   // { step, doneT } — null이면 튜토리얼이 아니다
+const tutOn = () => !!tut;
+
+const myWallCount = () => {
+  let n = 0;
+  for (const ob of obstacles.values())
+    if (!ob.bedrock && !ob.bldgRef && ob.owner === 'p') n++;
+  return n;
+};
+
+const TUT_STEPS = [
+  { t: '고양이를 피해 벽을 지으세요',
+    hint: '① 숫자 1 → 마우스로 자리를 보고 좌클릭 · 벽 5장',
+    now: () => `${Math.min(myWallCount(), 5)} / 5`,
+    ok: () => myWallCount() >= 5 },
+  { t: '치즈 창고를 짓고 치즈를 캐세요',
+    hint: '② 숫자 2로 창고를 짓고 → 치즈 더미 옆에서 E · 가득 차면 창고로',
+    now: () => (depotCount() ? (tutStats.dropped ? '완료' : '창고 ✓ — 이제 캐서 부리세요') : '창고 없음'),
+    ok: () => depotCount() >= 1 && tutStats.dropped >= 1 },
+  { t: '일꾼을 고용해 보세요',
+    hint: '③ 숫자 3 → Enter. 일꾼이 알아서 캐 옵니다 (병사는 캐지 않습니다)',
+    now: () => `일꾼 ${workers.filter((w) => w.owner === 'p').length}`,
+    ok: () => workers.some((w) => w.owner === 'p') },
+  { t: '공방을 지어 보세요',
+    hint: '④ 숫자 4 → 좌클릭. 공방이 있어야 경비탑과 병사가 열립니다',
+    now: () => (hasWorkshop() ? '완료' : '없음'),
+    ok: () => hasWorkshop() },
+  { t: '금이 간 벽을 수리하세요',
+    hint: '⑤ 금 간 벽 옆으로 가면 안내가 뜹니다 — 그 자리에서 F',
+    now: () => (tutStats.repaired ? '완료' : '금 간 벽으로 가세요'),
+    setup: () => {
+      // 수리를 배우려면 **금이 가 있어야** 한다. 없으면 하나 만들어 준다.
+      const mine = [...obstacles.values()].filter((o) => !o.bedrock && !o.bldgRef && o.owner === 'p');
+      if (!mine.length) return;
+      if (mine.some((o) => (o.cracks || 0) > 0)) return;
+      const w = mine[0];
+      w.cracks = Math.max(1, P.wall.crackMax);
+      applyCrackVisual(w);
+      wallEv({ a: 2, i: w.i, j: w.j, c: w.cracks });
+      flashMsg('벽에 금이 갔다 — 가까이 가서 R', '#ffb347');
+    },
+    ok: () => tutStats.repaired >= 1 },
+  { t: '경비탑을 세우세요',
+    hint: '⑥ 숫자 5 → 좌클릭. 알아서 지어지고 알아서 쏩니다',
+    now: () => `경비탑 ${buildings.filter((b) => b.kind === 'tower' && b.owner === 'p').length}`,
+    ok: () => buildings.some((b) => b.kind === 'tower' && b.owner === 'p') },
+  { t: '병사를 고용해 보세요',
+    hint: '⑦ 숫자 6 → Enter (근접병). 병사는 싸우기만 합니다',
+    now: () => `병사 ${guardsOf('p').length}`,
+    ok: () => guardsOf('p').length >= 1 },
+  { t: '완료 — 이제 진짜로 버텨 보세요',
+    hint: 'ESC 메뉴에서 다시 시작하거나, 이대로 계속 놀아도 됩니다',
+    now: () => '수고했습니다',
+    ok: () => false },
+];
+
+const tutEl = document.getElementById('tut');
+
+function beginTutorial() {
+  beginMatch();
+  tut = { step: 0, doneT: 0 };
+  tutStats.repaired = 0; tutStats.dropped = 0;
+  // 연습판은 **느슨하게** — 고양이는 한 마리만, 스테이지도 안 넘어간다.
+  // 다만 0마리로 두지는 않는다: 1단계가 "고양이를 피해"이고,
+  // 적이 없으면 영토가 맵 전체가 되어 수입이 폭주한다 (알려진 함정)
+  P.enemy.count = 1;
+  P.patrol.count = 0;
+  P.threat.everyLevels = 0;
+  P.enemy.spawnDelay = 6;
+  setEnemyCount(1);
+  player.cheese = 120;    // 창고·일꾼까지는 닿는 종잣돈
+  renderTut();
+}
+
+function updateTutorial(dt) {
+  if (!tut) return;
+  const st = TUT_STEPS[tut.step];
+  if (!st) return;
+  if (st.setup && !st.setupDone) { st.setup(); st.setupDone = true; }
+  if (st.ok()) {
+    tut.step = Math.min(tut.step + 1, TUT_STEPS.length - 1);
+    const next = TUT_STEPS[tut.step];
+    flashMsg(`${tut.step >= TUT_STEPS.length - 1 ? '튜토리얼 완료!' : `${tut.step}단계 완료 — ${next.t}`}`, '#6ee07a');
+    if (next && next.setup) { next.setup(); next.setupDone = true; }
+  }
+  renderTut();
+}
+
+function renderTut() {
+  if (!tutEl) return;
+  if (!tut) { tutEl.style.display = 'none'; return; }
+  tutEl.style.display = 'block';
+  tutEl.innerHTML = TUT_STEPS.map((s, k) => {
+    const state = k < tut.step ? 'done' : k === tut.step ? 'now' : 'todo';
+    const mark = state === 'done' ? '✔' : `${k + 1}`;
+    return `<div class="tstep ${state}"><b>${mark}</b><span class="tt">${s.t}</span>` +
+      (state === 'now' ? `<span class="tn">${s.now()}</span>` : '') + '</div>' +
+      (state === 'now' ? `<div class="thint">${s.hint}</div>` : '');
+  }).join('');
+}
 
 function showStep(id) {
   for (const el of startEl.querySelectorAll('.step')) el.classList.toggle('on', el.id === id);
@@ -7696,6 +7817,12 @@ $('s-solo').onclick = () => {
   player.local = true; ally.local = false; ally.ai = true;
   beginMatch();
 };
+// 연습판 (D111) — 솔로와 같은 판에 안내만 얹는다
+$('s-tut').onclick = () => {
+  net.leave();
+  player.local = true; ally.local = false; ally.ai = true;
+  beginTutorial();
+};
 // 2인 / 3~4인 모두 같은 흐름을 쓴다. 다른 건 정원(maxPlayers) 하나뿐이다 (D97)
 let wantSeats = 2;
 $('s-two').onclick = () => { wantSeats = 2; showStep('s-two-menu'); };
@@ -8063,8 +8190,9 @@ function tick(dt) {
         p.hp = Math.min(p.hp + P.player.regen * dt, P.player.hp);
     }
     if (camShake > 0) camShake -= dt * 2;
-    updateStageTimer(dt);
+    if (!tutOn()) updateStageTimer(dt);   // 연습판은 스테이지가 안 넘어간다 (D111)
     updateFinalPhase(dt);   // 최후의 공세 (D108)
+    updateTutorial(dt);
     // 나르기는 사람이 모는 햄스터 전부가 한다 (D92-2단계).
     // 솔로에서는 player 하나라 예전과 같다.
     for (const p of players)
