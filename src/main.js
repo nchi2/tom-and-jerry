@@ -795,6 +795,25 @@ function repairWall(ob) {
 //  날쌘묘 r=0.85 → 2칸 통과 / 파괴묘 r=1.6 → 4칸부터).
 //  맵마다 틈 폭 구성이 달라서 "어느 종류가 어디로 들어오는가"가 달라진다.
 // ============================================================
+// ============================================================
+// 지형 추가 요소 (D112) — 벽과 치즈만 있던 맵에 두 가지를 더한다.
+//  둘 다 **코어 규칙(크기 비대칭)과 같은 계열**로 골랐다.
+//  늪   무거울수록 더 느려진다 = 몸집 비대칭의 속도판.
+//       햄스터는 거의 안 느려지고 고양이는 크게 느려지므로 **도망길**이 된다.
+//  덤불 통과는 되지만 **시야를 끊는다.** 벽이 "못 지나감"이라면 덤불은 "못 봄"이다.
+//       벽처럼 길을 막지 않으므로 방어선이 아니라 **숨을 자리**를 만든다.
+// 둘 다 격자 칸 집합으로만 들고 있는다 (obstacles와 별개 — 통행은 막지 않는다).
+// ============================================================
+const mudCells = new Set();    // 늪
+const bushCells = new Set();   // 덤불
+const inMud = (x, z) => { const c = worldToCell(x, z); return mudCells.has(cellKey(c.i, c.j)); };
+// 몸이 클수록 더 잠긴다 — 반지름을 그대로 쓴다 (햄스터 0.26 / 순찰묘 0.95 / 톰 1.75)
+const mudFactor = (r) => {
+  const k = clamp((r - P.terrain.mudFree) / Math.max(P.terrain.mudFull - P.terrain.mudFree, 0.01), 0, 1);
+  return 1 - k * (1 - P.terrain.mudSlow);
+};
+const mudSpeedAt = (x, z, r) => (mudCells.size && inMud(x, z) ? mudFactor(r) : 1);
+
 function layoutTools() {
   const cells = [];
   const put = (i, j) => {
@@ -2827,6 +2846,7 @@ function disposeWorker(w) {
   scene.remove(w.ring);
   w.ring.material.dispose();
   disposeBar(w.workBar);
+  disposeCarryVis(w);      // 들고 있던 치즈도 같이 치운다 (D114)
   selectedUnits.delete(w);
 }
 
@@ -3014,6 +3034,7 @@ function updateWorkers(dt) {
     w.ring.position.set(w.x, 0.06, w.z);
     w.ring.visible = selectedUnits.has(w);
     setBar(w.workBar, (w.mineT || 0) / effMineTime(), w.x, barY(w.vis), w.z, did === 'mine');
+    updateCarryVis(w, P.carry.workerLoad, P.worker.radius, dt);   // 들고 나르는 모습 (D114)
     // 볼주머니가 찰수록 통통해진다
     const f = w.carry / P.carry.workerLoad;
     w.vis.group.scale.setScalar(P.worker.radius * (1 + f * 0.18));
@@ -5349,6 +5370,7 @@ function updateActorVis(p, dt) {
     vis.setOpacity(0.5 + 0.2 * Math.sin(performance.now() * 0.005));
     setBar(barOf(p), 0, 0, 0, 0, false);
     setBar(workBarOf(p), 0, 0, 0, 0, false);
+    if (p.carryMesh) p.carryMesh.visible = false;
     return;
   }
   vis.setOpacity(1);
@@ -5395,6 +5417,7 @@ function updateActorVis(p, dt) {
                  : (p.mineT || 0) / effMineTime(),
          p.x, y + (bar && bar.visible ? 0.26 : 0), p.z,
          mining || building || upgrading || casting);
+  updateCarryVis(p, P.carry.playerLoad, R, dt);   // 들고 나르는 모습 (D114)
 }
 
 // ============================================================
@@ -8146,6 +8169,7 @@ function presentWorld(dt) {
     w.ring.position.set(w.x, 0.06, w.z);
     w.ring.visible = selectedUnits.has(w);
     setBar(w.workBar, (w.mineT || 0) / effMineTime(), w.x, barY(w.vis), w.z, w.job === 'mine');
+    updateCarryVis(w, P.carry.workerLoad, P.worker.radius, dt);
   }
   for (const g of guards) {
     const lunge = g.swing > 0 ? Math.sin((0.22 - g.swing) / 0.22 * Math.PI) * 0.3 : 0;
