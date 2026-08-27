@@ -141,7 +141,9 @@ const P = {
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
   bomber: { radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
-            blastRadius: 2.55, fuse: 0.9 },
+            blastRadius: 2.55, fuse: 0.9,
+            // 상시 보충 (D121) — 이 주기마다 한 마리씩, maxLive까지
+            every: 22, maxLive: 3, fromStage: 5 },
   // 보스 "톰" — 10스테이지에 쳐들어온다 (D83). 위협 레벨 스케일링에서 제외된
   // 고정 스탯으로 승부한다 (typeMaxHp·건물 dps 가산 둘 다 boss는 예외 처리).
   // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
@@ -3373,6 +3375,7 @@ function updateTower(b, dt) {
 
 // 자폭묘 폭발 — 벽을 부수는 유일한 수단. 자기도 죽는다.
 function detonate(e) {
+  sfx('boom');
   const R = P.bomber.blastRadius;
   spawnBuildFx(e.x, e.z);
   spawnBuildFx(e.x, e.z);
@@ -3419,6 +3422,7 @@ function detonate(e) {
 // 적 피해 → 처치. 처치하면 치즈를 준다.
 // by = 처치 보상을 받을 사람 (D92-2단계). 예전엔 누가 잡든 P1에게 갔다.
 function damageEnemy(e, dmg, by = player) {
+  if (by && by.local) sfx('hit');  // 내 화력이 들어갈 때만 (D122)
   e.hp -= dmg;
   e.hitFlash = 0.15;
   if (e.hp > 0) return;
@@ -5119,7 +5123,9 @@ function updateEnemy(enemy, dt) {
 // 입력
 // ============================================================
 const keys = new Set();
+window.addEventListener('pointerdown', wakeAudio);
 window.addEventListener('keydown', (e) => {
+  wakeAudio();     // 브라우저는 사용자 입력 전에는 오디오를 안 열어 준다 (D122)
   // ---- 채팅이 열려 있으면 **게임 키를 전부 막는다** (D120) ----
   // 이게 이 기능의 전부다. 여기서 안 막으면 "wall"을 치는 동안 벽이 지어지고
   // 햄스터가 걸어간다. keydown 핸들러 맨 앞이라 아래 어떤 처리에도 안 닿는다.
@@ -6260,6 +6266,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.final, 'duration', 30, 600, 10).name('공세 버티는 시간(초)');
   f.add(P.final, 'bomberOneShot', 0, 1, 1).name('공세 자폭묘 한 방에 벽 관통');
   f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
+  f.add(P.sfx, 'volume', 0, 1, 0.05).name('★ 효과음 크기 (0=끔)');
 
   f.add(P.carry, 'playerLoad', 1, 60, 1).name('한 짐 — 나');
   f.add(P.carry, 'workerLoad', 1, 60, 1).name('한 짐 — 일꾼');
@@ -6729,7 +6736,8 @@ const flashEl = document.getElementById('flash');
 let helpOpen = false;
 const HELP_FULL = [
   '── 조작 ──',
-  'WASD 이동 · Shift 앞구르기(무적, 기운 소모) · C 카메라 · P 일시정지 · R 재시작 · ESC 메뉴',
+  'WASD 이동 · Shift 앞구르기(무적, 기운 소모) · C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
+  'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/업그레이드 · Q/Z 건네주기 · 0 도발',
   '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
   '',
@@ -7062,6 +7070,7 @@ function restart() {
 //   구르기 회피(D77) · 화면 흔들림 · hurtT(재생 지연) 갱신.
 // 2P에서는 그게 곧 "P2는 구르기로 못 피한다"가 되므로 하나로 합쳤다.
 function hurtHamster(who, dmg) {
+  if (who.local) sfx('hurt');      // 맞는 소리는 **내가 맞았을 때만** (D122)
   if (!who.active) return;   // 빈 슬롯은 무시
   if (who.grace > 0 || who.stunned) return;
   // 구르는 중이면 **회피** (D77) — 예비동작이 끝나기 전에 굴러야 한다.
@@ -7079,6 +7088,7 @@ function hurtHamster(who, dmg) {
 //  모두 기절하면 전멸 = 게임 오버. 동료가 없으면 한 번 잡히면 바로 전멸.
 function caught(who) {
   caughtCount++;
+  if (who.local) sfx('caught');
   cancelBuild(true, who);   // 각자의 채널링만 취소한다 (D92-1e)
   spawnBuildFx(who.x, who.z); // 잡힌 자리에서 펑
   who.x = ENEMY_SPAWN.x;
@@ -7391,6 +7401,84 @@ const netMsgEl = document.getElementById('m-netmsg');
 // 이제 **몇 명이 할지 고르기 전에는 시뮬이 시작되지 않는다.**
 const startEl = document.getElementById('start');
 let started = false;
+
+// ============================================================
+// 소리 (D122)
+//  에셋을 안 쓰고 **WebAudio로 직접 만든다** — 파일이 없으니 로딩 실패도,
+//  저작권도, 용량도 없다. 이 게임의 소리는 넷뿐이라 합성으로 충분하다.
+//  브라우저는 **사용자 입력이 있어야** 오디오를 열어 주므로 첫 키/클릭에 깨운다.
+// ============================================================
+let actx = null;
+function audio() {
+  if (actx) return actx;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  actx = new AC();
+  return actx;
+}
+function wakeAudio() {
+  const a = audio();
+  if (a && a.state === 'suspended') a.resume();
+}
+
+// 소리 하나 = 짧은 오실레이터 + 감쇠. type/주파수/길이만 바꿔 네 가지를 만든다.
+//  vol은 P.sfx.volume에 곱해지고, 0이면 오디오를 아예 안 건드린다.
+function beep({ freq = 440, to = null, type = 'sine', dur = 0.12, vol = 0.5, delay = 0 }) {
+  if (P.sfx.volume <= 0) return;
+  const a = audio();
+  if (!a || a.state !== 'running') return;
+  const t0 = a.currentTime + delay;
+  const osc = a.createOscillator();
+  const gain = a.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (to !== null) osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
+  const v = Math.max(0.0001, vol * P.sfx.volume);
+  gain.gain.setValueAtTime(v, t0);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(gain).connect(a.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+// 폭발·타격의 '탁' 하는 성분 — 짧은 화이트 노이즈
+function noise({ dur = 0.2, vol = 0.4, lo = 300 }) {
+  if (P.sfx.volume <= 0) return;
+  const a = audio();
+  if (!a || a.state !== 'running') return;
+  const n = Math.floor(a.sampleRate * dur);
+  const buf = a.createBuffer(1, n, a.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let k = 0; k < n; k++) d[k] = (Math.random() * 2 - 1) * (1 - k / n);
+  const src = a.createBufferSource();
+  src.buffer = buf;
+  const f = a.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = lo;
+  const g2 = a.createGain();
+  g2.gain.value = Math.max(0.0001, vol * P.sfx.volume);
+  src.connect(f).connect(g2).connect(a.destination);
+  src.start();
+}
+
+// 같은 소리가 한 프레임에 몰리면 귀가 아프다 — 종류마다 최소 간격을 둔다
+const sfxLast = {};
+function sfx(kind) {
+  const now = performance.now();
+  const gap = P.sfx.minGap * 1000;
+  if (sfxLast[kind] && now - sfxLast[kind] < gap) return;
+  sfxLast[kind] = now;
+  switch (kind) {
+    case 'hurt':  beep({ freq: 320, to: 90, type: 'square', dur: 0.16, vol: 0.5 }); break;   // 내가 맞음
+    case 'hit':   beep({ freq: 180, to: 70, type: 'triangle', dur: 0.09, vol: 0.35 });       // 적을 때림
+                  noise({ dur: 0.06, vol: 0.2, lo: 900 }); break;
+    case 'tower': beep({ freq: 760, to: 380, type: 'sine', dur: 0.09, vol: 0.28 }); break;   // 포탑 투척
+    case 'boom':  noise({ dur: 0.42, vol: 0.7, lo: 380 });                                    // 폭발
+                  beep({ freq: 120, to: 38, type: 'sawtooth', dur: 0.38, vol: 0.45 }); break;
+    case 'caught':beep({ freq: 220, to: 60, type: 'sawtooth', dur: 0.5, vol: 0.55 }); break;
+    default: break;
+  }
+}
 
 // ============================================================
 // 채팅 (D120)
@@ -9014,6 +9102,7 @@ function tick(dt) {
     if (enemyActive()) {
       ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
       updateSpawns();   // 스테이지 외 추가 증원 (옵션)
+      updateBomberTrickle(dt);   // 자폭묘 상시 보충 (D121)
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
@@ -9212,7 +9301,7 @@ window.__game = {
   startFinalAssault, beginFinalPrep,
   set stageT(v) { stageT = v; },
   advanceStage, stageDur, hasWorkshop, depotCount, maxWorkshopTier, TOWER_TIERS, spawnBoss,
-  effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, effPartsEach, SELF_BUILD,
+  effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, partsCap, rollParts, SELF_BUILD,
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   applyBuildingTierVisual, cheeseCost, slotLockReason, BUILD_SLOTS,
   get removeMode() { return removeMode; }, set removeMode(v) { removeMode = v; },
