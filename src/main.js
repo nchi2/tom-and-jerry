@@ -467,8 +467,14 @@ const guardsOf = (owner) => guards.filter((g) => g.owner === owner);
 // 공방이 지금 실존하는 최고 tier (0 = 공방 없음). 여러 채 지어도 최고 하나만 있으면
 // 통과 — 그 공방이 부서져도 다른 공방이 남아 있으면 해금이 유지된다.
 // "실존해야 생산 가능"이 확정 규칙이라(D82), 부서지면 이 값이 즉시 내려간다.
-const maxWorkshopTier = () =>
-  buildings.reduce((m, b) => (b.kind === 'workshop' && b.tier > m ? b.tier : m), 0);
+// **소유자별로 센다** (D121). 예전엔 owner를 안 봐서, 동료가 공방을 Lv.2로 올리면
+// 내 기술까지 같이 열렸다 — 살림은 각자라는 D43과 정면으로 어긋난다.
+// owner를 안 주면 화면을 보는 사람 기준 (핫바·HUD 용도).
+const maxWorkshopTier = (owner) => {
+  const o = owner === undefined ? localPlayer().owner : owner;
+  return buildings.reduce(
+    (m, b) => (b.kind === 'workshop' && b.owner === o && b.tier > m ? b.tier : m), 0);
+};
 
 // 방어병 병종 (D51) — 값은 전부 P.guard에서 읽는다 (튜닝 슬라이더와 세팅 스냅샷 때문).
 // reqTier: 이 병종을 뽑으려면 공방이 최소 이 등급이어야 한다 (D82 기술 트리).
@@ -2328,7 +2334,7 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
   if (i < 0 || j < 0 || i + 1 >= CELLS || j + 1 >= CELLS) return '맵 밖입니다';
   // 경비탑은 공방(어떤 tier든)이 실존해야 새로 지을 수 있다 (D82 기술 트리).
   // 실존 검사라 공방이 부서지면 이 자리에서 즉시 다시 막힌다.
-  if (kind === 'tower' && maxWorkshopTier() < 1) return '공방이 필요합니다';
+  if (kind === 'tower' && maxWorkshopTier(p.owner) < 1) return '공방이 필요합니다';
   const cells = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]];
   for (const [ci, cj] of cells) {
     if (obstacles.has(cellKey(ci, cj))) return '자리가 막혀 있습니다 (2x2 공터 필요)';
@@ -2404,7 +2410,10 @@ function damageBuilding(b, dmg) {
   if (b.hp <= 0) destroyBuilding(b, true);
 }
 
-const hasWorkshop = () => buildings.some((b) => b.kind === 'workshop');
+const hasWorkshop = (owner) => {
+  const o = owner === undefined ? localPlayer().owner : owner;
+  return buildings.some((b) => b.kind === 'workshop' && b.owner === o);
+};
 const depotCount = () => buildings.filter((b) => b.kind === 'depot').length;
 
 // 창고는 이제 "치즈를 부리는 곳"이다 (원작 넥서스).
@@ -2907,7 +2916,7 @@ function nearestUpgradable(x, z, range) {
   return best;
 }
 
-const towerUpgradeLocked = (b) => b.kind === 'tower' && maxWorkshopTier() < (b.tier || 1) + 1;
+const towerUpgradeLocked = (b) => b.kind === 'tower' && maxWorkshopTier(b.owner) < (b.tier || 1) + 1;
 
 // ---- F 키 하나로 두 가지 (D90) ----
 // **수리가 업그레이드보다 우선이다** — 금 간 벽은 시간이 급하고 업그레이드는 안 급하다.
@@ -3612,7 +3621,7 @@ function spawnSpotNear(x, z, r, n = 0) {
 function placeGuard(type = 'archer', p = player) {
   const T = GUARD_TYPES[type];
   // 기술 트리 게이트 (D82) — 공방이 그 등급 이상 실존해야 뽑을 수 있다
-  if (maxWorkshopTier() < T.reqTier) {
+  if (maxWorkshopTier(p.owner) < T.reqTier) {
     flashFor(p, `${T.label}은 공방 Lv.${T.reqTier}이 필요합니다`, '#e05050');
     return null;
   }
@@ -3670,6 +3679,7 @@ function clearGuards(owner) {
 // scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
 // owner = 이 투사체를 쏜 쪽. 처치 보상이 그 사람에게 간다 (D92-2단계)
 function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p') {
+  sfx('tower');                    // 던지는 소리 — 클라의 껍데기에서도 난다 (D122)
   // 참가자 화면에서는 **경비탑이 아무것도 안 하는 것처럼 보였다** (D101).
   // 시뮬은 호스트만 도니까 updateTower가 클라에서 안 돌고, 그래서 포탑 머리도
   // 안 돌고 투사체도 안 날았다. 피해만 조용히 들어가서 "포탑이 공격을 안 한다"가 된다.
@@ -7164,7 +7174,7 @@ function buyUpgrade(k, p = player) {
 // 부품은 밖에서만 얻는 위험 화폐인데(D22), 후반에는 살 게 없어서 그냥 쌓인다.
 // 공방을 끝까지 올린 사람에게만 출구를 하나 열어 준다 — **환전도 공방 옆에서**.
 // 그래야 "밖에서 주워 와 공방으로 돌아간다"는 왕복이 끝까지 유지된다.
-const canSellParts = (p) => maxWorkshopTier() >= P.upgrade.sellTier;
+const canSellParts = (p) => maxWorkshopTier(p.owner) >= P.upgrade.sellTier;
 
 // 지금까지 산 개수에 따라 다음 한 개의 값 (D107)
 const partsBuyCost = (p) => P.upgrade.buyBase + P.upgrade.buyStep * (p.partsBought || 0);
@@ -7191,8 +7201,10 @@ function sellParts(p = player) {
 }
 
 // 공방 옆(4m)에 서 있어야 개조할 수 있다 — 공방을 지키고 드나들 이유
+// 여기도 **내 공방**이어야 한다 (D121) — 동료 공방 옆에서 내 개조를 사면
+// 기술을 각자 올리는 의미가 없다
 function nearWorkshop(p = player) {
-  return buildings.some((b) => b.kind === 'workshop' &&
+  return buildings.some((b) => b.kind === 'workshop' && b.owner === p.owner &&
     Math.hypot(b.cx - p.x, b.cz - p.z) < 4.0);
 }
 
@@ -7316,7 +7328,7 @@ document.getElementById('m-quit').onclick = () => {
   ghost.visible = false;
   overlayEl.querySelector('h1').textContent = '게임 종료';
   document.getElementById('overlay-sub').textContent =
-    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — R 키로 다시 시작`;
+    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — ESC → 다시 시작`;
   overlayEl.classList.remove('hidden');
 };
 
@@ -8375,8 +8387,8 @@ function applySnapshot(m) {
     if (done) {
       overlayEl.querySelector('h1').textContent = won ? '톰을 막아냈다!' : '모두 잡혔다!';
       document.getElementById('overlay-sub').textContent = won
-        ? `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 — R 키로 처음부터`
-        : `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — R 키로 다시 시작`;
+        ? `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 — ESC → 다시 시작`
+        : `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — ESC → 다시 시작`;
     }
   }
 
