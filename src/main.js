@@ -303,6 +303,10 @@ const P = {
     //  기준: 0.003 × 272㎡(13x13 링) ≈ 0.82/s. 일꾼 3명 채굴이 3.2/s이므로 그 1/4 수준.
     //  0으로 두면 이 시스템이 꺼진다.
     terrIncome: 0.003,
+    // **아무것도 안 해도** 들어오는 최소 수입 (D118). 3초에 1개.
+    // 초반에 아무것도 못 하고 굶는 구간을 없애려는 것이지 벌이 수단은 아니다 —
+    // 채굴(일꾼 3명 ≈ 3.2/s)의 1% 수준이라 이걸로는 아무것도 못 짓는다.
+    idleIncome: 1 / 3,
   },
   // 부품 — 밖에 흩어진 픽업으로만 얻는다. 업그레이드 전용 화폐.
   // **후반 대응 수단이 여기 걸려 있다** (D87): 적은 스테이지마다 체력이 오르는데
@@ -5064,6 +5068,23 @@ function updateEnemy(enemy, dt) {
 // ============================================================
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
+  // ---- 채팅이 열려 있으면 **게임 키를 전부 막는다** (D120) ----
+  // 이게 이 기능의 전부다. 여기서 안 막으면 "wall"을 치는 동안 벽이 지어지고
+  // 햄스터가 걸어간다. keydown 핸들러 맨 앞이라 아래 어떤 처리에도 안 닿는다.
+  if (chatOpen) {
+    if (e.code === 'Escape') { setChat(false); e.preventDefault(); return; }
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+      sendChat(chatInEl.value); setChat(false); e.preventDefault(); return;
+    }
+    // 입력줄이 비어 있을 때만 숫자키가 빠른말이 된다 (치는 중에 숫자를 못 쓰면 곤란하다)
+    if (!chatInEl.value) {
+      for (let k = 0; k < CHAT_QUICK.length; k++)
+        if (e.code === 'Digit' + (k + 1)) {
+          sendChat(CHAT_QUICK[k]); setChat(false); e.preventDefault(); return;
+        }
+    }
+    return;   // 나머지 타자는 input이 알아서 받는다
+  }
   if (e.repeat) return;
   // 시작 화면 위에서는 게임 단축키를 받지 않는다 (D93) — 코드 입력칸이 R·P·G를 먹히면 안 된다
   if (!started) return;
@@ -5111,6 +5132,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyG') setGui(!guiOpen);            // 튜닝 패널 (D91)
   if (e.code === 'F9') { netDevOn = !netDevOn; netDevEl.classList.toggle('on', netDevOn); renderNetDev(); }
   if (e.code === 'Backquote') setHud(!hudOn);         // 좌상단 개발 정보 (D91)
+  if (e.code === 'KeyM') { miniOn = !miniOn; flashMsg(miniOn ? '미니맵 켬' : '미니맵 끔', '#9aa3b2'); }
+  if (e.code === 'KeyT' && !edOn()) { setChat(true); e.preventDefault(); }
   // 숫자키 = **구매 모드(U)일 때만** 개조 구매, 아니면 건설 슬롯 선택.
   // 공방 옆에서 패널이 저절로 떠도(D88) 숫자키는 핫바를 계속 쓴다 —
   // 안 그러면 내 공방 옆에서 건물을 못 짓는다
@@ -7314,6 +7337,67 @@ const startEl = document.getElementById('start');
 let started = false;
 
 // ============================================================
+// 채팅 (D120)
+//  어려운 건 UI가 아니라 **키 캡처**다. 이 게임은 keydown을 전역으로 읽어
+//  1~8은 건설, WASD는 이동, E는 채굴이다. 입력줄을 열어 놓고 그냥 두면
+//  "wall"이라고 치는 순간 벽이 지어지고 햄스터가 걸어간다.
+//  → 열려 있는 동안 keydown 핸들러를 **맨 앞에서 통째로 막고**, keys도 비운다.
+//
+//  그리고 이 게임은 실시간 술래잡기다. 쫓기면서 문장을 치는 건 곧 죽는 것이라
+//  **T를 누르면 뜨는 1~4 빠른말**을 같이 뒀다. 실제로 쓰이는 건 이쪽일 것이다.
+// ============================================================
+const CHAT_QUICK = ['살려줘!', '이쪽으로!', '고마워!', '미끼 끌게'];
+const chatBarEl = document.getElementById('chatbar');
+const chatInEl = document.getElementById('chatin');
+const chatLogEl = document.getElementById('chatlog');
+let chatOpen = false;
+const chatLines = [];
+
+function setChat(on) {
+  chatOpen = on;
+  chatBarEl.classList.toggle('on', on);
+  if (on) {
+    keys.clear();          // 열자마자 걷던 걸 멈춘다 (안 지우면 계속 걸어간다)
+    chatInEl.value = '';
+    chatInEl.focus();
+  } else {
+    chatInEl.blur();
+  }
+}
+
+function pushChat(name, text, color) {
+  chatLines.push({ name, text, color, t: survival });
+  while (chatLines.length > P.chat.lines) chatLines.shift();
+  renderChat();
+}
+
+function renderChat() {
+  chatLogEl.innerHTML = chatLines.map((l) =>
+    `<div class="cline"><span class="who" style="color:${l.color}">${l.name}</span>${l.text}</div>`).join('');
+}
+
+// 오래된 줄은 조용히 사라진다 — 로그가 화면을 계속 덮고 있으면 안 된다
+function updateChat() {
+  if (!chatLines.length) return;
+  const before = chatLines.length;
+  while (chatLines.length && survival - chatLines[0].t > P.chat.hold) chatLines.shift();
+  if (chatLines.length !== before) renderChat();
+}
+
+const escapeChat = (t) => t.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+
+function sendChat(text) {
+  const t = escapeChat(String(text).trim()).slice(0, 90);
+  if (!t) return;
+  const me = localPlayer();
+  const name = me.name || '나';
+  const color = '#' + SLOT_FUR[me.slot].toString(16).padStart(6, '0');
+  pushChat(name, t, color);
+  // 접속 중일 때만 내보낸다. 호스트는 받은 걸 나머지에게 중계한다 (별 모양이라 직통이 없다)
+  if (net.connected) net.send({ k: 'CHAT', s: me.slot, t });
+}
+
+// ============================================================
 // 맵 에디터 (D112)
 //  여기서는 **벽을 짓지 않는다.** 자연 지형과 치즈 더미를 직접 놓는 자리다.
 //  숫자 1~9로 붓을 고르고 좌클릭으로 칠한다 (드래그로 이어 칠하기).
@@ -8100,6 +8184,15 @@ function onNetMessage(m, fromSlot) {
     case 'MSG':    flashMsg(m.t, m.c); break;
     case 'SET':    applySettings(m.s); break;
     case 'BEGIN':  if (!started) beginMatch(); break;
+    case 'CHAT': {
+      const who = players[m.s] || from;
+      pushChat(who.name || '동료', escapeChat(m.t).slice(0, 90),
+               '#' + SLOT_FUR[who.slot].toString(16).padStart(6, '0'));
+      // 호스트만 중계한다 — 3~4인에서는 서로 직통이 없어서(D97) 여기서 안 뿌리면
+      // 보낸 사람과 호스트 둘만 보게 된다
+      if (net.role === 'host') for (const sl of net.slots()) if (sl !== fromSlot && sl !== 0) net.sendTo(sl, m);
+      break;
+    }
   }
 }
 
@@ -8824,6 +8917,7 @@ function tick(dt) {
     if (!tutOn()) updateStageTimer(dt);   // 연습판은 스테이지가 안 넘어간다 (D111)
     updateFinalPhase(dt);   // 최후의 공세 (D108)
     updateTutorial(dt);
+    updateChat();
     // 나르기는 사람이 모는 햄스터 전부가 한다 (D92-2단계).
     // 솔로에서는 player 하나라 예전과 같다.
     for (const p of players)
@@ -8846,6 +8940,8 @@ function tick(dt) {
     // 그래서 **수입을 벽 기여도로 나눈다** (D95). 균등 분할이던 D92의 타협을 바꾼 것 —
     // 살림이 각자라면 수입도 각자여야 하고, 균등이면 한 명이 안 쌓아도 같이 번다.
     // 혼자면 지분이 1이라 솔로 수입은 그대로다.
+    // 최소 수입 — 조건 없이 (D118)
+    if (P.res.idleIncome > 0) for (const q of humans()) q.cheese += P.res.idleIncome * dt;
     if (P.res.terrIncome > 0) {
       const share = humans();
       const total = territoryArea * P.res.terrIncome * dt;
