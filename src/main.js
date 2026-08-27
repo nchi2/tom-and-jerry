@@ -333,6 +333,13 @@ const P = {
   // 사람도 고양이도 같이 느려지므로 **상대 속도 관계는 그대로**고 템포만 내려간다.
   // 술래잡기의 판단 시간을 벌어주는 값이라, 손맛에 가장 크게 영향을 준다.
   tempo: { moveScale: 0.75 },
+  // 최후의 공세 (D108) — 톰을 둘 다 잡으면 시작하는 마지막 국면.
+  //  prep    준비 시간은 **무제한**이다. 이 게임에서 처음으로 "쫓기지 않고 쌓는" 시간 —
+  //          지금까지 모든 벽은 도망치면서 세웠다. 시작은 플레이어가 직접 누른다.
+  //  boost   검게 물든 고양이의 능력치 배율. **속도는 안 올린다** — threat.speedGain을
+  //          0으로 둔 이유(D-속도 상한)와 같다. 적이 더 빨라지면 술래잡기가 아니게 된다.
+  //  wave    공세 규모 = 평소 구성 × 이 배율
+  final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1 },
   // 난이도 배율 (D104). "너무 어렵다"는 평에 대응하는 다이얼 두 개.
   // 종류별 hp·STAGES 표를 하나하나 고치는 대신 **지출 지점에서 곱한다** —
   // P.res.costScale과 같은 방식이라 원래 값이 소스에 그대로 남는다.
@@ -1251,7 +1258,7 @@ function makeCat(type = 'chaser') {
   const furB = MAT(pal.b);
   const dark = MAT(0x241a1e, { roughness: 0.5 });
   const eye = MAT(pal.eye, { emissive: new THREE.Color(pal.glow), emissiveIntensity: 0.9 });
-  return buildCreature([
+  const vis = buildCreature([
     sphere(0.94, furA, 0, 0.8, 0.34, 1, 0.78, 1.05),    // 몸통 (뒤쪽으로 물림)
     sphere(0.62, furB, 0, 0.6, -0.2, 1, 0.78, 0.85),    // 가슴
     sphere(0.66, furA, 0, 1.24, -0.95),                 // 머리 (몸통 밖으로 빼냄)
@@ -1269,6 +1276,23 @@ function makeCat(type = 'chaser') {
     sphere(0.15, furA, 0, 1.4, 1.56, 0.7, 0.7, 0.9),    // 꼬리 2
     sphere(0.11, furB, 0, 1.68, 1.66, 0.7, 0.7, 0.7),   // 꼬리 끝
   ]);
+  // 최후의 공세용 — 몸은 검게, 눈은 **화난 빨강**으로 (D108).
+  // 눈 재질을 따로 들고 있어야 몸만 칠하고 눈은 태울 수 있다.
+  vis.eyeMats = [eye];
+  vis.setDark = (on) => {
+    for (const m of vis.mats) {
+      if (vis.eyeMats.includes(m)) {
+        m.color.setHex(on ? 0xff2020 : pal.eye);
+        m.emissive.setHex(on ? 0xff0000 : pal.glow);
+        m.emissiveIntensity = on ? 1.6 : 0.9;
+      } else if (m !== eye) {
+        m.color.setHex(on ? 0x0d0b0f : (m.userData.baseHex !== undefined ? m.userData.baseHex : m.color.getHex()));
+      }
+    }
+  };
+  // 원래 색을 기억해 둔다 (되돌릴 때 필요 — 재시작하면 공세가 풀린다)
+  for (const m of vis.mats) if (m.userData.baseHex === undefined) m.userData.baseHex = m.color.getHex();
+  return vis;
 }
 
 // 나르는 햄스터 비주얼 (동료·일꾼 공용). GLB가 로드되면 교체된다.
@@ -1347,6 +1371,18 @@ function swapVis(vis, template, tint, tintAmt = 0.22) {
   vis.mats = mats;
   vis.setOpacity = (o) => { for (const m of mats) { m.transparent = o < 1; m.opacity = o; } };
   vis.setEmissive = (hex, i) => { for (const m of mats) { m.emissive.setHex(hex); m.emissiveIntensity = i; } };
+  // GLB로 갈아끼우면 절차적 모델의 setDark가 통째로 사라진다 (D108) —
+  // 여기서 다시 달아 준다. 모델에는 눈 재질이 따로 없으므로 **전체를 검게 칠하고
+  // 붉은 발광**으로 "화난" 느낌을 낸다.
+  for (const m of mats) if (m.userData.baseHex === undefined) m.userData.baseHex = m.color.getHex();
+  vis.setDark = (on) => {
+    for (const m of mats) {
+      m.color.setHex(on ? 0x141014 : m.userData.baseHex);
+      m.emissive.setHex(on ? 0x8c0000 : 0x000000);
+      m.emissiveIntensity = on ? 0.55 : 0;
+    }
+  };
+  if (vis.darkOn) vis.setDark(true);   // 공세 중에 로딩이 끝난 놈도 검게
   if (typeof measureTop === 'function') measureTop(vis);
 }
 
@@ -1470,13 +1506,17 @@ const typeP = (e) => P[e.type];
 const enemyR = (e) => typeP(e).radius;
 const enemySpeedOf = (e) =>
   Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap) * moveScale();
-const enemyDpsOf = (e) => (typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain;
+const enemyDpsOf = (e) => ((typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain) * finalBoost();
+const enemyDmgOf = (e) => typeP(e).dmg * (e.type === 'boss' ? 1 : finalBoost());
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 // 보스는 위협 레벨 스케일링에서 제외한다 (D83) — 등장 시점 고정 스탯으로 승부해야
 // 생존시간에 안 묻힌다. 나머지 3종은 그대로 위협 레벨을 받는다.
+// 최후의 공세에서는 고양이가 검게 물들고 **30% 강해진다** (D108).
+// 속도만 빼고 곱한다 — 더 빨라지면 술래잡기가 아니게 된다 (threat.speedGain=0과 같은 이유).
+const finalBoost = () => (enraged() ? P.final.boost : 1);
 const typeMaxHp = (type) => (type === 'boss'
   ? P.boss.hp                                       // 톰은 고정 스탯 (D83) — 배율도 안 받는다
-  : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp);
+  : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp * finalBoost());
 const enemyMaxHp = (e) => typeMaxHp(e.type);
 
 // 멀티에서 명령·스냅샷이 엔티티를 가리키려면 **이름이 필요하다** (D92-0단계).
@@ -2990,8 +3030,10 @@ function detonate(e) {
       const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
       if (!ob || ob.bedrock || ob.bldgRef) continue;
       if (distCellToPoint(ob.i, ob.j, e.x, e.z) > R) continue;
-      // 벽을 없애는 대신 금을 낸다 (D90) — crackMax를 넘긴 것만 무너진다
-      if (crackWall(ob)) broke++; else cracked++;
+      // 벽을 없애는 대신 금을 낸다 (D90) — crackMax를 넘긴 것만 무너진다.
+      // **최후의 공세에서는 한 방에 뚫는다** (D108) — 금을 crackMax+1만큼 한 번에 낸다.
+      const n = (enraged() && P.final.bomberOneShot) ? P.wall.crackMax + 1 : 1;
+      if (crackWall(ob, n)) broke++; else cracked++;
     }
   // 반경 안의 건물·햄스터도 피해
   for (const b of [...buildings])
@@ -3038,11 +3080,11 @@ function damageEnemy(e, dmg, by = player) {
   // 보스 처치 = 승리 (D83) — "버티기"가 아니라 "실제로 죽이기"가 승리 조건이 된다.
   // 웨이브 보충·탐욕 서지 대상도 아니다 — 1회성 결전이라 여기서 끝낸다.
   if (e.type === 'boss') {
-    victory = true;
-    overlayEl.querySelector('h1').textContent = '톰을 막아냈다!';
-    document.getElementById('overlay-sub').textContent =
-      `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
-    overlayEl.classList.remove('hidden');
+    // 톰이 둘이므로(D107) **마지막 한 마리**가 죽어야 넘어간다.
+    // 안 그러면 첫 톰을 잡는 순간 판이 끝나 버린다.
+    const left = enemies.filter((q) => q.type === 'boss').length;
+    if (left > 0) { flashMsg(`톰 하나를 쓰러뜨렸다 — ${left}마리 남았다`, '#ffb347'); return; }
+    beginFinalPrep();
     return;
   }
   flashMsg(`${TYPE_INFO[e.type].label} 처치! 치즈 +${reward}`, '#bfaaff');
@@ -4143,6 +4185,10 @@ let growthSpawned = 0;
 let stage = 1;        // 1..10
 let stageT = 0;       // 이번 스테이지 경과 시간
 let victory = false;
+// 최후의 공세 (D108). 'none' → 'prep'(준비, 무제한) → 'assault'(공세) → victory
+let finalPhase = 'none';
+let finalT = 0;             // 공세 경과 시간
+const enraged = () => finalPhase === 'assault';
 
 const stageDur = () => STAGES[Math.min(stage, STAGES.length) - 1].time;
 
@@ -4235,6 +4281,62 @@ function separateBosses(dt) {
       A.x -= dx * push; A.z -= dz * push;
       B.x += dx * push; B.z += dz * push;
     }
+}
+
+// ---- 최후의 공세 (D108) ----
+// 톰을 둘 다 잡으면 곧장 이기는 게 아니라 **준비 국면**으로 들어간다.
+// 이 게임에서 처음으로 쫓기지 않는 시간이다 — 지금까지 모든 벽은 도망치면서 세웠다.
+// 여기서 쌓아 둔 치즈·부품을 태워 방어선을 짓고, 준비가 끝나면 직접 시작을 누른다.
+function beginFinalPrep() {
+  if (!P.final.enabled) { winGame('톰을 막아냈다!'); return; }
+  finalPhase = 'prep';
+  finalT = 0;
+  // 남은 잔챙이는 정리한다 — "준비 시간"이라고 해 놓고 쫓기면 준비가 아니다
+  for (const e of [...enemies]) { scene.remove(e.vis.group); disposeBar(e.bar);
+    if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); } }
+  enemies.length = 0;
+  refreshReach();
+  flashMsg('톰을 모두 쓰러뜨렸다 — 마지막이 온다. 준비되면 [F]', '#ffd24a');
+}
+
+// 플레이어가 직접 연다. 준비 시간에 제한이 없으므로 이 입력이 유일한 방아쇠다.
+function startFinalAssault() {
+  if (finalPhase !== 'prep') return;
+  finalPhase = 'assault';
+  finalT = 0;
+  // 평소 구성의 wave배. 검게 물든 채로 몰려온다
+  const want = cumulativeComposition();
+  for (const [ty, n] of Object.entries(want)) {
+    const total = Math.round(n * P.final.wave);
+    for (let k = 0; k < total; k++) enemies.push(makeEnemy(ty, enemies.length));
+  }
+  for (const e of enemies) darkenEnemy(e);
+  refreshReach();
+  flashMsg(`최후의 공세! ${P.final.duration}초를 버텨라`, '#ff3b3b');
+}
+
+function darkenEnemy(e) {
+  e.vis.darkOn = true;
+  if (e.vis.setDark) e.vis.setDark(true);
+  e.hp = typeMaxHp(e.type);   // 강화된 최대치로 다시 채운다
+}
+
+function updateFinalPhase(dt) {
+  if (finalPhase === 'assault') {
+    finalT += dt;
+    // 공세 중에 새로 태어나는 놈도 검게 (탐욕 서지 등)
+    for (const e of enemies) if (!e.vis.darkOn) darkenEnemy(e);
+    if (finalT >= P.final.duration) winGame('최후의 공세를 막아냈다!');
+  }
+}
+
+function winGame(title) {
+  victory = true;
+  finalPhase = 'won';
+  overlayEl.querySelector('h1').textContent = title;
+  document.getElementById('overlay-sub').textContent =
+    `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
+  overlayEl.classList.remove('hidden');
 }
 
 function advanceStage() {
@@ -4445,7 +4547,8 @@ function updateEnemy(enemy, dt) {
   if (bldgTarget) {
     // 보스는 위협 레벨 가산에서 제외 (D83) — 고정 스탯
     const dpsGain = enemy.type === 'boss' ? 0 : threatLevel() * P.threat.dpsGain;
-    damageBuilding(bldgTarget, (typeP(enemy).bldgDps + dpsGain) * dt);
+    damageBuilding(bldgTarget,
+      (typeP(enemy).bldgDps + dpsGain) * (enemy.type === 'boss' ? 1 : finalBoost()) * dt);
     enemy.attackTarget = null;
   }
   // 벽은 무적이라 때려서 부술 수 없다 — 자폭묘의 폭발만이 벽을 없앤다
@@ -4495,7 +4598,7 @@ function updateEnemy(enemy, dt) {
     if (enemy.atkT <= 0) {
       enemy.windup = (enemy.windup || 0) + dt;
       if (enemy.windup >= P.enemy.attackWindup) {
-        hurtHamster(hitTarget, typeP(enemy).dmg);
+        hurtHamster(hitTarget, enemyDmgOf(enemy));
         enemy.windup = 0;
         enemy.atkT = P.enemy.attackCooldown;
         enemy.lungeT = 0.2;
@@ -4629,7 +4732,8 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE' && alive) issueCommand({ t: 'mine' });
   // F — 공방·경비탑 제자리 업그레이드 (R은 이미 재시작에 쓰인다)
-  if (e.code === 'KeyF' && alive) issueCommand({ t: 'f' });
+  // 준비 국면에서는 F가 **최후의 공세 시작**이다 (아래 참조) — 겹치지 않게 여기서 뺀다
+  if (e.code === 'KeyF' && alive && finalPhase !== 'prep') issueCommand({ t: 'f' });
   // 0번 = 도발 (D96). 이 게임의 유일한 '공격'이다
   if ((e.code === 'Digit0' || e.code === 'Numpad0') && alive) issueCommand({ t: 'taunt' });
   // 건네주기 — 옆에 붙어야 넘어간다 (D96)
@@ -4672,6 +4776,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') issueCommand({ t: 'restart' });
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
   if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
+  // 준비 국면에서만 F가 "최후의 공세 시작"이 된다 (평소 F는 건물 업그레이드)
+  if (e.code === 'KeyF' && finalPhase === 'prep') issueCommand({ t: 'final' });
 
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -5333,6 +5439,7 @@ function applyCommand(p, c) {
     case 'remove': removeAt(p, c.i, c.j); break;
     case 'upg':    buyUpgrade(c.k, p); break;
     case 'sell':   sellParts(p); break;
+    case 'final':  startFinalAssault(); break;
     case 'buyprt': buyParts(p); break;
     case 'cancel':
       if (c.lvl === 'buildJob') cancelBuild(true, p);
@@ -5683,6 +5790,11 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.balance, 'enemyCount', 0.2, 2, 0.05).name('★ 고양이 마릿수 배율')
     .onChange(() => { if (netAuthoring()) topUpToCurve(); });
   f.add(P.balance, 'enemyHp', 0.2, 2, 0.05).name('★ 고양이 체력 배율');
+  f.add(P.final, 'enabled', 0, 1, 1).name('★ 최후의 공세 (0=톰 잡으면 바로 승리)');
+  f.add(P.final, 'boost', 1, 3, 0.05).name('공세 고양이 강화 배율');
+  f.add(P.final, 'wave', 0.5, 5, 0.1).name('공세 물량 배율');
+  f.add(P.final, 'duration', 30, 600, 10).name('공세 버티는 시간(초)');
+  f.add(P.final, 'bomberOneShot', 0, 1, 1).name('공세 자폭묘 한 방에 벽 관통');
   f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
 
   f.add(P.carry, 'playerLoad', 1, 60, 1).name('한 짐 — 나');
@@ -6410,6 +6522,7 @@ function restart() {
   stage = 1;
   stageT = 0;
   victory = false;
+  finalPhase = 'none'; finalT = 0;
   growthSpawned = 0;
   // 두 햄스터를 같은 초기 상태로 (D92-1c)
   for (const p of players) { p.hp = P.player.hp; p.hurtT = 99; p.grace = 0; p.stunned = false; p.wipeT = 0; }
@@ -7636,10 +7749,29 @@ function enemyModeSummary() {
 // 톰 체력바 (D107) — 12000짜리를 머리 위 작은 막대로만 보여 주면
 // "얼마나 깎았는지"가 안 읽힌다. 등장한 동안만 상단에 크게 띄운다.
 const bossBarEl = document.getElementById('bossbar');
+// 준비/공세 국면은 **화면에 크게** 나와야 한다 (D108) — 준비 시간이 무제한이라
+// "지금 뭘 기다리는 중인지"를 모르면 그냥 멈춘 게임처럼 보인다. 보스바 자리를 같이 쓴다.
+function finalBanner() {
+  if (finalPhase === 'prep')
+    return `<div class="row"><div class="lbl"><span>준비 국면 — 방어선을 세우세요</span>` +
+      `<span>[F] 최후의 공세 시작</span></div>` +
+      `<div class="track"><div class="fill" style="width:100%;background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
+  if (finalPhase === 'assault') {
+    const left = Math.max(0, P.final.duration - finalT);
+    const f = 1 - left / Math.max(P.final.duration, 0.01);
+    return `<div class="row"><div class="lbl"><span>최후의 공세</span>` +
+      `<span>${left.toFixed(0)}초 남음</span></div>` +
+      `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%"></div></div></div>`;
+  }
+  return '';
+}
+
 function updateBossBar() {
   const list = enemies.filter((e) => e.type === 'boss');
-  if (!list.length) { bossBarEl.style.display = 'none'; return; }
+  const banner = finalBanner();
+  if (!list.length && !banner) { bossBarEl.style.display = 'none'; return; }
   bossBarEl.style.display = 'block';
+  if (!list.length) { bossBarEl.innerHTML = banner; return; }
   const max = typeMaxHp('boss');
   bossBarEl.innerHTML = list.map((b, k) => {
     const f = Math.max(0, Math.min(1, b.hp / max));
@@ -7647,7 +7779,7 @@ function updateBossBar() {
     return `<div class="row"><div class="lbl"><span>${name}</span>` +
       `<span>${Math.max(0, Math.round(b.hp))} / ${max}</span></div>` +
       `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%"></div></div></div>`;
-  }).join('');
+  }).join('') + banner;
 }
 
 function updateHUD() {
@@ -7903,6 +8035,7 @@ function tick(dt) {
     }
     if (camShake > 0) camShake -= dt * 2;
     updateStageTimer(dt);
+    updateFinalPhase(dt);   // 최후의 공세 (D108)
     // 나르기는 사람이 모는 햄스터 전부가 한다 (D92-2단계).
     // 솔로에서는 player 하나라 예전과 같다.
     for (const p of players)
@@ -8059,6 +8192,9 @@ window.__game = {
   get stage() { return stage; },
   get stageT() { return stageT; },
   get victory() { return victory; },
+  get finalPhase() { return finalPhase; },
+  get finalT() { return finalT; },
+  startFinalAssault, beginFinalPrep,
   set stageT(v) { stageT = v; },
   advanceStage, stageDur, hasWorkshop, depotCount, maxWorkshopTier, TOWER_TIERS, spawnBoss,
   effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, effPartsEach, SELF_BUILD,
