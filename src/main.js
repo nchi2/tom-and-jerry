@@ -7786,6 +7786,71 @@ function mapPlayable(cm) {
   return false;
 }
 
+// 지형이 만든 '공짜 요새'를 뚫는다 (D9 · D121).
+// D9은 **지형이 어떤 영역도 감싸면 안 된다**고 못박는다 — 공짜 요새가 있으면
+// 벽을 직접 쌓을 이유가 줄어 코어가 무효화되기 때문이다. 손으로 그린 맵은
+// 그 규칙을 지켰지만 **무작위 생성은 안 지킨다** — 바위 덩이가 우연히 방을 만든다.
+//
+// "플레이어는 설 수 있는데 고양이는 못 들어오는 칸"을 연결 성분으로 묶고,
+// 일정 크기를 넘으면 그 둘레의 바위를 지워 **길을 뚫는다**.
+// 작은 틈새(한두 칸)는 그대로 둔다 — 그건 크기 비대칭이 제대로 작동하는 모습이다.
+function carvePockets(cm) {
+  if (!clearAll || !clearHam) return 0;
+  const catPass = (i) => canPass(clearAll, i, P.chaser.radius);
+  const hamPass = (i) => canPass(clearHam, i, P.player.radius);
+  // 바깥(고양이가 자유롭게 도는 영역)에서 flood
+  const seen = new Uint8Array(NAV * NAV);
+  const st = [];
+  for (let j = 1; j < NAV - 1; j++)
+    for (let i = 1; i < NAV - 1; i++) {
+      if (i > 2 && i < NAV - 3 && j > 2 && j < NAV - 3) continue;
+      const idx = j * NAV + i;
+      if (!seen[idx] && catPass(idx)) { seen[idx] = 1; st.push(idx); }
+    }
+  while (st.length) {
+    const c = st.pop(), cx = c % NAV;
+    for (const n of [c - 1, c + 1, c - NAV, c + NAV]) {
+      if (n < 0 || n >= seen.length || seen[n]) continue;
+      if (Math.abs((n % NAV) - cx) > 1) continue;
+      if (!catPass(n)) continue;
+      seen[n] = 1; st.push(n);
+    }
+  }
+  // 주머니를 성분별로 모아 큰 것만 고른다
+  const done = new Uint8Array(NAV * NAV);
+  const doomed = new Set();
+  let carved = 0;
+  for (let k = 0; k < seen.length; k++) {
+    if (seen[k] || done[k] || !hamPass(k)) continue;
+    const cells = [k];
+    done[k] = 1;
+    for (let q = 0; q < cells.length; q++) {
+      const c = cells[q], cx = c % NAV;
+      for (const m of [c - 1, c + 1, c - NAV, c + NAV]) {
+        if (m < 0 || m >= done.length || done[m] || seen[m]) continue;
+        if (Math.abs((m % NAV) - cx) > 1) continue;
+        if (!hamPass(m)) continue;
+        done[m] = 1; cells.push(m);
+      }
+    }
+    if (cells.length < P.mapgen.pocketMax) continue;   // 작은 틈새는 둔다
+    // 맵 가장자리에 닿아 있으면 지형이 만든 방이 아니라 **맵 테두리 띠**다 — 안 건드린다
+    if (cells.some((c) => { const x = c % NAV, z = (c / NAV) | 0;
+      return x <= 2 || z <= 2 || x >= NAV - 3 || z >= NAV - 3; })) continue;
+    // 주머니 둘레의 바위를 지워 뚫는다
+    for (const c of cells) {
+      const w = navToWorld(c);
+      const cc = worldToCell(w.x, w.z);
+      for (let dj = -2; dj <= 2; dj++)
+        for (let di = -2; di <= 2; di++) doomed.add((cc.i + di) + ',' + (cc.j + dj));
+    }
+    carved++;
+  }
+  if (!doomed.size) return 0;
+  cm.rocks = cm.rocks.filter(([i, j]) => !doomed.has(i + ',' + j));
+  return carved;
+}
+
 function rollMap(seed) {
   const size = MAPS[mapIndex].size;
   let sd = seed === undefined ? (Math.random() * 0x7fffffff) | 0 : seed;
@@ -7794,6 +7859,11 @@ function rollMap(seed) {
   for (let tries = 0; tries < 8; tries++) {
     customMap = generateMap(sd, size);
     rebuildWorld(mapIndex);
+    // 공짜 요새를 뚫는다 (D9). 뚫고 나면 지형이 바뀌었으니 다시 세운다.
+    for (let pass = 0; pass < 3; pass++) {
+      if (!carvePockets(customMap)) break;
+      rebuildWorld(mapIndex);
+    }
     if (mapPlayable(customMap)) return;
     sd = (sd * 1103515245 + 12345) & 0x7fffffff;
   }
