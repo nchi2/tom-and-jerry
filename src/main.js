@@ -70,7 +70,12 @@ const P = {
     cutoffShare: 0.34,     // 무리 중 이 비율은 목표가 아니라 **은신처로 가는 길**을 막는다
     cutoffLead: 3.3,       // 차단조가 목표보다 얼마나 앞(은신처 쪽)을 잡는가(m)
     giveUpProbes: 3,       // 이만큼 시도해도 막히면 포기하고 서성인다
-    prowlTime: 4.0,        // 서성이는 시간 — 플레이어가 확장을 시도할 틈
+    prowlTime: 4.0,        // 막혔을 때 선회하는 시간 — 플레이어가 확장을 시도할 틈
+    // 선회 (D123) — 막히면 제자리를 파지 말고 목표 둘레를 돈다
+    orbitStep: 0.9,        // 한 번 재계산마다 도는 각(라디안)
+    orbitMin: 6, orbitMax: 16,   // 도는 반경 범위(m)
+    // 무적 지형에 코를 박고 있는 시간이 이만큼을 넘으면 즉시 선회로 넘어간다
+    bedrockPatience: 0.8,
     attackWindup: 0.6,     // 공격 예비동작 — 이 동안 몸을 뒤로 빼며 부푼다.
                            //  Shift 구르기로 피할 수 있는 창이다 (D77·D78)
     attackCooldown: 1.3,   // 공격 간격
@@ -162,7 +167,7 @@ const P = {
           keepApartForce: 4,    // 밀어내는 세기(초당)
           // 강타 범위 (D107 → D115에서 절반으로). 1.3이면 벽 한 줄에서 앞의 3장.
           // smashArc = 앞쪽 판정 문턱(코사인). 0이면 정확히 앞 반원, 낮출수록 옆까지 친다
-          smashRadius: 1.3, smashArc: -0.15,
+          smashRadius: 1.95, smashArc: -0.15,   // 1.3 → +50% (D123)
           smashMax: 4 },        // 한 번에 칠 수 있는 벽 장수 (가까운 순)
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
@@ -362,7 +367,13 @@ const P = {
   //  boost   검게 물든 고양이의 능력치 배율. **속도는 안 올린다** — threat.speedGain을
   //          0으로 둔 이유(D-속도 상한)와 같다. 적이 더 빨라지면 술래잡기가 아니게 된다.
   //  wave    공세 규모 = 평소 구성 × 이 배율
-  final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1 },
+  //  prep    준비 시간(초). 무제한이던 걸 3분으로 (D123) — 끝이 없으면 언제 눌러야
+  //          할지를 모른다. 다 되기 전에 F로 앞당길 수는 있다.
+  //  drip    공세를 **나눠서** 내보낸다. 한 번에 쏟으면 첫 30초가 전부고 나머지는 청소다
+  //  bomberEvery 공세 동안의 자폭묘 주기 (평소보다 짧다)
+  final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1,
+           prep: 180, drip: 12, dripFrac: 0.25, bomberEvery: 9,
+           darkAmt: 0.8 },   // 몸을 얼마나 어둡게 (1이면 새까맣다)
   // 랜덤 맵 (D117). 분포의 규칙은 여기서 조절한다
   mapgen: {
     on: 1,               // 0이면 손으로 쓴 기본 맵을 쓴다
@@ -375,12 +386,12 @@ const P = {
     midLo: 1, midHi: 2,        // 한 칸 떨어진 구역
     farLo: 2, farHi: 3,        // 그보다 먼 구역
     cornerLo: 0, cornerHi: 2,  // 모퉁이 — 맵 끝이 곧 방벽이라 덜 준다
-    rockClumps: 14, mudPools: 5, bushClumps: 7,
+    rockClumps: 14, mudPools: 5,   // 덤불은 걷어냈다 (D123)
     // 이 크기 이상인 '고양이가 못 오는 주머니'는 지형을 지워 뚫는다 (D9)
     pocketMax: 12,
   },
   // 소리 (D122). volume 0이면 완전히 끈다 · minGap = 같은 소리 최소 간격(초)
-  sfx: { volume: 0.6, minGap: 0.05 },
+  sfx: { volume: 0.48, minGap: 0.05 },   // 0.6에서 20% 낮춤 (D123)
   // 채팅 (D120). lines = 화면에 남는 줄 수, hold = 한 줄이 머무는 시간(초)
   chat: { lines: 6, hold: 14 },
   // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
@@ -394,7 +405,7 @@ const P = {
   //  enemyCount 는 웨이브 구성과 순찰조 **둘 다** 지난다 (scaled()가 유일한 깔때기)
   //  enemyHp    는 보스를 뺀 고양이에게만 (톰은 D83에서 고정 스탯으로 정한 대상이다)
   // enemyHp 0.5 → 0.65 (D107): D104의 절반 너프가 과했다는 판단 → 30% 되돌린다
-  balance: { enemyCount: 0.7, enemyHp: 0.65 },
+  balance: { enemyCount: 0.7, enemyHp: 0.845 },   // 0.65 → +30% (D123)
   threat: {
     // speedGain 0 = 후반에도 더 빨라지지 않는다 (2026-08-13).
     // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
@@ -859,7 +870,6 @@ function repairWall(ob) {
 // 둘 다 격자 칸 집합으로만 들고 있는다 (obstacles와 별개 — 통행은 막지 않는다).
 // ============================================================
 const mudCells = new Set();    // 늪
-const bushCells = new Set();   // 덤불
 const inMud = (x, z) => { const c = worldToCell(x, z); return mudCells.has(cellKey(c.i, c.j)); };
 // 몸이 클수록 더 잠긴다 — 반지름을 그대로 쓴다 (햄스터 0.26 / 순찰묘 0.95 / 톰 1.75)
 const mudFactor = (r) => {
@@ -912,7 +922,7 @@ function generateMap(seed, size = 84) {
   const N = size;
   const mid = (N - 1) / 2;
   const G = P.mapgen;
-  const rocks = [], mud = [], bush = [], piles = [];
+  const rocks = [], mud = [], piles = [];
   const taken = new Set();
   const key = (i, j) => i + ',' + j;
   const inBounds = (i, j) => i >= 2 && j >= 2 && i < N - 2 && j < N - 2;
@@ -993,10 +1003,8 @@ function generateMap(seed, size = 84) {
   }
   for (let k = 0; k < G.mudPools; k++)
     blob(mud, 4 + R() * (N - 8), 4 + R() * (N - 8), 5 + Math.floor(R() * 9), 2.4);
-  for (let k = 0; k < G.bushClumps; k++)
-    blob(bush, 4 + R() * (N - 8), 4 + R() * (N - 8), 3 + Math.floor(R() * 5), 1.8);
 
-  return { rocks, mud, bush, nodes: piles, playerSpawn: ps, enemySpawn: es, seed };
+  return { rocks, mud, nodes: piles, playerSpawn: ps, enemySpawn: es, seed };
 }
 
 const MAPS = [
@@ -1482,14 +1490,20 @@ function makeCat(type = 'chaser') {
   // 최후의 공세용 — 몸은 검게, 눈은 **화난 빨강**으로 (D108).
   // 눈 재질을 따로 들고 있어야 몸만 칠하고 눈은 태울 수 있다.
   vis.eyeMats = [eye];
+  // 새까맣게 칠하면 종류 구분이 사라진다 (D123) — **기본색을 그만큼 어둡게** 한다.
+  // darkAmt 0.8이면 원래 색의 20%만 남아, 자주색 순찰묘와 청회색 날쌘묘가
+  // 여전히 구분되면서도 "물들었다"가 읽힌다.
   vis.setDark = (on) => {
+    const k = on ? 1 - P.final.darkAmt : 1;
     for (const m of vis.mats) {
       if (vis.eyeMats.includes(m)) {
         m.color.setHex(on ? 0xff2020 : pal.eye);
         m.emissive.setHex(on ? 0xff0000 : pal.glow);
-        m.emissiveIntensity = on ? 1.6 : 0.9;
-      } else if (m !== eye) {
-        m.color.setHex(on ? 0x0d0b0f : (m.userData.baseHex !== undefined ? m.userData.baseHex : m.color.getHex()));
+        m.emissiveIntensity = on ? 1.8 : 0.9;
+      } else {
+        const base = m.userData.baseHex !== undefined ? m.userData.baseHex : m.color.getHex();
+        m.color.setHex(base);
+        if (on) m.color.multiplyScalar(k);
       }
     }
   };
@@ -1579,10 +1593,12 @@ function swapVis(vis, template, tint, tintAmt = 0.22) {
   // 붉은 발광**으로 "화난" 느낌을 낸다.
   for (const m of mats) if (m.userData.baseHex === undefined) m.userData.baseHex = m.color.getHex();
   vis.setDark = (on) => {
+    const k = on ? 1 - P.final.darkAmt : 1;
     for (const m of mats) {
-      m.color.setHex(on ? 0x141014 : m.userData.baseHex);
-      m.emissive.setHex(on ? 0x8c0000 : 0x000000);
-      m.emissiveIntensity = on ? 0.55 : 0;
+      m.color.setHex(m.userData.baseHex);
+      if (on) m.color.multiplyScalar(k);
+      m.emissive.setHex(on ? 0xb00000 : 0x000000);
+      m.emissiveIntensity = on ? 0.5 : 0;
     }
   };
   if (vis.darkOn) vis.setDark(true);   // 공세 중에 로딩이 끝난 놈도 검게
@@ -1920,7 +1936,6 @@ function clearTerrainDecor() {
   }
   terrainDecor.length = 0;
   mudCells.clear();
-  bushCells.clear();
 }
 
 function addMud(i, j) {
@@ -1940,22 +1955,6 @@ function addMud(i, j) {
   terrainDecor.push(m);
 }
 
-function addBush(i, j) {
-  if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) return;
-  const key = cellKey(i, j);
-  if (bushCells.has(key)) return;
-  bushCells.add(key);
-  const w = cellToWorld(i, j);
-  const m = new THREE.Mesh(
-    new THREE.SphereGeometry(CS * 0.52, 10, 7),
-    new THREE.MeshStandardMaterial({ color: 0x2f5c34, roughness: 0.95, transparent: true, opacity: 0.85 })
-  );
-  m.position.set(w.x, CS * 0.34, w.z);
-  m.scale.y = 0.72;
-  m.castShadow = true;
-  scene.add(m);
-  terrainDecor.push(m);
-}
 
 function makeCheesePile() {
   const g = new THREE.Group();
@@ -4241,13 +4240,33 @@ function planEnemyPath(enemy) {
     if (raiding) { gx = enemy.raidTarget.cx; gz = enemy.raidTarget.cz; }
   }
   if (gx === null && enemy.prowlT > 0) {
-    // 포기하고 서성이는 중 — 근처를 어슬렁거린다
-    gx = clamp(enemy.prowlX, -HALF + 1, HALF - 1);
-    gz = clamp(enemy.prowlZ, -HALF + 1, HALF - 1);
+    // 막혔을 때는 **목표 둘레를 돈다** (D123). 예전엔 제자리 근처 아무 데나
+    // 찍고 어슬렁거려서, 벽에 붙은 채 계속 들이받는 것처럼 보였다
+    // ("앞이 막힌 장난감 레이싱카"). 목표를 중심으로 원을 그리면
+    // **노려지고 있다**가 읽히고, 도는 동안 열린 틈을 실제로 지나가게 된다.
+    const ts = chaseTargets();
+    let t = ts.includes(enemy.chaseTarget) ? enemy.chaseTarget : null;
+    if (!t) {   // 목표를 잃었으면 가장 가까운 햄스터 둘레를 돈다
+      let bd = Infinity;
+      for (const q of ts) {
+        const d2 = Math.hypot(q.x - enemy.x, q.z - enemy.z);
+        if (d2 < bd) { bd = d2; t = q; }
+      }
+    }
+    if (t) {
+      const dx = enemy.x - t.x, dz = enemy.z - t.z;
+      const r = Math.max(P.enemy.orbitMin, Math.min(Math.hypot(dx, dz), P.enemy.orbitMax));
+      const a = Math.atan2(dz, dx) + enemy.orbitDir * P.enemy.orbitStep;
+      gx = clamp(t.x + Math.cos(a) * r, -HALF + 1, HALF - 1);
+      gz = clamp(t.z + Math.sin(a) * r, -HALF + 1, HALF - 1);
+    } else {
+      gx = clamp(enemy.prowlX, -HALF + 1, HALF - 1);
+      gz = clamp(enemy.prowlZ, -HALF + 1, HALF - 1);
+    }
     enemy.goalX = gx; enemy.goalZ = gz;
     const pr = astar(start, worldToNav(gx, gz), passAll, () => 0);
     enemy.path = pr.path.map((idx) => ({ ...navToWorld(idx), idx }));
-    enemy.aiMode = '서성임';
+    enemy.aiMode = '선회';
     return;
   }
   // ---- 순찰조 (D52) ----
@@ -4497,15 +4516,6 @@ function segmentBlocked(x0, z0, x1, z1, ignoreBldg = null) {
   if (len < 1e-6) return false;
   const ux = dx / len, uz = dz / len;
   const steps = Math.max(1, Math.ceil(len / (CS * 0.4)));
-  // 덤불은 통과는 되지만 **시야를 끊는다** (D112) — 선분이 덤불 칸을 지나면 막힌 것으로 본다.
-  // 벽이 "못 지나감"이라면 덤불은 "못 봄"이다. 그래서 숨을 자리가 된다.
-  if (bushCells.size) {
-    for (let s2 = 0; s2 <= steps; s2++) {
-      const t2 = s2 / steps;
-      const c2 = worldToCell(x0 + dx * t2, z0 + dz * t2);
-      if (bushCells.has(cellKey(c2.i, c2.j))) return true;
-    }
-  }
   const checked = new Set();
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
@@ -4644,25 +4654,6 @@ function spawnBoss() {
   refreshReach();
 }
 
-// 톰끼리는 서로 **밀어낸다** (D107). 둘이 같은 햄스터에 겹쳐 붙으면 화면에서
-// 한 마리로 보이고, 두 방향에서 몰린다는 압박도 사라진다.
-function separateBosses(dt) {
-  const list = enemies.filter((e) => e.type === 'boss');
-  if (list.length < 2) return;
-  const want = P.boss.keepApart;
-  for (let a = 0; a < list.length; a++)
-    for (let b = a + 1; b < list.length; b++) {
-      const A = list[a], B = list[b];
-      let dx = B.x - A.x, dz = B.z - A.z;
-      let d = Math.hypot(dx, dz);
-      if (d >= want) continue;
-      if (d < 0.001) { dx = 1; dz = 0; d = 1; }
-      const push = (want - d) * 0.5 * Math.min(1, dt * P.boss.keepApartForce);
-      dx /= d; dz /= d;
-      A.x -= dx * push; A.z -= dz * push;
-      B.x += dx * push; B.z += dz * push;
-    }
-}
 
 // ---- 최후의 공세 (D108) ----
 // 톰을 둘 다 잡으면 곧장 이기는 게 아니라 **준비 국면**으로 들어간다.
@@ -4671,29 +4662,49 @@ function separateBosses(dt) {
 function beginFinalPrep() {
   if (!P.final.enabled) { winGame('톰을 막아냈다!'); return; }
   finalPhase = 'prep';
-  finalT = 0;
+  finalT = P.final.prep;   // 남은 준비 시간 (0이 되면 저절로 시작한다)
   // 남은 잔챙이는 정리한다 — "준비 시간"이라고 해 놓고 쫓기면 준비가 아니다
   for (const e of [...enemies]) { scene.remove(e.vis.group); disposeBar(e.bar);
     if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); } }
   enemies.length = 0;
   refreshReach();
-  flashMsg('톰을 모두 쓰러뜨렸다 — 마지막이 온다. 준비되면 [F]', '#ffd24a');
+  flashMsg(`톰을 모두 쓰러뜨렸다 — ${Math.round(P.final.prep / 60)}분 뒤 마지막이 온다. [F]로 앞당기기`, '#ffd24a');
 }
 
 // 플레이어가 직접 연다. 준비 시간에 제한이 없으므로 이 입력이 유일한 방아쇠다.
+// 공세는 **나눠서** 온다 (D123). 한 번에 쏟으면 첫 30초가 전투 전부고
+// 나머지 2분은 청소다 — 끝까지 압박이 이어져야 '버티기'가 된다.
+let finalQueue = [];     // 아직 안 나온 종류 목록
+let finalDripT = 0;
+
 function startFinalAssault() {
   if (finalPhase !== 'prep') return;
   finalPhase = 'assault';
   finalT = 0;
-  // 평소 구성의 wave배. 검게 물든 채로 몰려온다
+  finalDripT = 0;
+  finalQueue = [];
   const want = cumulativeComposition();
-  for (const [ty, n] of Object.entries(want)) {
-    const total = Math.round(n * P.final.wave);
-    for (let k = 0; k < total; k++) enemies.push(makeEnemy(ty, enemies.length));
+  for (const [ty, n] of Object.entries(want))
+    for (let k = 0; k < Math.round(n * P.final.wave); k++) finalQueue.push(ty);
+  // 순서를 섞는다 — 종류별로 뭉쳐 나오면 "지금은 자폭묘 차례"가 되어 버린다
+  for (let k = finalQueue.length - 1; k > 0; k--) {
+    const j = Math.floor(Math.random() * (k + 1));
+    [finalQueue[k], finalQueue[j]] = [finalQueue[j], finalQueue[k]];
   }
+  releaseFinalWave(P.final.dripFrac);   // 첫 무리는 바로
   for (const e of enemies) darkenEnemy(e);
   refreshReach();
   flashMsg(`최후의 공세! ${P.final.duration}초를 버텨라`, '#ff3b3b');
+}
+
+function releaseFinalWave(frac) {
+  const n = Math.max(1, Math.round(finalQueue.length * frac));
+  for (let k = 0; k < n && finalQueue.length; k++) {
+    const e = makeEnemy(finalQueue.pop(), enemies.length);
+    darkenEnemy(e);
+    enemies.push(e);
+  }
+  refreshReach();
 }
 
 function darkenEnemy(e) {
@@ -4703,8 +4714,22 @@ function darkenEnemy(e) {
 }
 
 function updateFinalPhase(dt) {
+  if (finalPhase === 'prep') {
+    finalT -= dt;
+    if (finalT <= 0) startFinalAssault();   // 시간이 다 되면 저절로 시작한다
+    return;
+  }
   if (finalPhase === 'assault') {
     finalT += dt;
+    // 남은 무리를 주기마다 흘려보낸다
+    if (finalQueue.length) {
+      finalDripT += dt;
+      if (finalDripT >= P.final.drip) {
+        finalDripT = 0;
+        releaseFinalWave(P.final.dripFrac);
+        flashMsg('또 몰려온다!', '#ff8b5e');
+      }
+    }
     // 공세 중에 새로 태어나는 놈도 검게 (탐욕 서지 등)
     for (const e of enemies) if (!e.vis.darkOn) darkenEnemy(e);
     if (finalT >= P.final.duration) winGame('최후의 공세를 막아냈다!');
@@ -4742,9 +4767,11 @@ let bomberT = 0;
 function updateBomberTrickle(dt) {
   if (!netAuthoring() || !enemyActive()) return;
   if (P.bomber.every <= 0) return;
-  if (stage < P.bomber.fromStage) return;
+  if (stage < P.bomber.fromStage && !enraged()) return;
   bomberT += dt;
-  if (bomberT < P.bomber.every) return;
+  // 최후의 공세에서는 훨씬 자주 온다 (D123)
+  const every = enraged() ? P.final.bomberEvery : P.bomber.every;
+  if (bomberT < every) return;
   bomberT = 0;
   const live = enemies.filter((e) => e.type === 'bomber').length;
   if (live >= scaled(P.bomber.maxLive)) return;
@@ -4871,6 +4898,29 @@ function updateEnemy(enemy, dt) {
   if (moved < spd * dt * 0.3) enemy.stallT += dt;
   else enemy.stallT = 0;
   enemy.prevX = enemy.x; enemy.prevZ = enemy.z;
+
+  // **무적 지형에 코를 박고 있으면 훨씬 빨리 포기한다** (D123).
+  // 지형은 누구도 못 부순다 — 거기 붙어 있는 건 어떤 경우에도 진전이 없다.
+  // 예전엔 일반 벽과 같은 인내심(giveUpProbes회)이라, 바위에 붙은 채로
+  // 몇 초씩 들이받고 있었다. 앞에 지형이 있으면 바로 선회로 넘긴다.
+  if (enemy.stallT > P.enemy.bedrockPatience && enemy.aiMode !== '잠복' && enemy.prowlT <= 0) {
+    const c0 = worldToCell(enemy.x, enemy.z);
+    let onBedrock = false;
+    for (let dj = -1; dj <= 1 && !onBedrock; dj++)
+      for (let di = -1; di <= 1; di++) {
+        const ob = obstacles.get(cellKey(c0.i + di, c0.j + dj));
+        if (ob && ob.bedrock && distToObstacle(enemy, ob) <= er + P.enemy.attackRange) {
+          onBedrock = true; break;
+        }
+      }
+    if (onBedrock) {
+      enemy.prowlT = P.enemy.prowlTime;
+      enemy.probes = 0;
+      enemy.stallT = 0;
+      enemy.repathT = 0;
+      if (Math.random() < 0.5) enemy.orbitDir *= -1;
+    }
+  }
 
   // 우회 우선 원칙:
   //  - 추격 중(우회로 있음) 정체 → 벽을 부수지 말고 경로 재계산부터
@@ -6949,7 +6999,6 @@ function rebuildWorld(idx) {
   if (CM) {
     for (const [i, j] of CM.rocks || []) addObstacle(i, j, true);
     for (const [i, j] of CM.mud || []) addMud(i, j);
-    for (const [i, j] of CM.bush || []) addBush(i, j);
   } else {
     const t = layoutTools();
     M.build(t);
@@ -7375,6 +7424,25 @@ document.getElementById('m-restart').onclick = () => { setMenu(false); issueComm
 document.getElementById('m-help').onclick = () => { setMenu(false); helpOpen = true; renderHelp(); };
 document.getElementById('m-gui').onclick = () => { setGui(!guiOpen); };
 document.getElementById('m-maps').onclick = () => { buildMapList(); mapListEl.classList.add('on'); };
+// 소리 크기 (D123) — 세팅에서 바로 만진다
+{
+  const vol = document.getElementById('m-vol');
+  const num = document.getElementById('m-volnum');
+  const sync = () => {
+    vol.value = String(Math.round(P.sfx.volume * 100));
+    num.textContent = `${Math.round(P.sfx.volume * 100)}%`;
+  };
+  sync();
+  vol.addEventListener('input', () => {
+    P.sfx.volume = Number(vol.value) / 100;
+    num.textContent = `${vol.value}%`;
+    wakeAudio();
+    sfx('tower');          // 바로 들려 줘야 크기를 고를 수 있다
+  });
+  // 메뉴를 열 때마다 현재 값으로 맞춘다 (튜닝 패널에서 바꿨을 수도 있다)
+  document.getElementById('m-resume').addEventListener('mouseenter', sync);
+}
+
 document.getElementById('m-quit').onclick = () => {
   setMenu(false);
   alive = false;
@@ -7550,7 +7618,6 @@ function sendChat(text) {
 const ED_BRUSH = [
   { k: 'rock',  name: '바위',        hint: '통행 불가. 지형이라 부술 수 없다' },
   { k: 'mud',   name: '늪',          hint: '통과는 되지만 **몸집이 클수록** 느려진다 — 도망길' },
-  { k: 'bush',  name: '덤불',        hint: '통과는 되지만 시야를 끊는다 — 숨을 자리' },
   { k: 'n06',   name: '치즈 (작음)', hint: '매장량 0.6배' },
   { k: 'n10',   name: '치즈 (보통)', hint: '매장량 1.0배' },
   { k: 'n18',   name: '치즈 (큼)',   hint: '매장량 1.8배 — 멀고 위험한 자리에' },
@@ -7564,7 +7631,7 @@ const edOn = () => !!editor;
 const edEl = document.getElementById('editor');
 
 const blankMap = () => ({
-  rocks: [], mud: [], bush: [], nodes: [],
+  rocks: [], mud: [], nodes: [],
   playerSpawn: [Math.floor(CELLS / 2), Math.floor(CELLS * 0.55)],
   enemySpawn: [Math.floor(CELLS / 2), Math.floor(CELLS * 0.1)],
 });
@@ -7601,10 +7668,9 @@ function edPaint(i, j) {
   const b = ED_BRUSH[editor.brush];
   // 어느 붓이든 **먼저 그 칸을 비운다** — 겹쳐 칠하면 뭐가 있는지 알 수 없다
   const drop = (arr) => { const k = edSame(arr, i, j); if (k >= 0) arr.splice(k, 1); };
-  drop(m.rocks); drop(m.mud); drop(m.bush); drop(m.nodes);
+  drop(m.rocks); drop(m.mud); drop(m.nodes);
   if (b.k === 'rock') m.rocks.push([i, j]);
   else if (b.k === 'mud') m.mud.push([i, j]);
-  else if (b.k === 'bush') m.bush.push([i, j]);
   else if (b.k === 'n06') m.nodes.push([i, j, 0.6]);
   else if (b.k === 'n10') m.nodes.push([i, j, 1.0]);
   else if (b.k === 'n18') m.nodes.push([i, j, 1.8]);
@@ -7636,7 +7702,7 @@ function renderEditor() {
     ED_BRUSH.map((x, k) => `<div class="ebrush${k === editor.brush ? ' sel' : ''}">` +
       `<b>${k + 1}</b>${x.name}</div>`).join('') +
     `<div class="ehint">${b.hint}</div>` +
-    `<div class="ecount">바위 ${m.rocks.length} · 늪 ${m.mud.length} · 덤불 ${m.bush.length} · 치즈 ${m.nodes.length}</div>` +
+    `<div class="ecount">바위 ${m.rocks.length} · 늪 ${m.mud.length} · 치즈 ${m.nodes.length}</div>` +
     `<div class="ekeys">S 저장 · L 불러오기 · N 비우기 · Enter 시험 플레이 · ESC 나가기</div>`;
 }
 
@@ -8845,10 +8911,15 @@ function captiveBanner() {
 }
 
 function finalBanner() {
-  if (finalPhase === 'prep')
+  if (finalPhase === 'prep') {
+    const left = Math.max(0, finalT);
+    const f = Math.max(0, Math.min(1, left / Math.max(P.final.prep, 0.01)));
+    const m = Math.floor(left / 60), sec = Math.floor(left % 60);
     return `<div class="row"><div class="lbl"><span>준비 국면 — 방어선을 세우세요</span>` +
-      `<span>[F] 최후의 공세 시작</span></div>` +
-      `<div class="track"><div class="fill" style="width:100%;background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
+      `<span>${m}:${String(sec).padStart(2, '0')} · [F] 앞당기기</span></div>` +
+      `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
+      `background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
+  }
   if (finalPhase === 'assault') {
     const left = Math.max(0, P.final.duration - finalT);
     const f = 1 - left / Math.max(P.final.duration, 0.01);
@@ -9108,7 +9179,8 @@ function tick(dt) {
         updateEnemy(e, dt);
       }
       separateEnemies();
-      separateBosses(dt);   // 톰끼리는 더 넓게 떨어뜨린다 (D107)
+      // 톰끼리 밀어내기는 뺐다 (D123) — 같은 방향으로 오던 둘이 서로 밀려 갈라지면서
+      // **한 마리씩 각개격파**당했다. 둘이 뭉쳐 오는 게 두 마리인 의미다.
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
       // 접촉 즉사는 없다 — updateEnemy 안의 공격 로직이 체력을 깎는다
     } else {
@@ -9292,10 +9364,10 @@ window.__game = {
   get stageT() { return stageT; },
   get victory() { return victory; },
   edPaint, get editor() { return editor; }, get customMap() { return customMap; },
-  addMud, addBush, mudSpeedAt, segmentBlocked, rebuildWorld, rollMap, generateMap,
+  addMud, mudSpeedAt, segmentBlocked, rebuildWorld, rollMap, generateMap,
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
-  mudCells, bushCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
+  mudCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   get finalPhase() { return finalPhase; },
   get finalT() { return finalT; },
   startFinalAssault, beginFinalPrep,

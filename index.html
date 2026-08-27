@@ -342,6 +342,14 @@
       font: 13px ui-monospace, Menlo, monospace; min-width: 0;
     }
     #chatbar .cquick { color: #6b7385; font-size: 10px; flex: none; }
+    /* 설정 — 소리 크기 (D123) */
+    #menu .vol {
+      display: flex; align-items: center; gap: 10px; margin: 8px 0 2px;
+      color: #cfd6e4; font: 13px ui-monospace, Menlo, monospace;
+    }
+    #menu .vol label { flex: none; }
+    #menu .vol b { color: #ffd24a; }
+    #menu .vol input { flex: 1; accent-color: #ffd24a; }
   </style>
 </head>
 <body>
@@ -374,6 +382,11 @@
     <button id="m-maps">맵 선택</button>
     <button id="m-quit">종료</button>
     <div class="maps" id="m-maplist"></div>
+    <!-- 소리 크기 (D123) — 튜닝 패널이 아니라 여기 있어야 실제로 쓴다 -->
+    <div class="vol">
+      <label for="m-vol">효과음 <b id="m-volnum">48%</b></label>
+      <input id="m-vol" type="range" min="0" max="100" step="1" value="48" />
+    </div>
     <div class="net">
       <button id="m-invite">2인 협동 — 방 만들기 / 참가</button>
       <button id="m-leave">멀티 끊기 (혼자 하기)</button>
