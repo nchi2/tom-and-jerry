@@ -210,6 +210,9 @@ const P = {
     cost: 50, speed: 6.9, radius: 0.3,   // 50 = 가장 먼저 뽑는 것이라 값을 올렸다 (D88)
     perPile: 3,         // 치즈더미 하나에 붙을 수 있는 일꾼 수
     max: 12,
+    // 길이 막혔을 때 (D116). 예전엔 못 가는 더미를 붙잡고 **그 자리에 영원히 서 있었다.**
+    stuckTime: 2.5,     // 이만큼 제자리면 그 더미를 포기한다(초)
+    avoidTime: 12,      // 포기한 더미를 다시 안 고르는 시간(초)
   },
   // 채굴 명령 (원작 프로브 조작) — 더미에 명령을 걸면 알아서 왕복한다.
   //  플레이어: 가까이 가면 뜨는 E, 또는 더미 우클릭. **직접 움직이면 즉시 취소**
@@ -3047,7 +3050,16 @@ function commandUnitsMove(x, z, list = [...selectedUnits].filter((u) => myUnits(
 }
 
 // 일꾼이 붙을 치즈더미 고르기 — 자리가 남은 것 중 창고에서 가까운 순
-function pickPile(w) {
+// 못 갔던 더미는 잠깐 안 고른다 (D116). 일꾼마다 따로 기억한다 —
+// 어떤 일꾼에게 막힌 길이 다른 일꾼에게는 열려 있을 수 있다.
+const pileAvoided = (w, n) => !!(w.avoid && (w.avoid.get(n) || 0) > survival);
+function avoidPile(w, n) {
+  if (!n) return;
+  if (!w.avoid) w.avoid = new Map();
+  w.avoid.set(n, survival + P.worker.avoidTime);
+}
+
+function pickPile(w, allowAvoided = false) {
   let best = null, bd = Infinity;
   const dep = w.depot && buildings.includes(w.depot) ? w.depot : nearestDepot(w.x, w.z, w.owner);
   if (!dep) return null;
@@ -3055,11 +3067,14 @@ function pickPile(w) {
   for (const n of nodes) {
     if (n.amount <= 0) continue;
     if (n !== w.pile && pileCrowd(n) >= P.worker.perPile) continue;
+    if (!allowAvoided && pileAvoided(w, n)) continue;   // 못 갔던 곳은 건너뛴다
     const nw = cellToWorld(n.i, n.j);
     // 일꾼은 적에게 잡히므로, 창고에서 가까운 더미를 선호한다
     const d = Math.hypot(nw.x - dep.cx, nw.z - dep.cz);
     if (d < bd) { bd = d; best = n; }
   }
+  // 전부 피하는 중이면 기억을 지우고 다시 고른다 — 영영 노는 것보다 낫다
+  if (!best && !allowAvoided && w.avoid && w.avoid.size) { w.avoid.clear(); return pickPile(w, true); }
   return best;
 }
 
@@ -3100,7 +3115,11 @@ function updateWorkers(dt) {
       if (w.pile && w.pile.amount <= 0) { w.pile = null; w.forced = false; }
     } else {
       if (w.pile && w.pile.amount <= 0) { w.pile = null; w.forced = false; }
-      if (!w.pile || (!w.forced && pileCrowd(w.pile) > P.worker.perPile)) w.pile = pickPile(w);
+      if (!w.pile || pileAvoided(w, w.pile) || (!w.forced && pileCrowd(w.pile) > P.worker.perPile)) {
+        const prev = w.pile;
+        w.pile = pickPile(w);
+        if (w.pile !== prev) { w.blockT = 0; w.path.length = 0; w.repathT = 0; }
+      }
       if (!w.pile) {
         const dep = nearestDepot(w.x, w.z, w.owner);
         if (!dep) continue;
@@ -3121,6 +3140,19 @@ function updateWorkers(dt) {
         const pass = (i) => canPass(clearHam, i, P.worker.radius);
         const res = astar(nearestPassableNav(w.x, w.z, pass), worldToNav(gx, gz), pass, () => 0);
         w.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
+        // **길이 아예 없으면 바로 포기한다** (D116). 예전엔 res.found를 안 봐서
+        // 최선 근사 경로로 목표 근처까지 갔다가 거기서 영원히 재계산만 했다.
+        if (!res.found && w.pile && !w.moveGoal) { avoidPile(w, w.pile); w.pile = null; w.path.length = 0; }
+      }
+      // 길은 찾았는데 실제로 못 나아가는 경우 (기둥 사이에 끼거나 몸끼리 막힘).
+      // 위치가 거의 안 변하면 쌓다가, 넘으면 그 더미를 포기한다.
+      const moved = Math.hypot(w.x - (w.lastX ?? w.x), w.z - (w.lastZ ?? w.z));
+      w.lastX = w.x; w.lastZ = w.z;
+      if (moved < effWorkerSpeed(w) * dt * 0.25) w.blockT = (w.blockT || 0) + dt;
+      else w.blockT = 0;
+      if (w.blockT > P.worker.stuckTime && w.pile && !w.moveGoal) {
+        avoidPile(w, w.pile);
+        w.pile = null; w.path.length = 0; w.repathT = 0; w.blockT = 0;
       }
       while (w.path.length && Math.hypot(w.x - w.path[0].x, w.z - w.path[0].z) < navRes * 0.9) w.path.shift();
       const tx = w.path.length ? w.path[0].x : gx;
@@ -3135,6 +3167,11 @@ function updateWorkers(dt) {
         w.faceX = st.x; w.faceZ = st.z;
       }
       collideWithObstacles(w, P.worker.radius);
+    } else {
+      // 목표에 닿아 있으면 '막힘'이 아니다 (D116). 여기서 안 지우면 값이 남아 있다가
+      // 다음에 고른 더미를 **출발도 하기 전에** 포기해 버린다 — 실제로 그랬다.
+      w.blockT = 0;
+      w.lastX = w.x; w.lastZ = w.z;
     }
     w.vis.group.position.set(w.x, 0, w.z);
     w.vis.group.rotation.y = Math.atan2(w.faceX, w.faceZ) + Math.PI;
