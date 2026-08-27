@@ -36,7 +36,11 @@ const P = {
     // 훑으므로 상한이 없으면 후반에 프레임이 무너진다. 넘으면 최선 근사 경로를 쓴다
     pathBudget: 5000,
     spawnDelay: 12,
-    spread: 7.5,           // 스폰 지점 주변에 흩어지는 반경
+    spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
+    // 사방 등장 (D110)
+    spawnRing: 34,         // 맵 중앙에서 이만큼 떨어진 둘레에 선다
+    ringBias: 0.25,        // 적 본진 쪽으로 얼마나 몰까 (0=완전히 고르게, 1=예전처럼 한 곳)
+    ringJitter: 0.8,       // 각도 흔들기(라디안) — 매번 같은 자리가 되지 않게
     aggroRange: 10.5,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
     aggroChance: 0.35,     // 경로 재계산 때 한눈팔 확률
     aggroTime: 4.0,        // 한 번 끌리면 이 시간 동안 유지
@@ -1491,13 +1495,25 @@ function spawnSlotAt(k) {
 const enemies = [];
 
 // 스폰 지점 주변에 겹치지 않게 흩뿌림
+// 적은 **사방에서** 온다 (D110). 예전엔 전부 북쪽 한 점(ENEMY_SPAWN) 주변에서 나왔다 —
+// 그러면 방어선을 북쪽에만 세우면 되므로 판이 매번 같은 모양으로 굳는다.
+// 이제 맵 가장자리를 빙 둘러 나눠 세운다. 어느 쪽이 뚫릴지는 매번 달라진다.
+//   ringBias  0이면 완전히 고르게, 1이면 예전처럼 적 본진 쪽으로 몰린다
+//   ringJitter 각도를 흔드는 폭 — 매번 같은 자리에서 나오지 않게
 function enemySpawnPos(n) {
-  if (n === 0) return { x: ENEMY_SPAWN.x, z: ENEMY_SPAWN.z };
-  const a = n * 2.399963; // 황금각 — 규칙적 격자 느낌 없이 고르게 퍼짐
-  const r = P.enemy.spread * Math.sqrt(n / Math.max(P.enemy.count, 1));
+  const R = Math.min(HALF - 2, P.enemy.spawnRing);
+  const home = Math.atan2(ENEMY_SPAWN.z, ENEMY_SPAWN.x);
+  // 황금각으로 둘레를 고르게 쪼갠 뒤, 본진 쪽으로 ringBias만큼 당긴다
+  let a = n * 2.399963 + Math.random() * P.enemy.ringJitter;
+  if (P.enemy.ringBias > 0) {
+    // 각도 차를 -π..π로 접어서 당겨야 반대편으로 돌아가지 않는다
+    let d = ((home - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    a += d * P.enemy.ringBias;
+  }
+  const rr = R * (0.82 + Math.random() * 0.18);
   return {
-    x: clamp(ENEMY_SPAWN.x + Math.cos(a) * r, -HALF + 1, HALF - 1),
-    z: clamp(ENEMY_SPAWN.z + Math.sin(a) * r, -HALF + 1, HALF - 1),
+    x: clamp(Math.cos(a) * rr, -HALF + 1, HALF - 1),
+    z: clamp(Math.sin(a) * rr, -HALF + 1, HALF - 1),
   };
 }
 
