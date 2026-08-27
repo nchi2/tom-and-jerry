@@ -354,6 +354,16 @@ const P = {
   //          0으로 둔 이유(D-속도 상한)와 같다. 적이 더 빨라지면 술래잡기가 아니게 된다.
   //  wave    공세 규모 = 평소 구성 × 이 배율
   final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1 },
+  // 랜덤 맵 (D117). 분포의 규칙은 여기서 조절한다
+  mapgen: {
+    on: 1,               // 0이면 손으로 쓴 기본 맵을 쓴다
+    spawnClear: 7,       // 스폰 둘레 이 반경 안에는 아무것도 안 놓는다(칸)
+    pileGap: 3,          // 더미끼리 최소 간격(칸)
+    midCount: 7,         // 중간 고리 낱개 더미 수
+    farClusters: 4,      // 바깥 군집 수 (군집당 2~4개)
+    clusterSpread: 3.2,  // 군집이 퍼지는 반경(칸)
+    rockClumps: 14, mudPools: 5, bushClumps: 7,
+  },
   // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
   tutorial: { bigTime: 5.5 },
   // 지형 (D112). mudSlow = 가장 무거운 몸이 늪에서 갖는 속도 배율.
@@ -840,6 +850,108 @@ function layoutTools() {
     for (let k = 0; k < len; k++) if (!gaps.includes(k)) put(i0 + k * di, j0 + k * dj);
   };
   return { cells, put, hLine, vLine, diag };
+}
+
+// ============================================================
+// 랜덤 맵 생성 (D117)
+//  손으로 쓴 배치 하나로만 놀면 몇 판 만에 "어디에 뭐가 있는지"가 외워진다.
+//  판마다 새로 만들되, **분포의 규칙은 고정**한다 — 무작위가 곧 아무렇게나는 아니다.
+//
+//  치즈: 가까울수록 적고 작게, 멀수록 **뭉쳐서 크게**.
+//    기지 근처 1~2개(작음) → 중간 고리에 낱개 → 바깥에 군집(3~5개, 큼)
+//    "안전한 데서는 조금, 멀리 나가면 왕창"이라 나가는 이유가 거리에 비례해 커진다.
+//  지형: 바위 덩이·짧은 벽 조각·늪 웅덩이·덤불 무리를 흩는다.
+//    스폰 둘레는 비워 두고, 생성 후 **적 스폰에서 플레이어 스폰까지 길이 있는지 검사**한다.
+// ============================================================
+// 시드 난수 (mulberry32) — 같은 시드면 같은 맵이라 재현·공유가 된다
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateMap(seed, size = 84) {
+  const R = makeRng(seed);
+  const N = size;
+  const mid = (N - 1) / 2;
+  const G = P.mapgen;
+  const rocks = [], mud = [], bush = [], piles = [];
+  const taken = new Set();
+  const key = (i, j) => i + ',' + j;
+  const inBounds = (i, j) => i >= 2 && j >= 2 && i < N - 2 && j < N - 2;
+
+  // 스폰은 먼저 정한다 — 서로 반대편에 두고, 둘레를 비워 둔다
+  const pAng = R() * Math.PI * 2;
+  const pR = N * 0.20;
+  const ps = [Math.round(mid + Math.cos(pAng) * pR), Math.round(mid + Math.sin(pAng) * pR)];
+  const es = [Math.round(mid - Math.cos(pAng) * N * 0.38), Math.round(mid - Math.sin(pAng) * N * 0.38)];
+  const clearOf = (i, j, at, rad) => Math.hypot(i - at[0], j - at[1]) < rad;
+  const free = (i, j) =>
+    inBounds(i, j) && !taken.has(key(i, j)) &&
+    !clearOf(i, j, ps, G.spawnClear) && !clearOf(i, j, es, G.spawnClear);
+
+  const mark = (arr, i, j, extra) => {
+    if (!free(i, j)) return false;
+    taken.add(key(i, j));
+    arr.push(extra === undefined ? [i, j] : [i, j, extra]);
+    return true;
+  };
+
+  // ---- 치즈: 거리 띠마다 다른 규칙 ----
+  const place = (cx, cj, count, spread, mulLo, mulHi) => {
+    for (let k = 0; k < count; k++) {
+      for (let tries = 0; tries < 24; tries++) {
+        const a = R() * Math.PI * 2, r = R() * spread;
+        const i = Math.round(cx + Math.cos(a) * r), j = Math.round(cj + Math.sin(a) * r);
+        // 더미끼리 너무 붙지 않게
+        if (piles.some((q) => Math.hypot(q[0] - i, q[1] - j) < G.pileGap)) continue;
+        if (mark(piles, i, j, +(mulLo + R() * (mulHi - mulLo)).toFixed(2))) break;
+      }
+    }
+  };
+  // 근거리 — 1~2개, 작다
+  place(ps[0], ps[1], 1 + Math.floor(R() * 2), N * 0.13, 0.5, 0.8);
+  // 중간 고리 — 낱개로 흩어진다
+  for (let k = 0; k < G.midCount; k++) {
+    const a = R() * Math.PI * 2, r = N * (0.22 + R() * 0.16);
+    place(mid + Math.cos(a) * r, mid + Math.sin(a) * r, 1, 2.5, 0.9, 1.4);
+  }
+  // 원거리 — **군집**. 멀리 갈수록 뭉쳐 있고 크다
+  for (let k = 0; k < G.farClusters; k++) {
+    const a = R() * Math.PI * 2, r = N * (0.40 + R() * 0.08);
+    const cx = mid + Math.cos(a) * r, cj = mid + Math.sin(a) * r;
+    place(cx, cj, 2 + Math.floor(R() * 3), G.clusterSpread, 1.6, 2.4);
+  }
+
+  // ---- 지형 ----
+  const blob = (arr, cx, cj, n, spread) => {
+    for (let k = 0; k < n; k++) {
+      const a = R() * Math.PI * 2, r = R() * spread;
+      mark(arr, Math.round(cx + Math.cos(a) * r), Math.round(cj + Math.sin(a) * r));
+    }
+  };
+  for (let k = 0; k < G.rockClumps; k++) {
+    const i = 3 + Math.floor(R() * (N - 6)), j = 3 + Math.floor(R() * (N - 6));
+    if (R() < 0.45) {
+      // 짧은 벽 조각 — 틈이 하나 있는 벽선. 원본 맵의 교보재를 무작위로 흩는 셈
+      const len = 4 + Math.floor(R() * 5), vert = R() < 0.5;
+      const gap = 1 + Math.floor(R() * (len - 2));
+      for (let q = 0; q < len; q++) {
+        if (q === gap) continue;
+        mark(rocks, vert ? i : i + q, vert ? j + q : j);
+      }
+    } else blob(rocks, i, j, 2 + Math.floor(R() * 4), 1.6);
+  }
+  for (let k = 0; k < G.mudPools; k++)
+    blob(mud, 4 + R() * (N - 8), 4 + R() * (N - 8), 5 + Math.floor(R() * 9), 2.4);
+  for (let k = 0; k < G.bushClumps; k++)
+    blob(bush, 4 + R() * (N - 8), 4 + R() * (N - 8), 3 + Math.floor(R() * 5), 1.8);
+
+  return { rocks, mud, bush, nodes: piles, playerSpawn: ps, enemySpawn: es, seed };
 }
 
 const MAPS = [
@@ -7222,7 +7334,7 @@ function closeEditor(play) {
   editor = null;
   edEl.style.display = 'none';
   paused = false;
-  if (play) { customMap = m; beginMatch(); }
+  if (play) { customMap = m; editorMap = m; beginMatch(); }
   else { openStart('s-mode'); }
 }
 
@@ -7463,7 +7575,56 @@ function beginMatch(fresh = true) {
   started = true;
   setMenu(false);
   setCamera(DEFAULT_CAM);
+  // 판마다 새 지도 (D117). 참가자는 호스트가 준 걸 쓰므로 여기서 만들지 않는다.
+  if (fresh && netAuthoring() && P.mapgen.on && !editorMap) rollMap();
   if (fresh) restart();
+}
+
+// 에디터로 만든 맵이 있으면 랜덤보다 우선한다 (직접 그린 걸 덮어쓰면 안 된다)
+let editorMap = null;
+
+// 적이 플레이어 스폰까지 **걸어갈 수 있는가**. 무작위로 바위를 흩다 보면
+// 언젠가 한쪽을 가둬 버리는 배치가 나온다 — 그 판은 게임이 성립하지 않는다.
+function mapPlayable(cm) {
+  if (!clearAll) return true;
+  const r = P.chaser.radius;
+  const pass = (i) => canPass(clearAll, i, r);
+  const pw = cellToWorld(cm.playerSpawn[0], cm.playerSpawn[1]);
+  const ew = cellToWorld(cm.enemySpawn[0], cm.enemySpawn[1]);
+  const start = nearestPassableNav(ew.x, ew.z, pass);
+  const goal = nearestPassableNav(pw.x, pw.z, pass);
+  if (!pass(start) || !pass(goal)) return false;
+  const seen = new Uint8Array(NAV * NAV);
+  const st = [start];
+  seen[start] = 1;
+  while (st.length) {
+    const c = st.pop();
+    if (c === goal) return true;
+    const cx = c % NAV;
+    for (const k of [c - 1, c + 1, c - NAV, c + NAV]) {
+      if (k < 0 || k >= seen.length || seen[k]) continue;
+      if (Math.abs((k % NAV) - cx) > 1) continue;   // 좌우 이동이 줄을 넘지 않게
+      if (!pass(k)) continue;
+      seen[k] = 1; st.push(k);
+    }
+  }
+  return false;
+}
+
+function rollMap(seed) {
+  const size = MAPS[mapIndex].size;
+  let sd = seed === undefined ? (Math.random() * 0x7fffffff) | 0 : seed;
+  // 못 쓰는 배치가 나오면 시드를 바꿔 다시 뽑는다. 실측 25개 시드는 전부 통과했지만
+  // "지금까지 안 나왔다"는 보장이 아니다 — 검사해서 거른다.
+  for (let tries = 0; tries < 8; tries++) {
+    customMap = generateMap(sd, size);
+    rebuildWorld(mapIndex);
+    if (mapPlayable(customMap)) return;
+    sd = (sd * 1103515245 + 12345) & 0x7fffffff;
+  }
+  // 여덟 번 다 실패하면 지형 없이 간다 (치즈와 스폰만) — 판이 안 도는 것보다 낫다
+  customMap.rocks = [];
+  rebuildWorld(mapIndex);
 }
 
 // ---- 로비 좌석 (D97) ----
@@ -7752,6 +7913,9 @@ function fullSnapshot() {
   return {
     settings: snapshotSettings(),
     map: mapIndex,
+    // 지도가 판마다 달라지므로 **지도 자체를** 보낸다 (D117).
+    // 예전엔 인덱스만 보내면 됐다 — 양쪽이 같은 표를 갖고 있었으니까.
+    cmap: customMap,
     stage, stageT, survival,
     walls,
     buildings: buildings.map((b) => ({ id: b.id, kind: b.kind, i: b.i, j: b.j, owner: b.owner,
@@ -7767,8 +7931,12 @@ function applyFull(f, msg) {
   // 호스트가 알려 준 내 슬롯 (D97). 이걸 받기 전에는 내가 몇 번인지 모른다
   if (msg && msg.you !== undefined) net.slot = msg.you;
   if (msg && msg.max !== undefined) net.maxPlayers = msg.max;
-  // 맵이 다르면 통째로 다시 만든다 (setMap의 호스트 가드는 여기선 지나가야 하므로 rebuild 직접)
-  if (f.map !== undefined && f.map !== mapIndex) { rebuildWorld(f.map); restart(); }
+  // 지도는 **호스트가 준 것을 그대로** 쓴다 (D117) — 판마다 랜덤이라 인덱스만으로는 못 맞춘다.
+  // 여기서 안 받으면 둘이 서로 다른 지형 위에서 논다.
+  const mapChanged = (f.map !== undefined && f.map !== mapIndex) ||
+    JSON.stringify(f.cmap || null) !== JSON.stringify(customMap || null);
+  customMap = f.cmap || null;
+  if (mapChanged) { rebuildWorld(f.map !== undefined ? f.map : mapIndex); restart(); }
   else restart();
   if (f.settings) applySettings(f.settings);
   stage = f.stage; stageT = f.stageT; survival = f.survival;
@@ -8757,7 +8925,7 @@ window.__game = {
   get stageT() { return stageT; },
   get victory() { return victory; },
   edPaint, get editor() { return editor; }, get customMap() { return customMap; },
-  addMud, addBush, mudSpeedAt, segmentBlocked, rebuildWorld,
+  addMud, addBush, mudSpeedAt, segmentBlocked, rebuildWorld, rollMap, generateMap,
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
   mudCells, bushCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
