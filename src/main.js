@@ -346,6 +346,11 @@ const P = {
   //          0으로 둔 이유(D-속도 상한)와 같다. 적이 더 빨라지면 술래잡기가 아니게 된다.
   //  wave    공세 규모 = 평소 구성 × 이 배율
   final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1 },
+  // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
+  tutorial: { bigTime: 5.5 },
+  // 지형 (D112). mudSlow = 가장 무거운 몸이 늪에서 갖는 속도 배율.
+  //  mudFree 이하 반지름은 전혀 안 느려지고(햄스터), mudFull 이상은 최대로 느려진다(톰).
+  terrain: { mudSlow: 0.45, mudFree: 0.35, mudFull: 1.2 },
   // 난이도 배율 (D104). "너무 어렵다"는 평에 대응하는 다이얼 두 개.
   // 종류별 hp·STAGES 표를 하나하나 고치는 대신 **지출 지점에서 곱한다** —
   // P.res.costScale과 같은 방식이라 원래 값이 소스에 그대로 남는다.
@@ -493,8 +498,10 @@ const newUpg = () => ({ speed: 0, radius: 0, tower: 0, guard: 0 });
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
 // 모든 이동 속도는 이 배율을 통과한다 (D56) — 여기 한 곳만 바꾸면 전체 템포가 바뀐다
 const moveScale = () => P.tempo.moveScale;
-const effPlayerSpeed = (p = player) => (P.player.speed + p.upg.speed * P.upgrade.speedStep) * moveScale();
-const effWorkerSpeed = () => P.worker.speed * moveScale();
+const effPlayerSpeed = (p = player) =>
+  (P.player.speed + p.upg.speed * P.upgrade.speedStep) * moveScale() * mudSpeedAt(p.x, p.z, P.player.radius);
+const effWorkerSpeed = (w) =>
+  P.worker.speed * moveScale() * (w ? mudSpeedAt(w.x, w.z, P.worker.radius) : 1);
 const effGuardSpeed = () => P.guard.speed * moveScale();
 // 업그레이드는 채굴 '시간'을 줄인다 (레벨당 radiusStep초)
 const effMineTime = (p = player) => Math.max(P.carry.mineTime - p.upg.radius * P.upgrade.radiusStep, 0.25);
@@ -1525,8 +1532,11 @@ function enemySpawnPos(n) {
 // 종류별 스탯 접근자 — 위협 레벨 보정 포함
 const typeP = (e) => P[e.type];
 const enemyR = (e) => typeP(e).radius;
+// 늪은 **여기서** 걸린다 (D112). 몸집이 클수록 크게 느려지므로,
+// 늪을 가로지르는 도망은 햄스터에게만 이득이다 — 크기 비대칭의 속도판.
 const enemySpeedOf = (e) =>
-  Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap) * moveScale();
+  Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap)
+  * moveScale() * mudSpeedAt(e.x, e.z, enemyR(e));
 const enemyDpsOf = (e) => ((typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain) * finalBoost();
 const enemyDmgOf = (e) => typeP(e).dmg * (e.type === 'boss' ? 1 : finalBoost());
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
@@ -2993,8 +3003,8 @@ function updateWorkers(dt) {
       if (dl > 0.03) {
         dx /= dl; dz /= dl;
         const st = steerAroundPosts(w.x, w.z, dx, dz, P.worker.radius);
-        w.x += st.x * effWorkerSpeed() * dt;
-        w.z += st.z * effWorkerSpeed() * dt;
+        w.x += st.x * effWorkerSpeed(w) * dt;
+        w.z += st.z * effWorkerSpeed(w) * dt;
         w.faceX = st.x; w.faceZ = st.z;
       }
       collideWithObstacles(w, P.worker.radius);
@@ -4149,6 +4159,15 @@ function segmentBlocked(x0, z0, x1, z1, ignoreBldg = null) {
   if (len < 1e-6) return false;
   const ux = dx / len, uz = dz / len;
   const steps = Math.max(1, Math.ceil(len / (CS * 0.4)));
+  // 덤불은 통과는 되지만 **시야를 끊는다** (D112) — 선분이 덤불 칸을 지나면 막힌 것으로 본다.
+  // 벽이 "못 지나감"이라면 덤불은 "못 봄"이다. 그래서 숨을 자리가 된다.
+  if (bushCells.size) {
+    for (let s2 = 0; s2 <= steps; s2++) {
+      const t2 = s2 / steps;
+      const c2 = worldToCell(x0 + dx * t2, z0 + dz * t2);
+      if (bushCells.has(cellKey(c2.i, c2.j))) return true;
+    }
+  }
   const checked = new Set();
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
