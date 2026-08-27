@@ -358,12 +358,18 @@ const P = {
   mapgen: {
     on: 1,               // 0이면 손으로 쓴 기본 맵을 쓴다
     spawnClear: 7,       // 스폰 둘레 이 반경 안에는 아무것도 안 놓는다(칸)
-    pileGap: 3,          // 더미끼리 최소 간격(칸)
-    midCount: 7,         // 중간 고리 낱개 더미 수
-    farClusters: 4,      // 바깥 군집 수 (군집당 2~4개)
-    clusterSpread: 3.2,  // 군집이 퍼지는 반경(칸)
+    // 더미끼리 최소 간격(칸). 3은 너무 붙어서 미니맵에서 한 덩어리로 보였다 (D119)
+    pileGap: 6,
+    // 구역 나누기 (D119) — Z×Z로 자르고 구역마다 최소량을 보장한다
+    zones: 4,
+    nearLo: 0, nearHi: 1,      // 시작 구역
+    midLo: 1, midHi: 2,        // 한 칸 떨어진 구역
+    farLo: 2, farHi: 3,        // 그보다 먼 구역
+    cornerLo: 0, cornerHi: 2,  // 모퉁이 — 맵 끝이 곧 방벽이라 덜 준다
     rockClumps: 14, mudPools: 5, bushClumps: 7,
   },
+  // 채팅 (D120). lines = 화면에 남는 줄 수, hold = 한 줄이 머무는 시간(초)
+  chat: { lines: 6, hold: 14 },
   // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
   tutorial: { bigTime: 5.5 },
   // 지형 (D112). mudSlow = 가장 무거운 몸이 늪에서 갖는 속도 배율.
@@ -901,31 +907,43 @@ function generateMap(seed, size = 84) {
     return true;
   };
 
-  // ---- 치즈: 거리 띠마다 다른 규칙 ----
-  const place = (cx, cj, count, spread, mulLo, mulHi) => {
-    for (let k = 0; k < count; k++) {
-      for (let tries = 0; tries < 24; tries++) {
-        const a = R() * Math.PI * 2, r = R() * spread;
-        const i = Math.round(cx + Math.cos(a) * r), j = Math.round(cj + Math.sin(a) * r);
-        // 더미끼리 너무 붙지 않게
-        if (piles.some((q) => Math.hypot(q[0] - i, q[1] - j) < G.pileGap)) continue;
-        if (mark(piles, i, j, +(mulLo + R() * (mulHi - mulLo)).toFixed(2))) break;
+  // ---- 치즈: **구역별 최소량** (D119) ----
+  // 예전엔 "기지에서의 거리 띠"로 뿌렸다. 그러면 방향에 따라 빈 곳이 크게 남아
+  // 어떤 판은 한쪽이 통째로 황무지였다. 이제 맵을 Z×Z 구역으로 자르고
+  // **구역마다 몇 개**를 보장한다 — 어디로 가도 뭔가는 있고, 멀수록 많다.
+  //
+  //   시작 구역        0~1  (안전한 만큼 적다)
+  //   한 칸 떨어진 곳  1~2
+  //   그보다 먼 곳     2~3
+  //   **모퉁이 구역**  0~2  (맵 끝이 곧 천연 방벽이라 이미 지키기 쉽다 —
+  //                        거기까지 부유하면 모퉁이가 정답이 되어 버린다)
+  const Z = G.zones;
+  const zw = N / Z;
+  const zoneOf = (i, j) => [Math.min(Z - 1, Math.floor(i / zw)), Math.min(Z - 1, Math.floor(j / zw))];
+  const pz = zoneOf(ps[0], ps[1]);
+  const pileAt = (i, j) => piles.some((q) => Math.hypot(q[0] - i, q[1] - j) < G.pileGap);
+
+  for (let zj = 0; zj < Z; zj++)
+    for (let zi = 0; zi < Z; zi++) {
+      const d = Math.max(Math.abs(zi - pz[0]), Math.abs(zj - pz[1]));   // 구역 단위 거리
+      const corner = (zi === 0 || zi === Z - 1) && (zj === 0 || zj === Z - 1);
+      let lo, hi;
+      if (d === 0) { lo = G.nearLo; hi = G.nearHi; }
+      else if (d === 1) { lo = G.midLo; hi = G.midHi; }
+      else { lo = G.farLo; hi = G.farHi; }
+      if (corner) { lo = Math.min(lo, G.cornerLo); hi = Math.min(hi, G.cornerHi); }
+      const want = lo + Math.floor(R() * (hi - lo + 1));
+      // 멀수록 큰 더미 — 크기는 거리에 계속 비례한다
+      const mulLo = 0.5 + d * 0.45, mulHi = 0.9 + d * 0.55;
+      for (let k = 0; k < want; k++) {
+        for (let tries = 0; tries < 40; tries++) {
+          const i = Math.round(zi * zw + 1 + R() * (zw - 2));
+          const j = Math.round(zj * zw + 1 + R() * (zw - 2));
+          if (pileAt(i, j)) continue;                 // 서로 너무 붙지 않게
+          if (mark(piles, i, j, +(mulLo + R() * (mulHi - mulLo)).toFixed(2))) break;
+        }
       }
     }
-  };
-  // 근거리 — 1~2개, 작다
-  place(ps[0], ps[1], 1 + Math.floor(R() * 2), N * 0.13, 0.5, 0.8);
-  // 중간 고리 — 낱개로 흩어진다
-  for (let k = 0; k < G.midCount; k++) {
-    const a = R() * Math.PI * 2, r = N * (0.22 + R() * 0.16);
-    place(mid + Math.cos(a) * r, mid + Math.sin(a) * r, 1, 2.5, 0.9, 1.4);
-  }
-  // 원거리 — **군집**. 멀리 갈수록 뭉쳐 있고 크다
-  for (let k = 0; k < G.farClusters; k++) {
-    const a = R() * Math.PI * 2, r = N * (0.40 + R() * 0.08);
-    const cx = mid + Math.cos(a) * r, cj = mid + Math.sin(a) * r;
-    place(cx, cj, 2 + Math.floor(R() * 3), G.clusterSpread, 1.6, 2.4);
-  }
 
   // ---- 지형 ----
   const blob = (arr, cx, cj, n, spread) => {
@@ -7494,6 +7512,14 @@ function beginTutorial() {
   tut = { step: 0, bigT: 0 };
   tutStats.repaired = 0; tutStats.dropped = 0;
   for (const st of TUT_STEPS) st.setupDone = false;
+  // 연습판은 시작 구역에 **반드시 한 개**를 둔다 (D119). 1단계가 "치즈를 감싸세요"인데
+  // 구역 최소량이 0~1이라 하필 0이 나오면 초보자가 한 구역을 걸어가야 한다.
+  if (P.mapgen.on && !editorMap) {
+    const lo = P.mapgen.nearLo;
+    P.mapgen.nearLo = Math.max(1, lo);
+    rollMap();
+    P.mapgen.nearLo = lo;
+  }
   // **1단계에는 고양이가 없다** (D113). 벽 5장 세우자마자 고양이가 붙어 있으면
   // 초보자는 거기서 더 넓히질 못한다 — 감싸기를 배우기 전에 쫓기게 된다.
   P.enemy.count = 0;
