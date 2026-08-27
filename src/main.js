@@ -6730,11 +6730,19 @@ function myTerritoryRate(me) {
 function updateRes() {
   const me = localPlayer();
   const rate = myTerritoryRate(me);
+  const inside = inTerritory(me.x, me.z);
+  // 영토가 **뭘 해 주는지**를 숫자로 붙인다 (D118). 넓이만 보여주면
+  // "그래서 내가 뭘 얻고 있는데?"에 답이 안 된다. 지금 서 있는 곳까지 표시한다.
+  const total = rate + P.res.idleIncome;
   resEl.innerHTML =
-    `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}</div>` +
-    (rate > 0
-      ? `<div class="r terr"><span class="ic">🌿</span>${territoryArea.toFixed(0)}㎡` +
-        `<b class="rate">+${rate.toFixed(1)}/s</b></div>`
+    `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}` +
+    (total > 0 ? `<b class="rate">+${total.toFixed(1)}/s</b>` : '') + '</div>' +
+    (territoryArea > 0
+      ? `<div class="r terr${inside ? ' inside' : ''}"><span class="ic">🌿</span>` +
+        `${territoryArea.toFixed(0)}㎡` +
+        `<b class="rate">치즈 +${rate.toFixed(1)}/s</b>` +
+        `<b class="stam">기운 ×${P.player.terrStamMul}</b>` +
+        (inside ? '<b class="here">내 땅 안</b>' : '') + '</div>'
       : '') +
     `<div class="r parts"><span class="ic">⚙️</span>${me.parts}</div>`;
 }
@@ -8511,6 +8519,24 @@ function enemyModeSummary() {
 const bossBarEl = document.getElementById('bossbar');
 // 준비/공세 국면은 **화면에 크게** 나와야 한다 (D108) — 준비 시간이 무제한이라
 // "지금 뭘 기다리는 중인지"를 모르면 그냥 멈춘 게임처럼 보인다. 보스바 자리를 같이 쓴다.
+// 잡혔을 때 남은 시간 (D118). 5분이나 되는데 어디에도 안 보이면
+// "언제까지 뭘 해야 하는지"를 알 수가 없다. 상단 가운데에 크게 건다.
+function captiveBanner() {
+  const me = localPlayer();
+  const t = me && me.wipeT ? me.wipeT : 0;
+  if (t <= 0) return '';
+  const total = Math.max(P.coop.wipeGrace, 0.01);
+  const f = Math.max(0, Math.min(1, t / total));
+  const m = Math.floor(t / 60), sec = Math.floor(t % 60);
+  const label = humans().length > 1 ? '구출되지 않으면 전부 무너진다' : '내 땅으로 돌아가야 한다';
+  // 1분 아래로 내려가면 붉게
+  const col = t < 60 ? '#ff3b3b, #ff8b5e' : '#c8901f, #ffd24a';
+  return `<div class="row"><div class="lbl"><span>잡혔다 — ${label}</span>` +
+    `<span>${m}:${String(sec).padStart(2, '0')}</span></div>` +
+    `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
+    `background:linear-gradient(90deg,${col})"></div></div></div>`;
+}
+
 function finalBanner() {
   if (finalPhase === 'prep')
     return `<div class="row"><div class="lbl"><span>준비 국면 — 방어선을 세우세요</span>` +
@@ -8528,7 +8554,7 @@ function finalBanner() {
 
 function updateBossBar() {
   const list = enemies.filter((e) => e.type === 'boss');
-  const banner = finalBanner();
+  const banner = captiveBanner() + finalBanner();
   if (!list.length && !banner) { bossBarEl.style.display = 'none'; return; }
   bossBarEl.style.display = 'block';
   if (!list.length) { bossBarEl.innerHTML = banner; return; }

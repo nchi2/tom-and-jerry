@@ -39,9 +39,16 @@
     #res .r .ic { font-size: 17px; }
     #res .cheese { border-color: #6b5a24; }
     #res .parts { border-color: #2f5570; }
-    /* 영토 수입 (D107) — 치즈 바로 밑. 넓힌 만큼 번다는 게 여기서 읽혀야 한다 */
-    #res .terr { border-color: #3d6b47; font-size: 12px; }
-    #res .terr .rate { color: #8fe0a0; margin-left: 4px; }
+    /* 영토 (D107 → D118) — 넓이만이 아니라 **뭘 해 주는지**까지 */
+    #res .terr { border-color: #3d6b47; font-size: 11px; gap: 4px; }
+    #res .rate { color: #8fe0a0; margin-left: 4px; font-weight: 700; }
+    #res .terr .stam { color: #8fd6ff; font-weight: 700; }
+    #res .terr .here {
+      color: #0d1117; background: #8fe0a0; border-radius: 4px;
+      padding: 0 5px; font-weight: 700;
+    }
+    /* 내 땅 안에 서 있으면 테두리가 살아난다 — 지금 혜택을 받는 중이라는 표시 */
+    #res .terr.inside { border-color: #8fe0a0; background: rgba(24, 48, 32, .9); }
     body.gui-on #res, body.gui-on #net { right: 268px; }
     body.hud-off #hud { display: none; }
     /* 시작 화면 (D93) — 몇 명이 할지부터 고르고 들어간다.
