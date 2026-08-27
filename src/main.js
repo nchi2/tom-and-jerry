@@ -105,7 +105,9 @@ const P = {
     enemyScale: 1.8,
     // 잡히면 이 시간 안에 동료가 터치하면 **소멸이 취소된다** (0이면 즉시 소멸 = 솔로와 같음).
     // D7의 "죽음의 사회성"에 처음으로 실제 이해관계를 붙이는 값이다.
-    wipeGrace: 20,
+    // 잡히면 **5분** 안에 풀려나야 지은 것이 산다 (D109 — 예전엔 2P 20초/솔로 즉시).
+    // 솔로는 내 땅으로 돌아오면 풀린다.
+    wipeGrace: 300,
     // ---- 건네주기 (D96) ----
     // 살림은 각자다(D43). 대신 **가까이 붙어야만** 옮길 수 있게 해서
     // 두 경제가 합쳐지지 않고 *거래*하게 만든다 — 주러 가는 것 자체가 위험이다.
@@ -5933,7 +5935,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.ally, 'radius', 0.15, 0.8, 0.01).name('2P 햄스터 반지름')
     .onChange((v) => { for (const q of players) if (q.slot) q.vis.group.scale.setScalar(v); });
   f.add(P.coop, 'enemyScale', 1, 3, 0.1).name('2P 적 배수 (재시작부터)');
-  f.add(P.coop, 'wipeGrace', 0, 60, 1).name('소멸 유예(초) — 구출하면 취소');
+  f.add(P.coop, 'wipeGrace', 0, 600, 10).name('소멸 유예(초) — 구출/귀환하면 취소');
   f.add(P.coop, 'giveRange', 1, 8, 0.2).name('건네주기 사거리');
   f.add(P.coop, 'giveCheese', 1, 100, 1).name('한 번에 넘길 치즈');
   f.add(P.coop, 'giveParts', 1, 10, 1).name('한 번에 넘길 부품');
@@ -6622,17 +6624,21 @@ function caught(who) {
   // 방어병·일꾼만 필터가 없어서, P1이 잡히면 P2의 군대까지 같이 사라졌다.
   // 솔로 동료는 지은 게 없으므로 여기서 아무 일도 안 일어난다.
   // ---- 소멸 (D7) — 2P에서는 **유예된다** (D95) ----
-  // 혼자면 예전 그대로 즉시 무너진다. 둘이면 wipeGrace 동안 버티고, 그 안에 동료가
-  // 터치하면 취소된다. "잡히면 다 잃는다"(개인 페널티)가
-  // **"혼자면 다 잃는다. 친구가 있으면 구할 수 있다"**(사회적)로 바뀐다 — D7의 정체성이다.
+  // 둘이면 동료가 터치해서, 혼자면 **내 땅까지 걸어 돌아와서** 푼다 (D109).
+  // "잡히면 다 잃는다"가 "잡히면 되찾을 시간이 있다"가 된다 — 밀려도 판이 안 끝난다.
   who.carry = 0;
-  if (P.player.wipeOnCatch && !who.ai) {
-    if (humans().length > 1 && P.coop.wipeGrace > 0) {
-      who.wipeT = P.coop.wipeGrace;
-      flashFor(who, `${Math.round(P.coop.wipeGrace)}초 안에 구출되지 않으면 전부 무너진다`, '#ffb347');
-    } else {
-      wipeOwner(who);
-    }
+  // **즉시 소멸은 없앴다** (D109). 혼자든 둘이든 잡히면 유예가 걸린다 —
+  // 그 안에 풀려나면 지은 것이 산다. 예전에는 솔로에서 한 번 잡히는 순간
+  // 판이 통째로 리셋돼서, "밀리면서 버틴다"가 아예 성립하지 않았다.
+  if (P.player.wipeOnCatch && !who.ai && P.coop.wipeGrace > 0) {
+    who.wipeT = P.coop.wipeGrace;
+    const m = Math.floor(P.coop.wipeGrace / 60), sec = Math.round(P.coop.wipeGrace % 60);
+    const label = m ? `${m}분${sec ? ` ${sec}초` : ''}` : `${sec}초`;
+    flashFor(who, humans().length > 1
+      ? `${label} 안에 구출되지 않으면 전부 무너진다`
+      : `${label} 안에 내 땅으로 돌아가지 못하면 전부 무너진다`, '#ffb347');
+  } else if (P.player.wipeOnCatch && !who.ai) {
+    wipeOwner(who);
   }
   if (who.local) camTarget.set(who.x, 0, who.z); // 카메라가 끌려간 걸 보여줌
   // 혼자면 기절할 이유가 없다 — 구해 줄 사람이 없다 (D95).
@@ -6680,6 +6686,13 @@ function wipeOwner(who) {
 function updateWipeGrace(dt) {
   for (const q of players) {
     if (!q.wipeT || q.wipeT <= 0) continue;
+    // 혼자일 때는 구해 줄 사람이 없다 (D109). 대신 **제 발로 돌아오면** 풀린다 —
+    // 적 본진에 떨궈진 뒤 내 땅까지 살아서 걸어오는 것 자체가 구출이다.
+    if (humans().length < 2 && !q.stunned && inTerritory(q.x, q.z)) {
+      q.wipeT = 0;
+      flashFor(q, '내 땅으로 돌아왔다 — 지은 것을 지켰다', '#6ee07a');
+      continue;
+    }
     q.wipeT -= dt;
     if (q.wipeT <= 0) { q.wipeT = 0; wipeOwner(q); }
   }
