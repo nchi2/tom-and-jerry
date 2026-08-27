@@ -6611,6 +6611,7 @@ function setGui(on) {
 setGui(false);
 
 let hudOn = true;
+let miniOn = true;      // 미니맵 (D118) — M으로 따로 켜고 끈다
 function setHud(on) {
   hudOn = on;
   document.body.classList.toggle('hud-off', !on);
@@ -7879,7 +7880,10 @@ function drawMiniBg() {
 // **렌더 경로에서만** 부른다 (D95). tick 안에 두면 헤드리스 150초 런이
 // 미니맵을 9,000번 다시 그리게 된다 — 실제로 그래서 회귀 하니스가 멈췄다.
 function drawMini(dt) {
-  const on = hudOn && started && alive;
+  // **개발 HUD(`)와 분리한다** (D118). 예전엔 hudOn에 묶여 있어서, 좌상단 디버그
+  // 텍스트를 끄면 미니맵도 같이 사라졌다 — 미니맵은 개발 정보가 아니라 게임 UI다.
+  // alive도 빼야 한다: 잡혔을 때야말로 "동료가 어디 있나"를 봐야 한다.
+  const on = miniOn && started;
   miniEl.classList.toggle('on', on);
   if (!on) return;
   miniT -= dt;
