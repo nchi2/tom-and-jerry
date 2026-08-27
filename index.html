@@ -271,6 +271,44 @@
       color: #cfd6e4; font-size: 11px; margin: 3px 0 5px 22px;
       padding-left: 8px; border-left: 2px solid #ffd24a;
     }
+    /* 맵 에디터 (D112) */
+    #editor {
+      position: fixed; left: 12px; top: 120px; width: 268px; display: none; z-index: 7;
+      font: 12px/1.6 ui-monospace, Menlo, monospace; color: #e8ecf4;
+      background: rgba(16,20,30,.92); border: 1px solid #3a4054; border-radius: 8px;
+      padding: 10px 12px; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+    #editor .ehead { color: #ffd24a; font-weight: 700; margin-bottom: 7px; line-height: 1.4; }
+    #editor .ebrush { display: flex; gap: 8px; color: #8b93a5; padding: 1px 0; }
+    #editor .ebrush b { width: 15px; text-align: center; color: #6b7385; }
+    #editor .ebrush.sel { color: #ffd24a; font-weight: 700; }
+    #editor .ebrush.sel b { color: #ffd24a; }
+    #editor .ehint {
+      color: #cfd6e4; font-size: 11px; margin: 7px 0 5px;
+      padding-left: 8px; border-left: 2px solid #ffd24a;
+    }
+    #editor .ecount { color: #8fd6ff; font-size: 11px; }
+    #editor .ekeys { color: #6b7385; font-size: 11px; margin-top: 5px; }
+
+    /* 단계 안내 — 화면 가운데 크게 (D113) */
+    #tutbig {
+      position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%);
+      width: min(760px, 88vw); text-align: center; z-index: 8; pointer-events: none;
+      opacity: 0; transition: opacity .35s ease;
+    }
+    #tutbig.on { opacity: 1; }
+    #tutbig .tb-step {
+      color: #ffd24a; font: 700 13px/1.4 ui-monospace, Menlo, monospace;
+      letter-spacing: .22em; margin-bottom: 6px;
+    }
+    #tutbig .tb-title {
+      color: #fff; font: 700 34px/1.25 system-ui, -apple-system, "Noto Sans KR", sans-serif;
+      text-shadow: 0 3px 18px rgba(0,0,0,.95), 0 1px 3px rgba(0,0,0,1);
+    }
+    #tutbig .tb-hint {
+      color: #cfd6e4; font: 15px/1.5 system-ui, -apple-system, "Noto Sans KR", sans-serif;
+      margin-top: 10px; text-shadow: 0 2px 10px rgba(0,0,0,.95);
+    }
   </style>
 </head>
 <body>
@@ -284,6 +322,10 @@
   <div id="bossbar"></div>
   <!-- 튜토리얼 단계 목록 (D111) — 좌측, 진행 중일 때만 -->
   <div id="tut"></div>
+  <!-- 단계가 바뀔 때 화면 가운데 크게 (D113) — 옆 목록만으로는 안 읽힌다 -->
+  <div id="tutbig"><div class="tb-step"></div><div class="tb-title"></div><div class="tb-hint"></div></div>
+  <!-- 맵 에디터 (D112) -->
+  <div id="editor"></div>
   <div id="flash"></div>
   <div id="selbox"></div>
   <div id="hotbar"></div>
@@ -310,10 +352,11 @@
       <div class="sub">작은 햄스터, 큰 고양이. 틈이 좁으면 못 지나간다</div>
 
       <div class="step on" id="s-mode">
-        <button id="s-tut">연습 (처음이라면 여기)<span class="k">벽 세우기부터 병사 고용까지 8단계. 고양이는 한 마리뿐</span></button>
+        <button id="s-tut">연습 (처음이라면 여기)<span class="k">치즈를 벽으로 감싸는 것부터 병사 고용까지 8단계</span></button>
         <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 5분 안에 내 땅으로 돌아와야 지은 게 산다</span></button>
         <button id="s-two">2인 협동<span class="k">붙는 순간 시작. 적 1.8배. 잡혀도 구해 주면 기지가 산다</span></button>
         <button id="s-four">3~4인 협동<span class="k">최대 넷. 다 모이면 방장이 시작한다 — 적은 인원수만큼 는다</span></button>
+        <button id="s-editor">맵 에디터<span class="k">바위·늪·덤불·치즈를 직접 놓아 지도를 만든다</span></button>
       </div>
 
       <div class="step" id="s-two-menu">

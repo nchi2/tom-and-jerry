@@ -158,7 +158,10 @@ const P = {
           spawnAngle: 0.6,      // 전체 배치를 돌리는 각(라디안) — 매판 같은 자리가 되지 않게
           keepApart: 18,        // 톰끼리 이 거리 안으로는 안 붙는다
           keepApartForce: 4,    // 밀어내는 세기(초당)
-          smashRadius: 2.6 },   // 강타가 닿는 반경 — 한 번에 여러 장을 친다
+          // 강타 범위 (D107 → D115에서 절반으로). 1.3이면 벽 한 줄에서 앞의 3장.
+          // smashArc = 앞쪽 판정 문턱(코사인). 0이면 정확히 앞 반원, 낮출수록 옆까지 친다
+          smashRadius: 1.3, smashArc: -0.15,
+          smashMax: 4 },        // 한 번에 칠 수 있는 벽 장수 (가까운 순)
   // 벽은 무적이다 (원작 파일런). 부수는 건 자폭고양이의 폭발뿐.
   // 대신 비싸다 — 비용이 곧 "얼마나 넓게 두를 것인가"의 제약.
   // post = 벽 **원기둥의 지름** (D57·D59·D74). 셀(1.5)보다 작아서 틈이 생긴다:
@@ -362,6 +365,9 @@ const P = {
     // speedGain 0 = 후반에도 더 빨라지지 않는다 (2026-08-13).
     // 체력·공격력만 오른다 — 빨라지는 건 "피할 수 없다"가 되어 술래잡기를 깨뜨린다
     interval: 30, speedGain: 0, dpsGain: 6, everyLevels: 0, hpGain: 120,
+    // 각 스테이지 길이 배율 (D115). 1.5 = 전 구간 50% 길어짐 → 톰이 그만큼 늦게 온다
+    //   합계 600초(10분) → 900초(15분)
+    stageScale: 1.5,
     // 속도는 상한을 둔다 — 적이 플레이어보다 빨라지면 술래잡기가 아니게 된다
     speedCap: 10.8,
     // 원작의 탐욕 페널티: 일정 수를 잡으면 그때 우루루 쏟아진다
@@ -4351,7 +4357,9 @@ let finalPhase = 'none';
 let finalT = 0;             // 공세 경과 시간
 const enraged = () => finalPhase === 'assault';
 
-const stageDur = () => STAGES[Math.min(stage, STAGES.length) - 1].time;
+// 스테이지 길이 배율 (D115). "톰이 너무 빨리 온다"는 평 →
+// 표의 숫자를 고치지 않고 여기서 곱한다 (costScale과 같은 방식 — 원래 값이 소스에 남는다).
+const stageDur = () => STAGES[Math.min(stage, STAGES.length) - 1].time * P.threat.stageScale;
 
 // 지금까지의 스테이지 표에 등장한 종류들 (증원 스폰 풀)
 function unlockedTypes() {
@@ -4794,19 +4802,38 @@ function updateEnemy(enemy, dt) {
         // 한 번에 낼 금의 수를 crackMax에서 거꾸로 계산한다 — crackMax를
         // 슬라이더로 만져도 "톰은 두 번"이 유지된다.
         const per = Math.max(1, Math.ceil((P.wall.crackMax + 1) / Math.max(1, P.boss.smashHits)));
-        // 한 장만 치면 벽선이 사실상 안 뚫린다 (D107) — 내리친 자리 **주변까지** 닿는다.
-        // 자폭묘 폭발(detonate)과 같은 모양의 범위 판정이다.
+        // 내리친 자리 **주변까지** 닿는다 (D107). 다만 범위를 좁히고 **앞쪽만** 친다 (D115) —
+        // 2.6일 때는 벽 5장에 두 겹까지 한 번에 갈려서 "한 방에 뚫린다"에 가까웠다.
+        // 1.3이면 한 줄에서 **앞의 3장**만 닿는다 (칸 거리 0과 1.5-0.75=0.75만 들어옴).
         const R = P.boss.smashRadius;
         const hit = cellToWorld(smashWall.i, smashWall.j);
+        // 톰이 보는 방향 — 이 반대편(뒤쪽 겹)은 안 친다
+        const fx = enemy.dirX || 0, fz = enemy.dirZ || 1;
+        const fl = Math.hypot(fx, fz) || 1;
         const span = Math.ceil(R / CS) + 1;
-        let broke = 0;
+        // 후보를 모아 **가까운 순으로 몇 장까지만** 친다 (D115).
+        // 거리만으로는 "벽선을 따라 옆"과 "벽을 뚫고 뒤"를 구분할 수 없다 —
+        // 둘 다 한 칸(1.5m)이라 반경을 줄여도 두 겹이 같이 갈렸다.
+        // 그래서 개수로 자른다: 요청대로 "톰 전방의 3~4장".
+        const cand = [];
         for (let dj = -span; dj <= span; dj++)
           for (let di = -span; di <= span; di++) {
             const ob = obstacles.get(cellKey(smashWall.i + di, smashWall.j + dj));
             if (!ob || ob.bedrock || ob.bldgRef) continue;
-            if (distCellToPoint(ob.i, ob.j, hit.x, hit.z) > R) continue;
-            if (crackWall(ob, per)) broke++;
+            const d = distCellToPoint(ob.i, ob.j, hit.x, hit.z);
+            if (d > R) continue;
+            // 뒤쪽은 안 친다 — 톰에서 그 벽으로 가는 방향이 시선과 같은 쪽이어야 한다.
+            // 정면에 딱 붙은 칸(거리≈0)은 각도가 불안정하므로 그냥 통과시킨다.
+            const ow = cellToWorld(ob.i, ob.j);
+            const vx = ow.x - enemy.x, vz = ow.z - enemy.z;
+            const vl = Math.hypot(vx, vz);
+            if (vl > 0.6 && (vx * fx + vz * fz) / (vl * fl) < P.boss.smashArc) continue;
+            cand.push({ ob, d: d + vl * 0.01 });   // 같은 거리면 톰에게 가까운 쪽 먼저
           }
+        cand.sort((a, b2) => a.d - b2.d);
+        let broke = 0;
+        for (const c2 of cand.slice(0, Math.max(1, P.boss.smashMax)))
+          if (crackWall(c2.ob, per)) broke++;
         if (broke) markNavDirty();
         spawnBuildFx(enemy.x, enemy.z);
         flashMsg(broke ? `톰이 벽을 강타해 부쉈다! (${broke}장)` : '톰이 벽을 내리쳤다 — 금이 갔다',
@@ -6170,6 +6197,10 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.boss, 'bldgDps', 5, 200, 1).name('건물 공격력');
   f.add(P.boss, 'smashCooldown', 1, 30, 0.5).name('벽 강타 쿨다운(초)');
   f.add(P.boss, 'smashHits', 1, 5, 1).name('벽 강타 몇 번에 부서지나');
+  f.add(P.boss, 'smashRadius', 0.5, 5, 0.1).name('벽 강타 반경(m)');
+  f.add(P.boss, 'smashArc', -1, 1, 0.05).name('강타 앞쪽 판정 (-1=사방)');
+  f.add(P.boss, 'smashMax', 1, 12, 1).name('강타 최대 벽 장수');
+  f.add(P.threat, 'stageScale', 0.5, 3, 0.1).name('★ 스테이지 길이 배율');
   f.add(P.boss, 'smashWindup', 0.2, 3, 0.1).name('벽 강타 예비동작(초)');
 }
 {
@@ -7227,86 +7258,140 @@ const myWallCount = () => {
 };
 
 const TUT_STEPS = [
-  { t: '고양이를 피해 벽을 지으세요',
-    hint: '① 숫자 1 → 마우스로 자리를 보고 좌클릭 · 벽 5장',
-    now: () => `${Math.min(myWallCount(), 5)} / 5`,
-    ok: () => myWallCount() >= 5 },
-  { t: '치즈 창고를 짓고 치즈를 캐세요',
-    hint: '② 숫자 2로 창고를 짓고 → 치즈 더미 옆에서 E · 가득 차면 창고로',
-    now: () => (depotCount() ? (tutStats.dropped ? '완료' : '창고 ✓ — 이제 캐서 부리세요') : '창고 없음'),
-    ok: () => depotCount() >= 1 && tutStats.dropped >= 1 },
-  { t: '일꾼을 고용해 보세요',
-    hint: '③ 숫자 3 → Enter. 일꾼이 알아서 캐 옵니다 (병사는 캐지 않습니다)',
-    now: () => `일꾼 ${workers.filter((w) => w.owner === 'p').length}`,
-    ok: () => workers.some((w) => w.owner === 'p') },
-  { t: '공방을 지어 보세요',
-    hint: '④ 숫자 4 → 좌클릭. 공방이 있어야 경비탑과 병사가 열립니다',
-    now: () => (hasWorkshop() ? '완료' : '없음'),
+  { t: '벽으로 치즈 더미를 감싸세요',
+    hint: '숫자 1 → 치즈 더미 둘레를 벽으로 막습니다. 고양이가 못 들어오면 성공',
+    now: () => (tutEnclosedPile() ? '완료' : `벽 ${myWallCount()}장 — 아직 뚫려 있습니다`),
+    // 첫 단계에는 **고양이가 없다** (D113). 쫓기면서 감싸는 건 초보자가 할 수 있는 일이 아니다.
+    ok: () => tutEnclosedPile(),
+    after: () => {
+      // 감싸는 데 성공한 순간 처음으로 고양이가 온다 — 방금 만든 게 왜 필요한지 바로 보인다
+      P.enemy.count = 1; P.enemy.spawnDelay = 3; P.res.terrIncome = TUT_TERR;
+      setEnemyCount(1);
+      flashMsg('고양이가 나타났다! 감싼 안쪽은 안전하다', '#ff6b6b');
+    } },
+  { t: '치즈 창고를 지으세요',
+    hint: '숫자 2 → 좌클릭. 캔 치즈를 여기에 부려야 잔고가 됩니다',
+    now: () => (depotCount() ? '완료' : '아직 없음'),
+    ok: () => depotCount() >= 1 },
+  { t: 'E로 치즈를 캐고, 일꾼을 고용하세요',
+    hint: '치즈 더미 옆에서 E · 가득 차면 창고로 · 숫자 3 → Enter로 일꾼 고용',
+    now: () => `캐기 ${tutStats.dropped ? '✔' : '…'} · 일꾼 ${workers.filter((w) => w.owner === 'p').length}`,
+    ok: () => tutStats.dropped >= 1 && workers.some((w) => w.owner === 'p') },
+  { t: '공방을 지으세요',
+    hint: '숫자 4 → 좌클릭. 공방이 있어야 경비탑과 병사가 열립니다',
+    now: () => (hasWorkshop() ? '완료' : '아직 없음'),
     ok: () => hasWorkshop() },
   { t: '금이 간 벽을 수리하세요',
-    hint: '⑤ 금 간 벽 옆으로 가면 안내가 뜹니다 — 그 자리에서 F',
+    hint: '금 간 벽 옆으로 가서 F',
     now: () => (tutStats.repaired ? '완료' : '금 간 벽으로 가세요'),
     setup: () => {
-      // 수리를 배우려면 **금이 가 있어야** 한다. 없으면 하나 만들어 준다.
       const mine = [...obstacles.values()].filter((o) => !o.bedrock && !o.bldgRef && o.owner === 'p');
-      if (!mine.length) return;
-      if (mine.some((o) => (o.cracks || 0) > 0)) return;
+      if (!mine.length || mine.some((o) => (o.cracks || 0) > 0)) return;
       const w = mine[0];
       w.cracks = Math.max(1, P.wall.crackMax);
       applyCrackVisual(w);
       wallEv({ a: 2, i: w.i, j: w.j, c: w.cracks });
-      flashMsg('벽에 금이 갔다 — 가까이 가서 R', '#ffb347');
     },
     ok: () => tutStats.repaired >= 1 },
   { t: '경비탑을 세우세요',
-    hint: '⑥ 숫자 5 → 좌클릭. 알아서 지어지고 알아서 쏩니다',
+    hint: '숫자 5 → 좌클릭. 알아서 지어지고 알아서 쏩니다',
     now: () => `경비탑 ${buildings.filter((b) => b.kind === 'tower' && b.owner === 'p').length}`,
     ok: () => buildings.some((b) => b.kind === 'tower' && b.owner === 'p') },
-  { t: '병사를 고용해 보세요',
-    hint: '⑦ 숫자 6 → Enter (근접병). 병사는 싸우기만 합니다',
+  { t: '병사를 고용하세요',
+    hint: '숫자 6 → Enter (근접병). 병사는 싸우기만 합니다 — 치즈는 일꾼이 캡니다',
     now: () => `병사 ${guardsOf('p').length}`,
     ok: () => guardsOf('p').length >= 1 },
-  { t: '완료 — 이제 진짜로 버텨 보세요',
-    hint: 'ESC 메뉴에서 다시 시작하거나, 이대로 계속 놀아도 됩니다',
+  { t: '연습 끝 — 이제 진짜로 버텨 보세요',
+    hint: 'ESC 메뉴에서 다시 시작할 수 있습니다',
     now: () => '수고했습니다',
     ok: () => false },
 ];
 
+// 1단계 판정 — "감쌌다"를 정직하게 본다 (D113).
+// 치즈 더미에서 **고양이 몸으로** 나브 격자를 훑어 맵 가장자리에 닿으면 아직 뚫린 것이다.
+// 영토 필드(safeField)를 안 쓰는 이유: 그건 적이 있어야 계산되는데 1단계에는 고양이가 없다.
+function tutEnclosedPile() {
+  if (!clearAll || !nodes.length) return false;
+  const r = P.chaser.radius;
+  const pass = (idx) => canPass(clearAll, idx, r);
+  for (const n of nodes) {
+    const w = cellToWorld(n.i, n.j);
+    const start = nearestPassableNav(w.x, w.z, pass);
+    if (!pass(start)) continue;              // 더미 자리가 이미 막혀 있으면 셈에서 뺀다
+    const seen = new Uint8Array(NAV * NAV);
+    const stack = [start];
+    seen[start] = 1;
+    let escaped = false;
+    while (stack.length && !escaped) {
+      const cur = stack.pop();
+      const cx = cur % NAV, cz = (cur / NAV) | 0;
+      if (cx <= 1 || cz <= 1 || cx >= NAV - 2 || cz >= NAV - 2) { escaped = true; break; }
+      const nb = [cur - 1, cur + 1, cur - NAV, cur + NAV];
+      for (const k of nb) if (k >= 0 && k < seen.length && !seen[k] && pass(k)) { seen[k] = 1; stack.push(k); }
+    }
+    if (!escaped) return true;               // 가장자리에 못 닿았다 = 감쌌다
+  }
+  return false;
+}
+
 const tutEl = document.getElementById('tut');
+const tutBigEl = document.getElementById('tutbig');
+let TUT_TERR = 0.003;      // 원래 영토 수입 (1단계 동안 잠시 끈다)
 
 function beginTutorial() {
   beginMatch();
-  tut = { step: 0, doneT: 0 };
+  tut = { step: 0, bigT: 0 };
   tutStats.repaired = 0; tutStats.dropped = 0;
-  // 연습판은 **느슨하게** — 고양이는 한 마리만, 스테이지도 안 넘어간다.
-  // 다만 0마리로 두지는 않는다: 1단계가 "고양이를 피해"이고,
-  // 적이 없으면 영토가 맵 전체가 되어 수입이 폭주한다 (알려진 함정)
-  P.enemy.count = 1;
+  for (const st of TUT_STEPS) st.setupDone = false;
+  // **1단계에는 고양이가 없다** (D113). 벽 5장 세우자마자 고양이가 붙어 있으면
+  // 초보자는 거기서 더 넓히질 못한다 — 감싸기를 배우기 전에 쫓기게 된다.
+  P.enemy.count = 0;
   P.patrol.count = 0;
   P.threat.everyLevels = 0;
-  P.enemy.spawnDelay = 6;
-  setEnemyCount(1);
-  player.cheese = 120;    // 창고·일꾼까지는 닿는 종잣돈
+  P.enemy.spawnDelay = 1e9;
+  setEnemyCount(0);
+  // 적이 0이면 맵 전체가 영토로 잡혀 수입이 폭주한다 — 고양이가 올 때까지 꺼 둔다
+  TUT_TERR = DEFAULT_SETTINGS.res.terrIncome;
+  P.res.terrIncome = 0;
+  player.cheese = 150;
+  showTutBig();
   renderTut();
+}
+
+function showTutBig() {
+  if (!tut || !tutBigEl) return;
+  const st = TUT_STEPS[tut.step];
+  if (!st) return;
+  tutBigEl.querySelector('.tb-step').textContent =
+    tut.step >= TUT_STEPS.length - 1 ? '완료' : `${tut.step + 1} / ${TUT_STEPS.length - 1}`;
+  tutBigEl.querySelector('.tb-title').textContent = st.t;
+  tutBigEl.querySelector('.tb-hint').textContent = st.hint;
+  tutBigEl.classList.add('on');
+  tut.bigT = P.tutorial.bigTime;
 }
 
 function updateTutorial(dt) {
   if (!tut) return;
+  if (tut.bigT > 0) {
+    tut.bigT -= dt;
+    if (tut.bigT <= 0) tutBigEl.classList.remove('on');
+  }
   const st = TUT_STEPS[tut.step];
   if (!st) return;
   if (st.setup && !st.setupDone) { st.setup(); st.setupDone = true; }
   if (st.ok()) {
+    if (st.after) st.after();
     tut.step = Math.min(tut.step + 1, TUT_STEPS.length - 1);
     const next = TUT_STEPS[tut.step];
-    flashMsg(`${tut.step >= TUT_STEPS.length - 1 ? '튜토리얼 완료!' : `${tut.step}단계 완료 — ${next.t}`}`, '#6ee07a');
     if (next && next.setup) { next.setup(); next.setupDone = true; }
+    showTutBig();
   }
   renderTut();
 }
 
 function renderTut() {
   if (!tutEl) return;
-  if (!tut) { tutEl.style.display = 'none'; return; }
+  if (!tut) { tutEl.style.display = 'none'; if (tutBigEl) tutBigEl.classList.remove('on'); return; }
   tutEl.style.display = 'block';
   tutEl.innerHTML = TUT_STEPS.map((s, k) => {
     const state = k < tut.step ? 'done' : k === tut.step ? 'now' : 'todo';
