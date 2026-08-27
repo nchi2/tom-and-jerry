@@ -320,7 +320,8 @@ const P = {
     maxOnMap: 5,         // 동시에 존재할 수 있는 최대 개수
     stageOnMap: 0.4,     // 스테이지당 동시 최대 개수 +
     minPlayerDist: 21,   // 플레이어에게서 이만큼 떨어진 곳에만 생성 (= 위험을 감수해야 함)
-    partsEach: 1,        // 부품 상자 하나당 부품
+    partsEach: 1,        // 부품 상자 하나당 부품 (최소이자 상한의 기준)
+    stepChance: 0.45,    // 한 개 더 나올 확률 (D121) — 겹칠수록 희박해진다
     stageParts: 0.34,    // 스테이지당 상자당 부품 + (3스테이지마다 +1)
     cheeseEach: 35,      // 치즈 더미 하나당 치즈
     partsRatio: 0.6,     // 부품 상자가 나올 확률
@@ -4728,6 +4729,23 @@ function advanceStage() {
   } else {
     flashMsg(`스테이지 ${stage} — ${stageDur()}초 버티기`, '#6ee07a');
   }
+}
+
+// 자폭묘는 **계속 온다** (D121). 스테이지 표는 누적이라 한 번 잡으면 다음 단계까지
+// 안 채워졌다 — 벽을 부술 수 있는 유일한 상시 수단이 사라져서, 잡고 나면 방어선이
+// 영구히 안전해진다. 그걸 막으려고 따로 흘려보낸다.
+let bomberT = 0;
+function updateBomberTrickle(dt) {
+  if (!netAuthoring() || !enemyActive()) return;
+  if (P.bomber.every <= 0) return;
+  if (stage < P.bomber.fromStage) return;
+  bomberT += dt;
+  if (bomberT < P.bomber.every) return;
+  bomberT = 0;
+  const live = enemies.filter((e) => e.type === 'bomber').length;
+  if (live >= scaled(P.bomber.maxLive)) return;
+  enemies.push(makeEnemy('bomber', enemies.length));
+  refreshReach();
 }
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
