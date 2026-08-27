@@ -1690,6 +1690,105 @@ scene.add(ghost);
 //  - 지형에서 3칸 이상 → 지형에 기대어 싸게 감싸는 자리가 없음
 //  결과: 어느 광맥이든 확보 비용이 비슷하게 "플레이어가 쌓는 벽"으로만 결정됨
 // 치즈 더미 — 쐐기 조각 여러 개가 쌓인 덩어리. 잔량에 따라 조각이 사라진다.
+// ---- 나르는 치즈 (D114) ----
+// 캐서 창고까지 **들고 가는 게 보여야** 왕복이 노동이 아니라 장면이 된다.
+// 볼주머니가 찬 만큼 커지고, 걸음에 맞춰 살짝 흔들린다.
+const carryGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.34, 10, 1, false, 0, Math.PI * 0.62);
+const carryMat = new THREE.MeshStandardMaterial({
+  color: 0xf0b429, roughness: 0.45,
+  emissive: new THREE.Color(0x6b4d10), emissiveIntensity: 0.25,
+});
+
+function makeCarryCheese() {
+  const m = new THREE.Mesh(carryGeo, carryMat);
+  m.castShadow = true;
+  m.visible = false;
+  scene.add(m);
+  return m;
+}
+
+// c = 나르는 주체(햄스터·일꾼), load = 한 짐 최대치
+function updateCarryVis(c, load, bodyR, dt) {
+  if (!c.carryMesh) c.carryMesh = makeCarryCheese();
+  const m = c.carryMesh;
+  const amt = c.carry || 0;
+  if (amt <= 0) { m.visible = false; return; }
+  m.visible = true;
+  // 짐이 많을수록 크게 (최소 크기는 보장 — 한 조각도 보여야 한다)
+  const f = clamp(amt / Math.max(load, 1), 0.15, 1);
+  const sc = bodyR * (1.1 + 0.9 * f);
+  m.scale.setScalar(sc);
+  // 몸 앞쪽에 안아 든다 — 진행 방향 기준
+  const fx = c.faceX || 0, fz = c.faceZ || 1;
+  const fl = Math.hypot(fx, fz) || 1;
+  const ahead = bodyR * 1.15;
+  c.carryBob = (c.carryBob || 0) + dt * 9;
+  m.position.set(
+    c.x + (fx / fl) * ahead,
+    bodyR * 1.5 + Math.sin(c.carryBob) * 0.05,
+    c.z + (fz / fl) * ahead
+  );
+  m.rotation.y = Math.atan2(fx, fz) + Math.PI;
+  m.rotation.z = Math.sin(c.carryBob * 0.5) * 0.12;
+}
+
+function disposeCarryVis(c) {
+  if (!c.carryMesh) return;
+  scene.remove(c.carryMesh);
+  c.carryMesh = null;
+}
+
+// ---- 늪·덤불의 몸체 (D112) ----
+// 둘 다 obstacles가 아니라 **바닥 장식 + 칸 집합**이다. 통행을 막지 않으므로
+// clearance 필드에도 안 들어간다 — 길찾기는 이 둘을 그냥 지나간다.
+const terrainDecor = [];
+let customMap = null;      // 에디터로 만든 맵 (null이면 기본 맵)
+
+function clearTerrainDecor() {
+  for (const m of terrainDecor) {
+    scene.remove(m);
+    m.geometry.dispose();
+    m.material.dispose();
+  }
+  terrainDecor.length = 0;
+  mudCells.clear();
+  bushCells.clear();
+}
+
+function addMud(i, j) {
+  if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) return;
+  const key = cellKey(i, j);
+  if (mudCells.has(key)) return;
+  mudCells.add(key);
+  const w = cellToWorld(i, j);
+  const m = new THREE.Mesh(
+    new THREE.CircleGeometry(CS * 0.62, 12),
+    new THREE.MeshStandardMaterial({ color: 0x3c3a2a, roughness: 1, transparent: true, opacity: 0.92 })
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(w.x, 0.03, w.z);
+  m.receiveShadow = true;
+  scene.add(m);
+  terrainDecor.push(m);
+}
+
+function addBush(i, j) {
+  if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) return;
+  const key = cellKey(i, j);
+  if (bushCells.has(key)) return;
+  bushCells.add(key);
+  const w = cellToWorld(i, j);
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(CS * 0.52, 10, 7),
+    new THREE.MeshStandardMaterial({ color: 0x2f5c34, roughness: 0.95, transparent: true, opacity: 0.85 })
+  );
+  m.position.set(w.x, CS * 0.34, w.z);
+  m.scale.y = 0.72;
+  m.castShadow = true;
+  scene.add(m);
+  terrainDecor.push(m);
+}
+
 function makeCheesePile() {
   const g = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({
@@ -4837,6 +4936,22 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyP') paused = !paused;
   if (e.code === 'KeyR') issueCommand({ t: 'restart' });
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
+  // ---- 맵 에디터 (D112) — 여기서는 다른 키를 전부 가로챈다 ----
+  if (edOn()) {
+    for (let k = 0; k < ED_BRUSH.length; k++)
+      if (e.code === 'Digit' + (k + 1)) { editor.brush = k; renderEditor(); return; }
+    if (e.code === 'KeyS') { saveMapLocal(); return; }
+    if (e.code === 'KeyL') {
+      const m = loadMapLocal();
+      if (m) { editor.map = m; customMap = m; rebuildWorld(mapIndex); renderEditor(); flashMsg('불러왔다', '#6ee07a'); }
+      else flashMsg('저장된 맵이 없다', '#e05050');
+      return;
+    }
+    if (e.code === 'KeyN') { editor.map = blankMap(); customMap = editor.map; rebuildWorld(mapIndex); renderEditor(); return; }
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') { closeEditor(true); return; }
+    if (e.code === 'Escape') { closeEditor(false); return; }
+    return;   // 에디터에서는 게임 조작이 전부 막힌다
+  }
   if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
   // 준비 국면에서만 F가 "최후의 공세 시작"이 된다 (평소 F는 건물 업그레이드)
   if (e.code === 'KeyF' && finalPhase === 'prep') issueCommand({ t: 'final' });
@@ -4925,16 +5040,29 @@ function finishSelectDrag(e) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || e.target !== renderer.domElement) return;
+  if (edOn()) { edPaintAtMouse(e); edDragging = true; return; }
   if (beginSelectDrag(e)) return;     // 선택 드래그 중에는 건설하지 않는다
   mouseDown = true;
 });
+let edDragging = false;
+function edPaintAtMouse(e) {
+  mouseNDC.x = (e.clientX / innerWidth) * 2 - 1;
+  mouseNDC.y = -(e.clientY / innerHeight) * 2 + 1;
+  mouseValid = true;
+  raycaster.setFromCamera(mouseNDC, activeCam());
+  if (!raycaster.ray.intersectPlane(groundPlane, mouseHit)) return;
+  const c = worldToCell(mouseHit.x, mouseHit.z);
+  edPaint(c.i, c.j);
+}
 window.addEventListener('mousemove', (e) => {
+  if (edOn()) { if (edDragging) edPaintAtMouse(e); return; }
   if (!selDrag) return;
   selDrag.x1 = e.clientX; selDrag.y1 = e.clientY;
   if (Math.hypot(selDrag.x1 - selDrag.x0, selDrag.y1 - selDrag.y0) > P.command.dragMin) selDrag.moved = true;
   drawSelBox();
 });
 window.addEventListener('mouseup', (e) => {
+  edDragging = false;
   mouseDown = false;
   if (selDrag && e.button === 0) finishSelectDrag(e);
 });
@@ -6519,13 +6647,23 @@ function rebuildWorld(idx) {
 
   buildGround(M.floor, M.gridColor);
 
+  // 사용자 맵 (D112) — 있으면 기본 지형 대신 이걸 쓴다
+  const CM = customMap;
+  clearTerrainDecor();
+
   // 지형
-  const t = layoutTools();
-  M.build(t);
-  for (const [i, j] of t.cells) addObstacle(i, j, true);
+  if (CM) {
+    for (const [i, j] of CM.rocks || []) addObstacle(i, j, true);
+    for (const [i, j] of CM.mud || []) addMud(i, j);
+    for (const [i, j] of CM.bush || []) addBush(i, j);
+  } else {
+    const t = layoutTools();
+    M.build(t);
+    for (const [i, j] of t.cells) addObstacle(i, j, true);
+  }
 
   // 광맥
-  for (const [i, j, mul] of M.nodes) {
+  for (const [i, j, mul] of (CM ? (CM.nodes || []) : M.nodes)) {
     const w = cellToWorld(i, j);
     const mesh = makeCheesePile();
     mesh.position.set(w.x, 0, w.z);
@@ -6536,8 +6674,10 @@ function rebuildWorld(idx) {
     nodes.push({ i, j, mul: mul || 1, amount: P.res.nodeAmount * (mul || 1), mesh });
   }
 
-  PLAYER_SPAWN = cellToWorld(M.playerSpawn[0], M.playerSpawn[1]);
-  ENEMY_SPAWN = cellToWorld(M.enemySpawn[0], M.enemySpawn[1]);
+  const ps = (CM && CM.playerSpawn) || M.playerSpawn;
+  const es = (CM && CM.enemySpawn) || M.enemySpawn;
+  PLAYER_SPAWN = cellToWorld(ps[0], ps[1]);
+  ENEMY_SPAWN = cellToWorld(es[0], es[1]);
 
   clearAll = null; clearBed = null; // 크기가 바뀌었으므로 이전 필드는 버린다
   refreshClearance(true);
@@ -6963,6 +7103,105 @@ const netMsgEl = document.getElementById('m-netmsg');
 // 이제 **몇 명이 할지 고르기 전에는 시뮬이 시작되지 않는다.**
 const startEl = document.getElementById('start');
 let started = false;
+
+// ============================================================
+// 맵 에디터 (D112)
+//  여기서는 **벽을 짓지 않는다.** 자연 지형과 치즈 더미를 직접 놓는 자리다.
+//  숫자 1~9로 붓을 고르고 좌클릭으로 칠한다 (드래그로 이어 칠하기).
+//  판은 멈춰 있고 고양이도 없다 — 순수하게 지도만 그린다.
+// ============================================================
+const ED_BRUSH = [
+  { k: 'rock',  name: '바위',        hint: '통행 불가. 지형이라 부술 수 없다' },
+  { k: 'mud',   name: '늪',          hint: '통과는 되지만 **몸집이 클수록** 느려진다 — 도망길' },
+  { k: 'bush',  name: '덤불',        hint: '통과는 되지만 시야를 끊는다 — 숨을 자리' },
+  { k: 'n06',   name: '치즈 (작음)', hint: '매장량 0.6배' },
+  { k: 'n10',   name: '치즈 (보통)', hint: '매장량 1.0배' },
+  { k: 'n18',   name: '치즈 (큼)',   hint: '매장량 1.8배 — 멀고 위험한 자리에' },
+  { k: 'pspawn', name: '내 시작 지점', hint: '하나만. 다시 찍으면 옮겨진다' },
+  { k: 'espawn', name: '적 등장 지점', hint: '하나만. 고양이가 여기를 중심으로 퍼진다' },
+  { k: 'erase', name: '지우개',      hint: '그 칸의 지형·치즈를 지운다' },
+];
+
+let editor = null;   // { brush, map } — null이면 에디터가 아니다
+const edOn = () => !!editor;
+const edEl = document.getElementById('editor');
+
+const blankMap = () => ({
+  rocks: [], mud: [], bush: [], nodes: [],
+  playerSpawn: [Math.floor(CELLS / 2), Math.floor(CELLS * 0.55)],
+  enemySpawn: [Math.floor(CELLS / 2), Math.floor(CELLS * 0.1)],
+});
+
+function openEditor() {
+  startEl.classList.add('hidden');
+  setMenu(false);
+  started = true;
+  paused = true;              // 시뮬은 멈춘 채로 그린다
+  tut = null; renderTut();
+  editor = { brush: 0, map: loadMapLocal() || blankMap() };
+  customMap = editor.map;
+  rebuildWorld(mapIndex);     // 지금 맵을 화면에 반영
+  setEnemyCount(0);
+  setCamera(0);               // 탑다운이 지도 그리기에 맞다
+  renderEditor();
+}
+
+function closeEditor(play) {
+  if (!editor) return;
+  const m = editor.map;
+  editor = null;
+  edEl.style.display = 'none';
+  paused = false;
+  if (play) { customMap = m; beginMatch(); }
+  else { openStart('s-mode'); }
+}
+
+// ---- 칠하기 ----
+const edSame = (a, i, j) => a.findIndex((c) => c[0] === i && c[1] === j);
+function edPaint(i, j) {
+  if (!editor || i < 0 || j < 0 || i >= CELLS || j >= CELLS) return;
+  const m = editor.map;
+  const b = ED_BRUSH[editor.brush];
+  // 어느 붓이든 **먼저 그 칸을 비운다** — 겹쳐 칠하면 뭐가 있는지 알 수 없다
+  const drop = (arr) => { const k = edSame(arr, i, j); if (k >= 0) arr.splice(k, 1); };
+  drop(m.rocks); drop(m.mud); drop(m.bush); drop(m.nodes);
+  if (b.k === 'rock') m.rocks.push([i, j]);
+  else if (b.k === 'mud') m.mud.push([i, j]);
+  else if (b.k === 'bush') m.bush.push([i, j]);
+  else if (b.k === 'n06') m.nodes.push([i, j, 0.6]);
+  else if (b.k === 'n10') m.nodes.push([i, j, 1.0]);
+  else if (b.k === 'n18') m.nodes.push([i, j, 1.8]);
+  else if (b.k === 'pspawn') m.playerSpawn = [i, j];
+  else if (b.k === 'espawn') m.enemySpawn = [i, j];
+  customMap = m;
+  rebuildWorld(mapIndex);
+  renderEditor();
+}
+
+// ---- 저장·불러오기 ----
+const ED_KEY = 'tnj.map.v1';
+function saveMapLocal() {
+  try { localStorage.setItem(ED_KEY, JSON.stringify(editor.map)); flashMsg('맵을 저장했다', '#6ee07a'); }
+  catch { flashMsg('저장 실패 (저장 공간)', '#e05050'); }
+}
+function loadMapLocal() {
+  try { const t = localStorage.getItem(ED_KEY); return t ? JSON.parse(t) : null; } catch { return null; }
+}
+
+function renderEditor() {
+  if (!edEl) return;
+  if (!editor) { edEl.style.display = 'none'; return; }
+  edEl.style.display = 'block';
+  const m = editor.map;
+  const b = ED_BRUSH[editor.brush];
+  edEl.innerHTML =
+    `<div class="ehead">맵 에디터 — 숫자 1~9로 붓 선택 · 좌클릭(드래그)으로 칠하기</div>` +
+    ED_BRUSH.map((x, k) => `<div class="ebrush${k === editor.brush ? ' sel' : ''}">` +
+      `<b>${k + 1}</b>${x.name}</div>`).join('') +
+    `<div class="ehint">${b.hint}</div>` +
+    `<div class="ecount">바위 ${m.rocks.length} · 늪 ${m.mud.length} · 덤불 ${m.bush.length} · 치즈 ${m.nodes.length}</div>` +
+    `<div class="ekeys">S 저장 · L 불러오기 · N 비우기 · Enter 시험 플레이 · ESC 나가기</div>`;
+}
 
 // ============================================================
 // 튜토리얼 (D111)
@@ -7859,6 +8098,7 @@ $('s-solo').onclick = () => {
   player.local = true; ally.local = false; ally.ai = true;
   beginMatch();
 };
+$('s-editor').onclick = () => { net.leave(); openEditor(); };
 // 연습판 (D111) — 솔로와 같은 판에 안내만 얹는다
 $('s-tut').onclick = () => {
   net.leave();
@@ -8392,6 +8632,11 @@ window.__game = {
   get stage() { return stage; },
   get stageT() { return stageT; },
   get victory() { return victory; },
+  edPaint, get editor() { return editor; }, get customMap() { return customMap; },
+  addMud, addBush, mudSpeedAt, segmentBlocked, rebuildWorld,
+  // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
+  get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
+  mudCells, bushCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   get finalPhase() { return finalPhase; },
   get finalT() { return finalT; },
   startFinalAssault, beginFinalPrep,
