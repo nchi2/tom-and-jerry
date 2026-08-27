@@ -342,7 +342,9 @@ const P = {
     // 1개째 1000 · 2개째 1500 · 3개째 2000 … 사면 살수록 비싸지므로
     // "밖에 나가 줍는다"가 여전히 싸다 — 픽업을 대체하지 않고 보험이 된다
     buyBase: 1000, buyStep: 500,
-    speedStep: 0.9,             // 햄스터 이동 속도
+    // 햄스터 이동 속도 (D121). 0.9 고정이면 3단계에서 이미 +2.7이라
+    // 고양이를 그냥 따돌린다 — 추격전이 사라진다. **올라갈수록 덜 준다.**
+    speedStep: 0.55, speedFalloff: 0.72,
     radiusStep: 0.2,            // 채굴 시간 단축(초)
     towerStep: 9,               // 경비탑 화력
     guardStep: 8,               // 방어병 화력 (사수·근접병·정예병 전부)
@@ -371,7 +373,11 @@ const P = {
     farLo: 2, farHi: 3,        // 그보다 먼 구역
     cornerLo: 0, cornerHi: 2,  // 모퉁이 — 맵 끝이 곧 방벽이라 덜 준다
     rockClumps: 14, mudPools: 5, bushClumps: 7,
+    // 이 크기 이상인 '고양이가 못 오는 주머니'는 지형을 지워 뚫는다 (D9)
+    pocketMax: 12,
   },
+  // 소리 (D122). volume 0이면 완전히 끈다 · minGap = 같은 소리 최소 간격(초)
+  sfx: { volume: 0.6, minGap: 0.05 },
   // 채팅 (D120). lines = 화면에 남는 줄 수, hold = 한 줄이 머무는 시간(초)
   chat: { lines: 6, hold: 14 },
   // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
@@ -525,7 +531,8 @@ const heldSlot = () => (buildSlot >= 0 ? BUILD_SLOTS[buildSlot] : null);
 //   채굴은 연속이 아니라 이산 왕복이라(D41) '효율'이 아니라 '시간'이 다이얼이고,
 //   벽은 무적이라(D30) 내구도라는 값 자체가 없다.
 const UPGRADES = [
-  { key: 'speed', label: '이동 속도', unit: () => `+${P.upgrade.speedStep}` },
+  { key: 'speed', label: '이동 속도',
+    unit: () => `+${speedBonus(localPlayer().upg.speed + 1).toFixed(2)} 누적` },
   { key: 'radius', label: '채굴 속도', unit: () => `-${P.upgrade.radiusStep}s` },
   { key: 'tower', label: '경비탑 화력', unit: () => `+${P.upgrade.towerStep}` },
   { key: 'guard', label: '방어병 화력', unit: () => `+${P.upgrade.guardStep}` },
@@ -535,8 +542,15 @@ const newUpg = () => ({ speed: 0, radius: 0, tower: 0, guard: 0 });
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
 // 모든 이동 속도는 이 배율을 통과한다 (D56) — 여기 한 곳만 바꾸면 전체 템포가 바뀐다
 const moveScale = () => P.tempo.moveScale;
+// 속도 업그레이드는 **체감 수익이 줄어든다** (D121) — 레벨마다 speedFalloff를 곱한다.
+//   Lv.1 +0.55 · Lv.2 +0.95 · Lv.3 +1.23 · Lv.8 +1.75 (예전엔 Lv.8에 +7.2였다)
+const speedBonus = (lv) => {
+  let sum = 0, add = P.upgrade.speedStep;
+  for (let k = 0; k < lv; k++) { sum += add; add *= P.upgrade.speedFalloff; }
+  return sum;
+};
 const effPlayerSpeed = (p = player) =>
-  (P.player.speed + p.upg.speed * P.upgrade.speedStep) * moveScale() * mudSpeedAt(p.x, p.z, P.player.radius);
+  (P.player.speed + speedBonus(p.upg.speed)) * moveScale() * mudSpeedAt(p.x, p.z, P.player.radius);
 const effWorkerSpeed = (w) =>
   P.worker.speed * moveScale() * (w ? mudSpeedAt(w.x, w.z, P.worker.radius) : 1);
 const effGuardSpeed = () => P.guard.speed * moveScale();
@@ -3944,8 +3958,18 @@ const effPickupInterval = () =>
   Math.max(P.pickup.interval - (stage - 1) * P.pickup.stageSpeedup, 4);
 const effPickupMax = () =>
   Math.round(P.pickup.maxOnMap + (stage - 1) * P.pickup.stageOnMap);
-const effPartsEach = () =>
-  P.pickup.partsEach + Math.floor((stage - 1) * P.pickup.stageParts);
+// 상자 하나가 주는 부품 수 (D121). 예전엔 스테이지로 정해진 **고정값**이라
+// 후반에는 매번 4개가 나왔다 — 주울 때마다 결과가 같으면 상자를 여는 재미가 없다.
+// 이제 1개부터 시작해 **한 단계 올라갈 때마다 stepChance 확률로만** 더 준다:
+//   1개 = 항상 · 2개 = 45% · 3개 = 20% · 4개 = 9% …  위로 갈수록 급격히 희박하다.
+// 상한은 예전 공식(스테이지 진행분)을 그대로 쓴다 — 후반일수록 큰 게 나올 수 있다.
+const partsCap = () => P.pickup.partsEach + Math.floor((stage - 1) * P.pickup.stageParts);
+function rollParts() {
+  const cap = Math.max(1, partsCap());
+  let n = 1;
+  while (n < cap && Math.random() < P.pickup.stepChance) n++;
+  return n;
+}
 
 function updatePickups(dt) {
   pickupT += dt;
@@ -3967,7 +3991,7 @@ function updatePickups(dt) {
     }
     if (!taker) continue;
     if (u.kind === 'parts') {
-      const n = effPartsEach();
+      const n = rollParts();
       taker.parts += n;
       if (taker.local) flashMsg(`부품 +${n} (U: 업그레이드)`, '#8fd6ff');
     } else {
@@ -4687,7 +4711,7 @@ function winGame(title) {
   finalPhase = 'won';
   overlayEl.querySelector('h1').textContent = title;
   document.getElementById('overlay-sub').textContent =
-    `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — R 키로 처음부터`;
+    `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — ESC → 다시 시작`;
   overlayEl.classList.remove('hidden');
 }
 
@@ -5163,7 +5187,8 @@ window.addEventListener('keydown', (e) => {
     }
   }
   if (e.code === 'KeyP') paused = !paused;
-  if (e.code === 'KeyR') issueCommand({ t: 'restart' });
+  // R 즉시 재시작은 뺐다 (D121) — 쫓기다 R을 눌러 판이 통째로 날아가는 사고가 난다.
+  // 다시하기는 ESC 메뉴에서만.
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
   // ---- 맵 에디터 (D112) — 여기서는 다른 키를 전부 가로챈다 ----
   if (edOn()) {
@@ -6699,7 +6724,8 @@ const HELP_FULL = [
   '── 코어 규칙 ──',
   '벽은 기둥이다: 직교로 붙이면 아무도 못 지나가고, **대각으로 붙이면 나만 지나간다**',
   '건물도 같다 — 대각으로 붙인 두 건물 사이는 나만 통과한다',
-  '벽은 무적이다 — 자폭묘 폭발은 **금만 낸다**(2번까지 버팀). 금 간 벽은 **F로 수리**. 보스의 강타는 한 번에 부순다',
+  '벽은 무적이다 — 자폭묘 폭발은 **금만 낸다**(첫 방은 금, 두 번째에 무너진다). 금 간 벽은 **F로 수리**',
+  '톰의 강타는 앞쪽 벽 서너 장을 한 번에 친다 — 역시 두 번 맞아야 무너진다',
   '초록 바닥 = 내 영토(고양이가 못 오는 땅). 그 위에선 기운이 빨리 차고, 면적만큼 치즈가 쌓인다',
   '',
   '── 경제 · 기술 ──',
@@ -7088,7 +7114,7 @@ function gameOver() {
   ghost.visible = false;
   overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
   document.getElementById('overlay-sub').textContent =
-    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 · 잡힘 ${caughtCount}회 — R 키로 다시 시작`;
+    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 · 잡힘 ${caughtCount}회 — ESC → 다시 시작`;
   overlayEl.classList.remove('hidden');
 }
 
@@ -9113,7 +9139,7 @@ window.__game = {
   get stamina() { return player.stamina; }, set stamina(v) { player.stamina = v; },
   set playerHp(v) { player.hp = v; },
   get allyHp() { return ally.hp; },
-  hurtHamster, detonate, lobProjectile,
+  hurtHamster, detonate, lobProjectile, sfx, wakeAudio,
 
   get parts() { return player.parts; }, set parts(v) { player.parts = v; },
   MAPS, get mapIndex() { return mapIndex; }, setMap,
