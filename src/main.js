@@ -36,6 +36,15 @@ const P = {
     // A* 한 번에 펼칠 수 있는 최대 칸 수 (D79). 도달 불가 목표는 맵 전체를
     // 훑으므로 상한이 없으면 후반에 프레임이 무너진다. 넘으면 최선 근사 경로를 쓴다
     pathBudget: 5000,
+    // 한 프레임에 허용하는 길찾기 횟수 (D130). 0이면 무제한.
+    // 넘치면 다음 프레임으로 미룬다 — 마릿수가 아무리 늘어도 **프레임 비용에 천장**이 생긴다.
+    pathPerFrame: 12,
+    // 길찾기에 **연속으로 실패하면 물러선다** (D130).
+    // 목표가 벽 뒤라 못 가는 상황에서는 planEnemyPath 한 번이 A*를 최대 6번
+    // (직행·돌파·습격 3개·수색) 돌리고 전부 상한까지 헤맨다. 그런데 정체 판정이
+    // 그걸 **매 프레임** 강제해서, 방어선이 완성되는 순간 프레임이 3ms → 22ms가 됐다.
+    // 실패 횟수만큼 간격을 늘린다. 벽이 바뀌면(= 세상이 바뀌면) 즉시 0으로 되돌린다.
+    pathFailBackoff: 6,
     spawnDelay: 12,
     spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
     // 사방 등장 (D110)
@@ -649,6 +658,23 @@ let NAV = CELLS * NAVPC;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const cellKey = (i, j) => i + ',' + j;
+// ---- 장애물 격자 (D130) ----
+// `obstacles`(Map, 문자열 키)와 **같은 내용을 평평한 배열로도** 들고 있는다.
+// 이유는 하나: `obstacles.get(cellKey(i,j))`가 **부를 때마다 문자열을 만든다.**
+// collideWithObstacles만 해도 개체당 3패스 × 25칸 = 75번이라,
+// 적 119마리면 초당 53만 개의 문자열이 태워진다 (= GC가 툭툭 끊는다).
+// D103에서 refreshClearance가 같은 이유로 12.25ms → 3.3ms가 됐다. 같은 처방이다.
+//   ⚠ addObstacle/removeObstacle/맵 재구성에서 **반드시 같이 갱신**해야 한다.
+//      한쪽만 바뀌면 벽이 보이는데 안 막거나, 안 보이는데 막는다.
+let obGrid = [];
+const obIdx = (i, j) => j * CELLS + i;
+const obAtCell = (i, j) =>
+  (i < 0 || j < 0 || i >= CELLS || j >= CELLS) ? undefined : obGrid[j * CELLS + i];
+function rebuildObGrid() {
+  obGrid = new Array(CELLS * CELLS);
+  for (const ob of obstacles.values())
+    if (ob.i >= 0 && ob.j >= 0 && ob.i < CELLS && ob.j < CELLS) obGrid[obIdx(ob.i, ob.j)] = ob;
+}
 const cellToWorld = (i, j) => ({ x: (i + 0.5) * CS - HALF, z: (j + 0.5) * CS - HALF });
 const worldToCell = (x, z) => ({
   i: clamp(Math.floor((x + HALF) / CS), 0, CELLS - 1),
@@ -839,6 +865,7 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   // **"이 벽이 누구 것인가"가 생사에 걸린 정보**다 — 상대가 잡히면 그 벽만 사라진다.
   if (post && owner === 'a') mat.color.setHex(0x7f93c8);
   obstacles.set(key, ob);
+  if (i >= 0 && j >= 0 && i < CELLS && j < CELLS) obGrid[obIdx(i, j)] = ob;
   shadowDirty();
   if (post) wallEv({ a: 1, i, j, o: owner });
   return ob;
@@ -847,6 +874,7 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
 function removeObstacle(ob) {
   if (!ob.bedrock && !ob.bldgRef) wallEv({ a: 0, i: ob.i, j: ob.j });
   obstacles.delete(cellKey(ob.i, ob.j));
+  if (ob.i >= 0 && ob.j >= 0 && ob.i < CELLS && ob.j < CELLS) obGrid[obIdx(ob.i, ob.j)] = undefined;
   shadowDirty();
   if (ob.mesh) {
     scene.remove(ob.mesh);
@@ -1146,7 +1174,7 @@ const BLOCK_BY_MODE = {
 
 function navBlocked(i, j, mode) {
   if (i <= 0 || j <= 0 || i >= NAV - 1 || j >= NAV - 1) return true; // 외곽 림
-  const ob = obstacles.get(cellKey((i / NAVPC) | 0, (j / NAVPC) | 0));
+  const ob = obAtCell((i / NAVPC) | 0, (j / NAVPC) | 0);
   if (!ob) return false;
   if (mode === 'bed') return ob.bedrock;
   if (mode === 'noBldg') return ob.bedrock || !ob.bldgRef;
@@ -1261,7 +1289,7 @@ function seedPillarGates(d) {
     if (ob.bedrock || ob.bldgRef) continue;
     const a = cellToWorld(ob.i, ob.j);
     for (const [di, dj] of GATE_NB) {
-      const nb = obstacles.get(cellKey(ob.i + di, ob.j + dj));
+      const nb = obAtCell(ob.i + di, ob.j + dj);
       if (!nb || nb.bedrock || nb.bldgRef) continue;
       const b = cellToWorld(nb.i, nb.j);
       const half = (Math.hypot(a.x - b.x, a.z - b.z) - 2 * R) / 2;
@@ -1303,32 +1331,51 @@ const canPass = (field, idx, r) => field[idx] + navRes * 0.5 >= r;
 // ============================================================
 // A* (내비 격자, 8방향, 코너 끼임 방지)
 // ============================================================
-class MinHeap {
-  constructor() { this.a = []; }
-  push(n) {
-    const a = this.a; a.push(n);
-    let i = a.length - 1;
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (a[p].f <= a[i].f) break;
-      [a[p], a[i]] = [a[i], a[p]]; i = p;
+// ---- A* 우선순위 큐 (D130) ----
+// **힙을 재사용하고 객체를 안 만든다.** 예전엔 astar 호출마다 `new MinHeap()`을 만들고
+// 노드마다 `{i, f}` 객체를 밀어 넣었으며, 스왑이 배열 구조분해(`[a,b]=[b,a]`)라
+// **스왑 한 번에 임시 배열이 하나씩** 태워졌다. A*는 한 번에 최대 pathBudget(5000)번
+// 도는 함수이고, 적 119마리가 초당 3번씩 부른다 — GC가 여기서 만들어진다.
+// (실측: 프레임 p50 0.9ms인데 max 115.9ms. 평균이 아니라 **끊김**이 문제였다.)
+let hpI = new Int32Array(4096);
+let hpF = new Float32Array(4096);
+let hpN = 0;
+function hpGrow() {
+  const ni = new Int32Array(hpI.length * 2), nf = new Float32Array(hpF.length * 2);
+  ni.set(hpI); nf.set(hpF); hpI = ni; hpF = nf;
+}
+function hpPush(idx, f) {
+  if (hpN >= hpI.length) hpGrow();
+  let k = hpN++;
+  hpI[k] = idx; hpF[k] = f;
+  while (k > 0) {
+    const p = (k - 1) >> 1;
+    if (hpF[p] <= hpF[k]) break;
+    const ti = hpI[p], tf = hpF[p];
+    hpI[p] = hpI[k]; hpF[p] = hpF[k];
+    hpI[k] = ti; hpF[k] = tf;
+    k = p;
+  }
+}
+function hpPop() {
+  const top = hpI[0];
+  hpN--;
+  if (hpN > 0) {
+    hpI[0] = hpI[hpN]; hpF[0] = hpF[hpN];
+    let k = 0;
+    for (;;) {
+      const l = 2 * k + 1, r = l + 1;
+      let m = k;
+      if (l < hpN && hpF[l] < hpF[m]) m = l;
+      if (r < hpN && hpF[r] < hpF[m]) m = r;
+      if (m === k) break;
+      const ti = hpI[m], tf = hpF[m];
+      hpI[m] = hpI[k]; hpF[m] = hpF[k];
+      hpI[k] = ti; hpF[k] = tf;
+      k = m;
     }
   }
-  pop() {
-    const a = this.a; const top = a[0]; const last = a.pop();
-    if (a.length) {
-      a[0] = last; let i = 0;
-      for (;;) {
-        const l = 2 * i + 1, r = l + 1; let m = i;
-        if (l < a.length && a[l].f < a[m].f) m = l;
-        if (r < a.length && a[r].f < a[m].f) m = r;
-        if (m === i) break;
-        [a[m], a[i]] = [a[i], a[m]]; i = m;
-      }
-    }
-    return top;
-  }
-  get size() { return this.a.length; }
+  return top;
 }
 
 const DIRS = [
@@ -1362,13 +1409,13 @@ function astar(start, goal, passFn, extraCostFn, maxIter = P.enemy.pathBudget) {
     return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
   };
   const gOf = (i) => (asStampG[i] === gen ? asG[i] : Infinity);
-  const heap = new MinHeap();
+  hpN = 0;   // 힙은 재사용한다 (D130)
   asG[start] = 0; asStampG[start] = gen; asParent[start] = -1;
-  heap.push({ i: start, f: h(start) });
+  hpPush(start, h(start));
   let best = start, bestH = h(start);
   let found = false, iter = 0;
-  while (heap.size && iter++ < maxIter) {
-    const { i: cur } = heap.pop();
+  while (hpN > 0 && iter++ < maxIter) {
+    const cur = hpPop();
     if (asStampC[cur] === gen) continue;
     asStampC[cur] = gen;
     const hh = h(cur);
@@ -1386,7 +1433,7 @@ function astar(start, goal, passFn, extraCostFn, maxIter = P.enemy.pathBudget) {
       const ng = gOf(cur) + c + extraCostFn(ni);
       if (ng < gOf(ni)) {
         asG[ni] = ng; asStampG[ni] = gen; asParent[ni] = cur;
-        heap.push({ i: ni, f: ng + h(ni) });
+        hpPush(ni, ng + h(ni));
       }
     }
   }
@@ -1957,7 +2004,11 @@ function setEnemyCount(count) {
 
 // 벽이 바뀌면 전원이 **다음 프레임에 한꺼번에** A*를 돌려 스파이크가 났다 (D70).
 // 재계산 주기 안에서 무작위로 흩어 프레임당 한두 마리씩만 돌게 한다.
-const repathAll = () => { for (const e of enemies) e.repathT = Math.random() * P.enemy.repath; };
+// 벽·건물이 바뀌면 **물러섬을 즉시 푼다** (D130) — 막혀 있던 길이 열렸을 수 있다.
+// 이걸 안 하면 플레이어가 벽을 부수고 나가도 적이 최대 2.5초 동안 눈치를 못 챈다
+const repathAll = () => {
+  for (const e of enemies) { e.repathT = Math.random() * P.enemy.repath; e.pathFail = 0; }
+};
 
 // 벽 설치 미리보기 (고스트)
 const ghost = new THREE.Mesh(
@@ -2322,7 +2373,7 @@ const buildCost = (kind) => cheeseCost(kind === 'tower' ? TOWER_TIERS[1].cost() 
 const buildHp = (kind) => (kind === 'tower' ? TOWER_TIERS[1].hp() : P[kind].hp);
 
 function buildingAt(i, j) {
-  const ob = obstacles.get(cellKey(i, j));
+  const ob = obAtCell(i, j);
   return ob && ob.bldgRef ? ob.bldgRef : null;
 }
 
@@ -2507,7 +2558,9 @@ function placeBuildingLocal(kind, i, j, owner, id) {
               bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6) };
   for (const [ci, cj] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
     const key = cellKey(ci, cj);
-    obstacles.set(key, { i: ci, j: cj, bedrock: false, bldgRef: b, mesh: null });
+    const bc = { i: ci, j: cj, bedrock: false, bldgRef: b, mesh: null };
+    obstacles.set(key, bc);
+    if (ci >= 0 && cj >= 0 && ci < CELLS && cj < CELLS) obGrid[obIdx(ci, cj)] = bc;
     b.cells.push(key);
   }
   buildings.push(b);
@@ -2518,7 +2571,11 @@ function placeBuildingLocal(kind, i, j, owner, id) {
 
 function destroyBuilding(b, byEnemy) {
   shadowDirty();
-  for (const key of b.cells) obstacles.delete(key);
+  for (const key of b.cells) {
+    const ob = obstacles.get(key);
+    if (ob && ob.i >= 0 && ob.j >= 0 && ob.i < CELLS && ob.j < CELLS) obGrid[obIdx(ob.i, ob.j)] = undefined;
+    obstacles.delete(key);
+  }
   if (b.beam) { scene.remove(b.beam); b.beam.material.dispose(); b.beam = null; }
   disposeBar(b.bar);
   scene.remove(b.mesh);
@@ -2665,7 +2722,7 @@ function steerAroundPosts(x, z, dx, dz, r) {
   const c = worldToCell(x, z);
   for (let dj = -2; dj <= 2; dj++)
     for (let di = -2; di <= 2; di++) {
-      const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+      const ob = obAtCell(c.i + di, c.j + dj);
       if (!ob || ob.bedrock || ob.bldgRef) continue;
       const w = cellToWorld(ob.i, ob.j);
       const ox = w.x - x, oz = w.z - z;
@@ -3495,7 +3552,7 @@ function detonate(e) {
   let broke = 0, cracked = 0;
   for (let dj = -span; dj <= span; dj++)
     for (let di = -span; di <= span; di++) {
-      const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+      const ob = obAtCell(c.i + di, c.j + dj);
       if (!ob || ob.bedrock || ob.bldgRef) continue;
       if (distCellToPoint(ob.i, ob.j, e.x, e.z) > R) continue;
       // 벽을 없애는 대신 금을 낸다 (D90) — crackMax를 넘긴 것만 무너진다.
@@ -4148,7 +4205,7 @@ function collideWithObstacles(ent, r) {
     const c = worldToCell(ent.x, ent.z);
     for (let dj = -2; dj <= 2; dj++)
       for (let di = -2; di <= 2; di++) {
-        const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+        const ob = obAtCell(c.i + di, c.j + dj);
         if (!ob) continue;
         const w = cellToWorld(ob.i, ob.j);
         // 기둥(플레이어 벽)은 원기둥 — 원-원 밀어내기
@@ -4524,6 +4581,7 @@ function planEnemyPath(enemy) {
     enemy.campT = 0;
     enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = raiding ? '습격' : '추격';
+    enemy.pathFail = 0;
     return;
   }
   // 접근 지점까지는 못 가도 목표 본체까지는 갈 수 있는 경우가 있다.
@@ -4536,6 +4594,7 @@ function planEnemyPath(enemy) {
       enemy.goalX = chased.x; enemy.goalZ = chased.z;
       enemy.path = direct.path.map((idx) => ({ ...navToWorld(idx), idx }));
       enemy.aiMode = '추격';
+      enemy.pathFail = 0;
       return;
     }
     res = direct.closestWorld < res.closestWorld ? direct : res;
@@ -4543,7 +4602,7 @@ function planEnemyPath(enemy) {
 
   // ---- 돌파 경로: 가로막는 아군 구조물을 부수며 뚫고 온다 ----
   // 파괴묘: 벽+건물 전부 / 순찰묘·날쌘묘: 건물만 (벽은 여전히 절대 못 부숨)
-  const obAt = (idx) => obstacles.get(cellKey(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0));
+  const obAt = (idx) => obAtCell(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0);
   const canBreakOb = (ob) =>
     ob && !ob.bedrock && (canBreakWalls(enemy) || !!ob.bldgRef);
   const passBreak = canBreakWalls(enemy)
@@ -4553,6 +4612,7 @@ function planEnemyPath(enemy) {
   if (res2.found && res2.path.some((idx) => canBreakOb(obAt(idx)))) {
     enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = '파괴';
+    enemy.pathFail = 0;
     return;
   }
 
@@ -4573,6 +4633,7 @@ function planEnemyPath(enemy) {
   if (raidBest) {
     enemy.path = raidPath.map((idx) => ({ ...navToWorld(idx), idx }));
     enemy.aiMode = '습격';
+    enemy.pathFail = 0;
     enemy.raidTarget = raidBest;
     enemy.raidUntil = survival + P.enemy.aggroTime;
     enemy.goalX = raidBest.cx; enemy.goalZ = raidBest.cz;
@@ -4594,6 +4655,7 @@ function planEnemyPath(enemy) {
       enemy.goalX = camp.x; enemy.goalZ = camp.z;
       enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
       enemy.aiMode = '잠복';
+      enemy.pathFail = 0;
       return;
     }
   }
@@ -4606,12 +4668,15 @@ function planEnemyPath(enemy) {
       enemy.goalX = enemy.lostX; enemy.goalZ = enemy.lostZ;
       enemy.path = lr.path.map((idx) => ({ ...navToWorld(idx), idx }));
       enemy.aiMode = '수색';
-      return;
+      enemy.pathFail = 0;
+    return;
     }
   }
 
   enemy.path = res.path.map((idx) => ({ ...navToWorld(idx), idx }));
   enemy.aiMode = '배회';
+  // 여기까지 왔다 = 어떤 경로도 못 찾았다. 다음 시도를 미룬다 (D130)
+  enemy.pathFail = (enemy.pathFail || 0) + 1;
 }
 
 // 두 점 사이에 **막힌 칸이 하나라도 있으면** true.
@@ -4680,6 +4745,7 @@ function threatLevel() {
 //  1) 스테이지 표(STAGES)가 증원과 새 종류 등장을 결정한다
 //  2) everyLevels(옵션, 기본 0)가 켜져 있으면 위협 레벨마다 +1마리 추가
 let growthSpawned = 0;
+let pathLeft = 1e9;   // 이번 프레임에 남은 길찾기 횟수 (D130)
 
 // ---- 스테이지 상태 ----
 let stage = 1;        // 1..10
@@ -5009,20 +5075,63 @@ function updateSpawns() {
 // 곧장 벽으로 간다. (D107에서 톰을 같은 이유로 예외로 뒀다 — D123)
 const noSeparate = (e) => e.type === 'bomber';
 
+// ---- 겹침 밀어내기 — 공간 격자 (D130) ----
+// 예전엔 **모든 쌍**을 봤다: 119마리면 7,021쌍, 300마리면 44,850쌍이다.
+// 마릿수의 제곱으로 늘어나니 물량이 늘수록 여기가 먼저 무너진다.
+// 이제 판을 칸으로 나눠 **이웃 칸만** 본다 — 마릿수에 정비례한다.
+// 칸 크기는 매 프레임 가장 큰 적(톰)의 지름에 맞춘다. 그보다 작으면
+// 큰 놈이 이웃 칸 밖의 상대를 놓쳐 **겹친 채로 지나간다**.
+let sepHead = new Int32Array(0);   // 칸마다 첫 원소 (-1 = 빔)
+let sepNext = new Int32Array(0);   // 같은 칸의 다음 원소
 function separateEnemies() {
-  for (let a = 0; a < enemies.length; a++)
-    for (let b = a + 1; b < enemies.length; b++) {
-      const e1 = enemies[a], e2 = enemies[b];
-      if (noSeparate(e1) || noSeparate(e2)) continue;
-      let dx = e2.x - e1.x, dz = e2.z - e1.z;
-      let d = Math.hypot(dx, dz);
-      const min = (enemyR(e1) + enemyR(e2)) * 0.875;
-      if (d >= min) continue;
-      if (d < 1e-4) { dx = 0.01; dz = 0; d = 0.01; }
-      const push = ((min - d) / d) * 0.5;
-      e1.x -= dx * push; e1.z -= dz * push;
-      e2.x += dx * push; e2.z += dz * push;
+  const n = enemies.length;
+  if (n > 1) {
+    let maxR = 0;
+    for (let a = 0; a < n; a++) { const r = enemyR(enemies[a]); if (r > maxR) maxR = r; }
+    const cs = Math.max(maxR * 2 * 0.875, 0.5);
+    const w = Math.max(1, Math.ceil((HALF * 2) / cs) + 2);
+    const need = w * w;
+    if (sepHead.length < need) sepHead = new Int32Array(need);
+    sepHead.fill(-1, 0, need);
+    if (sepNext.length < n) sepNext = new Int32Array(n * 2);
+    const cellOf = (x, z) => {
+      const gi = Math.min(w - 1, Math.max(0, ((x + HALF) / cs) | 0));
+      const gj = Math.min(w - 1, Math.max(0, ((z + HALF) / cs) | 0));
+      return gj * w + gi;
+    };
+    for (let a = 0; a < n; a++) {
+      const c = cellOf(enemies[a].x, enemies[a].z);
+      sepNext[a] = sepHead[c]; sepHead[c] = a;
     }
+    for (let a = 0; a < n; a++) {
+      const e1 = enemies[a];
+      if (noSeparate(e1)) continue;
+      const gi = Math.min(w - 1, Math.max(0, ((e1.x + HALF) / cs) | 0));
+      const gj = Math.min(w - 1, Math.max(0, ((e1.z + HALF) / cs) | 0));
+      for (let dj = -1; dj <= 1; dj++) {
+        const rj = gj + dj;
+        if (rj < 0 || rj >= w) continue;
+        for (let di = -1; di <= 1; di++) {
+          const ri = gi + di;
+          if (ri < 0 || ri >= w) continue;
+          for (let b = sepHead[rj * w + ri]; b !== -1; b = sepNext[b]) {
+            // 각 쌍을 한 번만 본다 — 반대쪽에서 찾을 때는 건너뛴다
+            if (b <= a) continue;
+            const e2 = enemies[b];
+            if (noSeparate(e2)) continue;
+            let dx = e2.x - e1.x, dz = e2.z - e1.z;
+            let d = Math.hypot(dx, dz);
+            const min = (enemyR(e1) + enemyR(e2)) * 0.875;
+            if (d >= min) continue;
+            if (d < 1e-4) { dx = 0.01; dz = 0; d = 0.01; }
+            const push = ((min - d) / d) * 0.5;
+            e1.x -= dx * push; e1.z -= dz * push;
+            e2.x += dx * push; e2.z += dz * push;
+          }
+        }
+      }
+    }
+  }
   for (const e of enemies) collideWithObstacles(e, enemyR(e));
 }
 
@@ -5056,9 +5165,16 @@ function updateEnemy(enemy, dt) {
     if (enemy.prowlT <= 0) enemy.repathT = 0;   // 서성임 끝 → 다시 추격
   }   // 천천히 돌며 계속 각도를 바꿔 본다
   enemy.repathT -= dt;
-  if (enemy.repathT <= 0) {
-    enemy.repathT = P.enemy.repath;
+  if (enemy.repathT <= 0 && pathLeft > 0) {
+    // **흔들림을 준다** (D130). 예전엔 상수를 그대로 넣어서, 한 번 같은 프레임에
+    // 몰린 무리가 영원히 발을 맞춰 21프레임마다 A*를 한꺼번에 돌렸다
+    // (실측 117마리의 repathT가 **전부 같은 값**이었다). ±20%면 저절로 흩어진다.
+    const back = 1 + Math.min(enemy.pathFail || 0, P.enemy.pathFailBackoff);
+    enemy.repathT = P.enemy.repath * (0.8 + Math.random() * 0.4) * back;
+    pathLeft--;
+    pf('AI:길찾기');
     planEnemyPath(enemy);
+    pf('적AI');
   }
 
   // 웨이포인트 소비 + 시야 단축 (추격 모드에서만)
@@ -5089,7 +5205,7 @@ function updateEnemy(enemy, dt) {
     enemy.x += dx * spd * dt;
     enemy.z += dz * spd * dt;
   }
-  collideWithObstacles(enemy, er);
+  pf('AI:충돌'); collideWithObstacles(enemy, er); pf('적AI');
 
   // 벽 공격: (a) 파괴 경로상 다음 벽  (b) 정체 시 근처 벽
   enemy.attackTarget = null;
@@ -5097,7 +5213,7 @@ function updateEnemy(enemy, dt) {
   if (enemy.aiMode === '파괴') {
     for (let k = 0; k < Math.min(enemy.path.length, 6); k++) {
       const idx = enemy.path[k].idx;
-      const ob = obstacles.get(cellKey(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0));
+      const ob = obAtCell(((idx % NAV) / NAVPC) | 0, (((idx / NAV) | 0) / NAVPC) | 0);
       if (!ob || ob.bedrock || !ob.bldgRef) continue;  // 벽은 무적, 건물만
       // 벽 너머로는 못 때린다 (D88) — 거리만 보면 **벽 뒤의 타워가 맞는다.**
       // 파괴 경로가 건물을 지나더라도, 지금 서 있는 자리에서 손이 닿아야 때릴 수 있다
@@ -5123,7 +5239,7 @@ function updateEnemy(enemy, dt) {
     let onBedrock = false;
     for (let dj = -1; dj <= 1 && !onBedrock; dj++)
       for (let di = -1; di <= 1; di++) {
-        const ob = obstacles.get(cellKey(c0.i + di, c0.j + dj));
+        const ob = obAtCell(c0.i + di, c0.j + dj);
         if (ob && ob.bedrock && distToObstacle(enemy, ob) <= er + P.enemy.attackRange) {
           onBedrock = true; break;
         }
@@ -5166,7 +5282,9 @@ function updateEnemy(enemy, dt) {
       enemy.targetSince = survival;
     }
   }
-  if (enemy.aiMode === '추격' && enemy.stallT > 0.4) enemy.repathT = 0;
+  // 정체하면 즉시 다시 잡는다 — 단 **길찾기에 실패 중인 적은 빼고** (D130).
+  // 안 그러면 못 가는 적이 매 프레임 A*를 6번씩 돌린다
+  if (enemy.aiMode === '추격' && enemy.stallT > 0.4 && !enemy.pathFail) enemy.repathT = 0;
   const stallLimit = enemy.aiMode === '추격' ? 2.5 : 0.6;
 
   // 습격 대상 건물이 손에 닿는가
@@ -5184,6 +5302,7 @@ function updateEnemy(enemy, dt) {
   }
   // 정체 폴백: 손 닿는 건물은 모든 종류가 공격, 벽은 파괴묘만
   if (!bldgTarget && !enemy.attackTarget && enemy.stallT > stallLimit) {
+    pf('AI:정체스캔');
     let bestWall = null, bestB = null, bestD = reach + 0.4;
     for (const ob of obstacles.values()) {
       if (ob.bedrock) continue;
@@ -5197,6 +5316,7 @@ function updateEnemy(enemy, dt) {
     }
     if (bestB && !segmentBlocked(enemy.x, enemy.z, bestB.cx, bestB.cz, bestB)) bldgTarget = bestB;
     else if (!bestB) enemy.attackTarget = bestWall;
+    pf('적AI');
   }
 
   // 파괴 경로상의 건물 셀 — 여기도 시야를 본다 (D88).
@@ -5241,7 +5361,7 @@ function updateEnemy(enemy, dt) {
     const c = worldToCell(enemy.x, enemy.z);
     for (let dj = -2; dj <= 2 && !blockingWall; dj++)
       for (let di = -2; di <= 2; di++) {
-        const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+        const ob = obAtCell(c.i + di, c.j + dj);
         if (!ob || ob.bedrock || ob.bldgRef) continue;
         if (distToObstacle(enemy, ob) <= reach) { blockingWall = ob; break; }
       }
@@ -5282,7 +5402,7 @@ function updateEnemy(enemy, dt) {
       const c = worldToCell(enemy.x, enemy.z);
       for (let dj = -2; dj <= 2 && !smashWall; dj++)
         for (let di = -2; di <= 2; di++) {
-          const ob = obstacles.get(cellKey(c.i + di, c.j + dj));
+          const ob = obAtCell(c.i + di, c.j + dj);
           if (!ob || ob.bedrock || ob.bldgRef) continue;
           if (distToObstacle(enemy, ob) <= reach) { smashWall = ob; break; }
         }
@@ -5312,7 +5432,7 @@ function updateEnemy(enemy, dt) {
         const cand = [];
         for (let dj = -span; dj <= span; dj++)
           for (let di = -span; di <= span; di++) {
-            const ob = obstacles.get(cellKey(smashWall.i + di, smashWall.j + dj));
+            const ob = obAtCell(smashWall.i + di, smashWall.j + dj);
             if (!ob || ob.bedrock || ob.bldgRef) continue;
             const d = distCellToPoint(ob.i, ob.j, hit.x, hit.z);
             if (d > R) continue;
@@ -6133,7 +6253,7 @@ function queueWall(p, i, j) {
 
 // 철거 — 예전엔 고스트 그리는 코드 한복판에 섞여 있었다 (마우스가 있어야만 철거가 됐다)
 function removeAt(p, i, j) {
-  const ob = obstacles.get(cellKey(i, j));
+  const ob = obAtCell(i, j);
   if (!ob) return;
   const bldg = ob.bldgRef && ob.bldgRef.owner === p.owner ? ob.bldgRef : null;
   const isWall = !ob.bedrock && !ob.bldgRef;
@@ -6300,7 +6420,7 @@ function updateLocalUI(dt) {
   }
   // ---- 철거 모드 (X) ---- 핫바 슬롯을 안 쓰고 별도 상태로 둔다 (D88)
   if (removeMode) {
-    const ob = hasTile ? obstacles.get(cellKey(gi, gj)) : null;
+    const ob = hasTile ? obAtCell(gi, gj) : null;
     // 벽뿐 아니라 **일반 건물(창고·공방·경비탑)도 철거된다** (D90).
     // 건물은 잘못 놓으면 되돌릴 방법이 아예 없었다 — 자리를 고쳐 잡을 길을 준다.
     // 되찾는 값(refundRatio)이 있어야 "옮기자"가 실제 선택이 된다.
@@ -6548,7 +6668,7 @@ function distCellToPoint(i, j, x, z) {
 }
 
 function removeGhostWall() {
-  const ob = obstacles.get(cellKey(ghostCell.i, ghostCell.j));
+  const ob = obAtCell(ghostCell.i, ghostCell.j);
   if (ob && !ob.bedrock) {
     removeObstacle(ob);
     markNavDirty();
@@ -6577,6 +6697,7 @@ const gui = new GUI({ title: '튜닝' });
   });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
   f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
+  f.add(P.enemy, 'pathPerFrame', 0, 60, 1).name('프레임당 길찾기 상한 (0=무제한)');
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
   f.add(P.atk, 'cooldown', 0.1, 2, 0.05).name('★ 내 공격 쿨다운');
@@ -7320,6 +7441,7 @@ function rebuildWorld(idx) {
   clearWorkers();
   for (const ob of [...obstacles.values()]) removeObstacle(ob);
   obstacles.clear();
+  rebuildObGrid();   // 격자도 같이 비운다 (D130)
   clearPileLabels();   // 더미가 사라지면 정원 표시도 같이 (D90)
   for (const n of nodes) { scene.remove(n.mesh); n.mesh.userData.mat.dispose(); }
   nodes.length = 0;
@@ -9228,7 +9350,7 @@ function applySnapshot(m) {
 
   // ---- 벽 이벤트 ----
   for (const e of m.ev || []) {
-    const ob = obstacles.get(cellKey(e.i, e.j));
+    const ob = obAtCell(e.i, e.j);
     if (e.a === 1) {
       if (!ob) {
         wallEvMute++;
@@ -9675,12 +9797,42 @@ function tickEditor(dt) {
   noteFrame();
 }
 
+// ============================================================
+// 프레임 프로파일러 (D130)
+//  꺼져 있으면 분기 하나 값이다. `__game.prof.on = true`로 켜고 `__game.profDump()`.
+//  ⚠ **내보낸 함수를 감싸는 방식으로는 못 잡는다** — 내부 호출은 모듈 지역 이름을
+//  쓰기 때문에 `__game.foo`를 바꿔도 안 걸린다. 그래서 구간 표시를 소스에 박는다.
+// ============================================================
+const prof = { on: false, acc: {}, cur: null, t0: 0, frames: 0 };
+function pf(name) {
+  if (!prof.on) return;
+  const now = performance.now();
+  if (prof.cur) prof.acc[prof.cur] = (prof.acc[prof.cur] || 0) + (now - prof.t0);
+  prof.cur = name; prof.t0 = now;
+}
+function pfEnd() {
+  if (!prof.on || !prof.cur) return;
+  prof.acc[prof.cur] = (prof.acc[prof.cur] || 0) + (performance.now() - prof.t0);
+  prof.cur = null;
+  prof.frames++;
+}
+function profDump(reset = true) {
+  const out = { 프레임: prof.frames };
+  const rows = Object.entries(prof.acc).sort((a, b) => b[1] - a[1]);
+  for (const [k, v] of rows)
+    out[k] = { 총ms: Math.round(v), 프레임당ms: Math.round((v / Math.max(prof.frames, 1)) * 1000) / 1000 };
+  if (reset) { prof.acc = {}; prof.frames = 0; }
+  return out;
+}
+
 function tick(dt) {
   if (net.role === 'client') { tickClient(dt); return; }
   if (edOn()) { tickEditor(dt); return; }
+  pf('기타');
   if (!paused && alive && started) {
     survival += dt;
-    updatePlayer(dt);
+    pf('플레이어'); updatePlayer(dt);
+    pf('기타');
     for (const p of players) if (p.grace > 0) p.grace -= dt;
     if (flashT > 0) {
       flashT -= dt;
@@ -9691,17 +9843,22 @@ function tick(dt) {
     for (const q of players) q.vis.group.visible = q.active;
     updateRescue();
     updateWipeGrace(dt);
-    flushNavDirty();           // 이번 프레임에 바뀐 벽을 한 번에 반영 (D70)
-    trackTargetVelocity(dt);   // 리드 조준용 속도 추정 (적이 앞을 노린다)
+    pf('나브갱신'); flushNavDirty();   // 이번 프레임에 바뀐 벽을 한 번에 반영 (D70)
+    pf('기타'); trackTargetVelocity(dt);
     if (enemyActive()) {
       ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
       updateSpawns();   // 스테이지 외 추가 증원 (옵션)
       updateBomberTrickle(dt);   // 자폭묘 상시 보충 (D121)
+      pf('적AI');
+      // 이번 프레임의 길찾기 예산. 못 받은 적은 다음 프레임에 다시 시도한다
+      // (repathT가 음수로 남아 있으므로 오래 기다린 쪽이 먼저 받는다)
+      pathLeft = P.enemy.pathPerFrame > 0 ? P.enemy.pathPerFrame : 1e9;
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
       }
-      separateEnemies();
+      pf('적분리'); separateEnemies();
+      pf('기타');
       // 톰끼리 밀어내기는 뺐다 (D123) — 같은 방향으로 오던 둘이 서로 밀려 갈라지면서
       // **한 마리씩 각개격파**당했다. 둘이 뭉쳐 오는 게 두 마리인 의미다.
       for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
@@ -9741,8 +9898,8 @@ function tick(dt) {
       updatePickups(dt);
     updateWallPops(dt);
     // 영토 (D86) — 둘 다 세대 카운터로 캐시되어 있어서 바뀔 때만 실제 작업을 한다
-    refreshTerritory();
-    paintTerritory();
+    pf('영토'); refreshTerritory();
+    pf('영토칠하기'); paintTerritory();
     // 영토 면적당 치즈 수입 (D88 실험) — 치즈더미 없이 숨어 있어도 소량은 모인다.
     // **면적에 비례**하므로 "숨어 있으면 번다"가 아니라 "넓혀야 번다"가 된다.
     // 채굴 왕복(D36)을 대체하지 않도록 일부러 작게 뒀다 (기본값 근거는 P.res.terrIncome 주석).
@@ -9765,8 +9922,8 @@ function tick(dt) {
       }
     }
   }
-  updateFx(dt);
-  updateCamera(dt);
+  pf('연출'); updateFx(dt);
+  pf('카메라'); updateCamera(dt);
   if (camShake > 0) {
     const c = activeCam();
     c.position.x += (Math.random() - 0.5) * camShake * 0.9;
@@ -9774,9 +9931,13 @@ function tick(dt) {
   }
   noteFrame();
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); renderNetDev(); }
-  sendSnapshot(dt);
+  if (hudT <= 0) {
+    hudT = 0.1;
+    pf('HUD'); updateHUD(); updateHotbar(); renderNet(); renderNetDev();
+  }
+  pf('스냅샷'); sendSnapshot(dt);
   sendSettings(dt);
+  pfEnd();
 }
 
 // ============================================================
@@ -9891,6 +10052,7 @@ window.__game = {
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
   flattenModel, modelCache, MODEL_URL, GLTFLoader,
+  prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
   mudCells, ED_BRUSH, ED_ERASE, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   edGhost, edUpdateGhost, tickEditor, get edDragging() { return edDragging; },
   set edDragging(v) { edDragging = v; },
