@@ -833,41 +833,108 @@ const wallGeo = new THREE.BoxGeometry(1, 1, 1);
 //   원형: 대각 관문 = √2·CS - post         = 1.01  (여유 15cm씩, 실제로 지나갈 수 있다)
 const postGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
 
+// ============================================================
+// 벽·지형 인스턴싱 (D131)
+//  예전엔 **벽 한 장이 메시 하나 + 재질 하나**였다. 500장이면 재질 500개,
+//  그림자 패스까지 draw call이 두 배로 붙는다 (실측 장면 전체 재질 977개).
+//  세 덩이로 묶는다: 성한 기둥 · 금 간 기둥 · 지형.
+//  금 간 것을 따로 두는 이유는 **발광**이다 — 인스턴스마다 emissive를 줄 수 없으니
+//  재질이 다른 놈끼리 모은다 (D90의 "멀리서도 읽혀야 한다"를 지키려고).
+//  건물 칸은 여기 없다 — 건물이 자기 메시로 그린다.
+// ============================================================
+const WALL_INST_CAP = 1024;
+let postIM = null, crackIM = null, bedIM = null;
+let wallVisDirty = true;
+const markWallVis = () => { wallVisDirty = true; };
+
+function makeWallIM(geo, mat, cap) {
+  const im = new THREE.InstancedMesh(geo, mat, cap);
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  im.castShadow = true;
+  im.receiveShadow = true;
+  // 맵 전체를 덮는 덩어리라 컬링할 것이 없다. 켜 두면 경계구 계산만 낭비다
+  im.frustumCulled = false;
+  im.count = 0;
+  scene.add(im);
+  return im;
+}
+
+function ensureWallIMs() {
+  if (postIM) return;
+  postIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }), WALL_INST_CAP);
+  crackIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.9, emissive: new THREE.Color(0x772222), emissiveIntensity: 0.45,
+  }), WALL_INST_CAP);
+  bedIM = makeWallIM(wallGeo, new THREE.MeshStandardMaterial({ color: 0x4a4f5c, roughness: 0.9 }), WALL_INST_CAP);
+}
+
+// 벽 하나의 **보이는 상태**. 예전엔 이게 전부 mesh.scale / mesh.material에 있었다
+function wallVisual(ob) {
+  if (ob.vw === undefined) { ob.vw = P.wall.post; ob.vh = P.wall.height; }
+  return ob;
+}
+const setWallSize = (ob, side, h) => { ob.vw = side; ob.vh = h; wallVisDirty = true; };
+
+const _wm = new THREE.Matrix4();
+const _wp = new THREE.Vector3();
+const _wq = new THREE.Quaternion();
+const _ws = new THREE.Vector3();
+const _wc = new THREE.Color();
+
+function syncWallInstances() {
+  if (!wallVisDirty || !postIM) return;
+  wallVisDirty = false;
+  let ip = 0, ic = 0, ib = 0;
+  for (const ob of obstacles.values()) {
+    if (ob.bldgRef) continue;            // 건물 칸은 건물이 그린다
+    const h = ob.vh !== undefined ? ob.vh : (ob.bedrock ? 1.4 : P.wall.height);
+    const side = ob.vw !== undefined ? ob.vw : (ob.bedrock ? CS * 0.98 : P.wall.post);
+    _wp.set((ob.i + 0.5) * CS - HALF, h / 2, (ob.j + 0.5) * CS - HALF);
+    _ws.set(side, h, side);
+    _wm.compose(_wp, _wq, _ws);
+    if (ob.bedrock) {
+      if (ib < WALL_INST_CAP) bedIM.setMatrixAt(ib++, _wm);
+    } else if (ob.cracks > 0) {
+      if (ic < WALL_INST_CAP) { crackIM.setMatrixAt(ic, _wm); crackIM.setColorAt(ic, ob.vc || WALL_BASE); ic++; }
+    } else {
+      if (ip < WALL_INST_CAP) { postIM.setMatrixAt(ip, _wm); postIM.setColorAt(ip, ob.vc || WALL_BASE); ip++; }
+    }
+  }
+  postIM.count = ip; crackIM.count = ic; bedIM.count = ib;
+  postIM.instanceMatrix.needsUpdate = true;
+  crackIM.instanceMatrix.needsUpdate = true;
+  bedIM.instanceMatrix.needsUpdate = true;
+  if (postIM.instanceColor) postIM.instanceColor.needsUpdate = true;
+  if (crackIM.instanceColor) crackIM.instanceColor.needsUpdate = true;
+  shadowDirty();   // 실루엣이 바뀌었으니 그림자도 다시 굽는다
+}
+
+// `building` 인자는 아무도 안 쓴다 — 건물 칸은 placeBuilding이 bldgRef로 따로 넣는다.
+// 자리는 남겨 둔다 (호출부가 네 번째 인자에 false를 넘기고 있다)
 function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   const key = cellKey(i, j);
   if (obstacles.has(key)) return null;
-  const mat = new THREE.MeshStandardMaterial({
-    color: bedrock ? 0x4a4f5c : building ? 0x3f8cff : 0x8fa1b8,
-    roughness: 0.9,
-    transparent: building,
-    opacity: building ? 0.5 : 1,
-    emissive: new THREE.Color(building ? 0x1a4a8f : 0x000000),
-    emissiveIntensity: building ? 0.6 : 0,
-  });
-  const post = !bedrock && !building;
-  const mesh = new THREE.Mesh(post ? postGeo : wallGeo, mat);
-  const h = bedrock ? 1.4 : P.wall.height * (building ? 0.15 : 1);
-  const w = cellToWorld(i, j);
-  // 플레이어 벽만 가느다란 원기둥 — 틈이 보여야 "지나갈 수 있겠다"가 읽힌다
-  const side = post ? P.wall.post : CS * 0.98;
-  mesh.scale.set(side, h, side);
-  mesh.position.set(w.x, h / 2, w.z);
-  mesh.castShadow = mesh.receiveShadow = true;
-  scene.add(mesh);
+  ensureWallIMs();
   const ob = {
     i, j,
     hp: Infinity, maxHp: Infinity,   // 벽은 무적 (자폭묘 폭발로만 사라진다)
     owner,
-    bedrock, building, mesh,
+    bedrock, building,
+    mesh: null,                      // 이제 메시가 없다 — InstancedMesh가 그린다 (D131)
+    // 보이는 상태. 예전에는 이게 mesh.scale / mesh.material에 들어 있었다
+    vw: bedrock ? CS * 0.98 : P.wall.post,
+    vh: bedrock ? 1.4 : P.wall.height,
+    vc: new THREE.Color(),
   };
   // 소유자별로 색이 달라야 한다 (D96에서 되살림). D95에서 동료 AI 블록을 걷어낼 때
   // 여기 있던 파란 칠이 같이 사라졌는데, 소멸이 소유자별인 지금은
   // **"이 벽이 누구 것인가"가 생사에 걸린 정보**다 — 상대가 잡히면 그 벽만 사라진다.
-  if (post && owner === 'a') mat.color.setHex(0x7f93c8);
+  ob.vc.copy(wallBaseOf(ob));
   obstacles.set(key, ob);
   if (i >= 0 && j >= 0 && i < CELLS && j < CELLS) obGrid[obIdx(i, j)] = ob;
+  wallVisDirty = true;
   shadowDirty();
-  if (post) wallEv({ a: 1, i, j, o: owner });
+  if (!bedrock && !building) wallEv({ a: 1, i, j, o: owner });
   return ob;
 }
 
@@ -876,10 +943,7 @@ function removeObstacle(ob) {
   obstacles.delete(cellKey(ob.i, ob.j));
   if (ob.i >= 0 && ob.j >= 0 && ob.i < CELLS && ob.j < CELLS) obGrid[obIdx(ob.i, ob.j)] = undefined;
   shadowDirty();
-  if (ob.mesh) {
-    scene.remove(ob.mesh);
-    ob.mesh.material.dispose();
-  }
+  wallVisDirty = true;   // 인스턴스 목록에서 빠진다 (D131)
 }
 
 const WALL_BASE = new THREE.Color(0x8fa1b8);
@@ -887,9 +951,10 @@ const WALL_BASE_A = new THREE.Color(0x7f93c8);   // 동료(P2) 벽은 파랗다 
 const wallBaseOf = (ob) => (ob.owner === 'a' ? WALL_BASE_A : WALL_BASE);
 const WALL_DMG = new THREE.Color(0xd9534f);
 function updateWallColor(ob) {
-  if (!ob.mesh) return; // 건물 셀은 건물 쪽에서 색을 관리
+  if (ob.bldgRef || !ob.vc) return;   // 건물 셀은 건물 쪽에서 색을 관리
   const t = 1 - ob.hp / ob.maxHp;
-  ob.mesh.material.color.copy(wallBaseOf(ob)).lerp(WALL_DMG, t);
+  ob.vc.copy(wallBaseOf(ob)).lerp(WALL_DMG, t);
+  wallVisDirty = true;
 }
 
 // ---- 금 간 벽 (D90) ----
@@ -900,16 +965,16 @@ const crackedWalls = () =>
   [...obstacles.values()].filter((ob) => !ob.bedrock && !ob.bldgRef && ob.cracks > 0);
 
 function applyCrackVisual(ob) {
-  if (!ob.mesh) return;
-  shadowDirty();
+  if (ob.bldgRef || ob.bedrock || !ob.vc) return;
   const f = (ob.cracks || 0) / Math.max(P.wall.crackMax, 1);   // 0..1
   const side = P.wall.post * (1 - 0.3 * f);
-  ob.mesh.scale.set(side, P.wall.height * (1 - 0.12 * f), side);
-  ob.mesh.position.y = (P.wall.height * (1 - 0.12 * f)) / 2;
+  setWallSize(ob, side, P.wall.height * (1 - 0.12 * f));
   // 금이 가도 **소유자 색은 유지**한다 — 누구 벽인지가 계속 읽혀야 한다 (D96)
-  ob.mesh.material.color.copy(wallBaseOf(ob)).lerp(WALL_DMG, 0.55 * f + 0.25 * (f > 0 ? 1 : 0));
-  ob.mesh.material.emissive.setHex(f > 0 ? 0x772222 : 0x000000);
-  ob.mesh.material.emissiveIntensity = f > 0 ? 0.35 * f + 0.2 : 0;
+  ob.vc.copy(wallBaseOf(ob)).lerp(WALL_DMG, 0.55 * f + 0.25 * (f > 0 ? 1 : 0));
+  // 발광은 인스턴스마다 못 주므로 **금 간 것끼리 따로 모아** 그린다 (D131).
+  // cracks가 0보다 크면 syncWallInstances가 crackIM 쪽으로 보낸다
+  wallVisDirty = true;
+  shadowDirty();
 }
 
 // 폭발 한 번 = 금 하나. 넘치면 무너진다. 무너졌으면 true를 돌려준다.
@@ -2883,8 +2948,7 @@ function updateWallOrder(dt, p = player) {
       // 프레임당 한 번으로 몰아서 계산한다 (D70). 여기서 직접 부르면 둘이 벽을 도배할 때
       // 같은 프레임에 두 번 도는데, refreshClearance는 28,224칸을 네 번 훑는 함수다.
       markNavDirty();
-      ob.mesh.scale.y = 0.02;
-      ob.mesh.position.y = 0.01;
+      setWallSize(ob, ob.vw, 0.02);   // 바닥에서 솟아오른다 (D131)
       popping.push({ ob, t: 0 });
       spawnBuildFx(w.x, w.z);
       p.wallCast = null;
@@ -6017,8 +6081,7 @@ function updateWallPops(dt) {
     const e = p < 1 ? 1.14 * Math.sin((p * Math.PI) / 2) - 0.14 * Math.sin(p * Math.PI) : 1;
     const h = P.wall.height * Math.max(e, 0.02);
     if (!obstacles.has(cellKey(w.ob.i, w.ob.j))) { popping.splice(k, 1); continue; }
-    w.ob.mesh.scale.y = h;
-    w.ob.mesh.position.y = h / 2;
+    setWallSize(w.ob, w.ob.vw, h);
     shadowDirty();   // 솟는 동안은 매 프레임 — 0.16초짜리라 값이 싸다
     if (p >= 1) popping.splice(k, 1);
   }
@@ -6693,7 +6756,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.wall, 'cost', 0, 40, 1).name('벽 비용');
   f.add(P.wall, 'post', 0.2, 2.2, 0.05).name('벽 기둥 굵기').onChange(() => {
     for (const ob of obstacles.values())
-      if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
+      if (!ob.bedrock && !ob.bldgRef) setWallSize(ob, P.wall.post, P.wall.height);
   });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
   f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
@@ -6819,8 +6882,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('높이').onChange((h) => {
     for (const ob of obstacles.values()) {
       if (ob.bedrock) continue;
-      ob.mesh.scale.y = h;
-      ob.mesh.position.y = h / 2;
+      setWallSize(ob, ob.vw, h);
     }
   });
 }
@@ -6830,7 +6892,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.wall, 'removeCost', 0, 30, 1).name('철거 비용');
   f.add(P.wall, 'post', 0.2, 2.2, 0.05).name('벽 기둥 굵기 (틈 = 1-굵기)').onChange(() => {
     for (const ob of obstacles.values())
-      if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
+      if (!ob.bedrock && !ob.bldgRef) setWallSize(ob, P.wall.post, P.wall.height);
   });
   f.add(P.wall, 'height', 0.4, 3, 0.1).name('벽 높이');
   f.add(P.wall, 'range', 0.5, 9, 0.1).name('벽 설치 거리 (여기까지 걸어간다)');
@@ -7061,9 +7123,8 @@ function applySettings(s) {
     // 건물 칸은 `bldgRef`를 달고 **mesh가 null**이다 (건물 쪽에서 그린다).
     // 여기 가드가 `ob.building`이라는 없는 속성을 보고 있어서, 건물이 하나라도
     // 서 있으면 설정을 불러올 때마다 터졌다 — 실제 플레이에서는 늘 서 있다.
-    if (ob.bedrock || !ob.mesh) continue;
-    ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
-    ob.mesh.position.y = P.wall.height / 2;
+    if (ob.bedrock || ob.bldgRef) continue;
+    setWallSize(ob, P.wall.post, P.wall.height);
   }
   repathAll();
   refreshAllControllers();
@@ -9959,7 +10020,12 @@ function stepBy(elapsedMs, draw) {
     tick(dt);
     left -= dt;
   }
-  if (draw) { drawMini(Math.min(elapsedMs / 1000, 0.5)); faceBars(); renderer.render(scene, activeCam()); }
+  if (draw) {
+    syncWallInstances();   // 벽 인스턴스는 **그리기 직전에** 한 번만 맞춘다 (D131)
+    drawMini(Math.min(elapsedMs / 1000, 0.5));
+    faceBars();
+    renderer.render(scene, activeCam());
+  }
 }
 
 function loop() {
@@ -10053,6 +10119,8 @@ window.__game = {
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
   flattenModel, modelCache, MODEL_URL, GLTFLoader,
   prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
+  syncWallInstances, get wallIMs() { return { postIM, crackIM, bedIM }; },
+  removeObstacle, applyCrackVisual, crackWall, updateWallColor,
   mudCells, ED_BRUSH, ED_ERASE, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   edGhost, edUpdateGhost, tickEditor, get edDragging() { return edDragging; },
   set edDragging(v) { edDragging = v; },
