@@ -4861,6 +4861,10 @@ function advanceStage() {
 let bomberT = 0;
 function updateBomberTrickle(dt) {
   if (!netAuthoring() || !enemyActive()) return;
+  // 이긴 화면에서는 멈춘다 (D124). 무한 모드가 생기면서 'won'은 **판이 끝난 상태가 아니라
+  // 계속할지 고르는 상태**가 됐다 — 그동안 자폭묘가 계속 와서 안 보이는 채로 벽을 갉았다.
+  // updateStageTimer는 원래 victory를 봤는데 여기만 안 봤다.
+  if (victory) return;
   if (P.bomber.every <= 0) return;
   if (stage < P.bomber.fromStage && !enraged()) return;
   bomberT += dt;
@@ -4877,6 +4881,7 @@ function updateBomberTrickle(dt) {
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
 function updateSpawns() {
   if (!netAuthoring()) return;   // 증원은 호스트만 — 클라가 적을 만들면 id가 충돌한다
+  if (victory) return;           // 이긴 화면에서는 멈춘다 (D124)
   const per = P.threat.everyLevels;
   const growthTarget = per > 0 ? Math.floor(threatLevel() / per) : 0;
   while (growthSpawned < growthTarget) {
