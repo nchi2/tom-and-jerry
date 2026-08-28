@@ -290,6 +290,29 @@
       padding-left: 8px; border-left: 2px solid #ffd24a;
     }
     /* 맵 에디터 (D112) */
+    /* 공격 개조 — 치즈 창고 옆에서 뜬다 (D129). 클릭으로 산다 */
+    #atkup {
+      position: fixed; right: 12px; bottom: 190px; z-index: 13; display: none;
+      background: rgba(14, 16, 22, 0.9); border: 1px solid #2b3242; border-radius: 8px;
+      padding: 9px 11px; min-width: 268px;
+      font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: #c8cede;
+    }
+    #atkup .ahead { color: #ffd24a; font-weight: 700; margin-bottom: 6px; }
+    #atkup .arow {
+      display: flex; align-items: baseline; gap: 7px; padding: 5px 6px; border-radius: 5px;
+      cursor: pointer; border: 1px solid transparent;
+    }
+    #atkup .arow:hover { background: #1d2432; border-color: #3d4a63; }
+    #atkup .arow.dim { opacity: 0.45; cursor: default; }
+    #atkup .arow.dim:hover { background: none; border-color: transparent; }
+    #atkup .arow .lv { color: #8fd6ff; }
+    #atkup .arow .eff { color: #8b93a5; margin-left: auto; font-size: 11px; }
+    #atkup .ahint { color: #6b7385; font-size: 11px; margin-top: 5px; }
+    /* 클릭으로 사는 개조 줄 (D129) */
+    #upgrade .urow { cursor: pointer; border: 1px solid transparent; border-radius: 5px; padding: 2px 5px; }
+    #upgrade .urow:hover { background: #1d2432; border-color: #3d4a63; }
+    #upgrade .urow.dim { cursor: default; }
+    #upgrade .urow.dim:hover { background: none; border-color: transparent; }
     #editor {
       position: fixed; left: 12px; top: 120px; width: 268px; display: none; z-index: 7;
       font: 12px/1.6 ui-monospace, Menlo, monospace; color: #e8ecf4;
@@ -382,6 +405,7 @@
   <div id="selbox"></div>
   <div id="hotbar"></div>
   <div id="upgrade"></div>
+  <div id="atkup"></div>
   <div id="menu"><div class="box">
     <h2>일시정지</h2>
     <button id="m-resume">계속하기</button>

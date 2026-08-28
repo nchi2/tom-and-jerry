@@ -273,8 +273,23 @@ const P = {
   // 새 통행권은 D57과 같이 **물리로 직접 움직이는 플레이어에게만** 생긴다.
   // refundRatio = X 철거로 건물을 부술 때 되찾는 비율 (D90).
   //  건물은 잘못 놓으면 되돌릴 방법이 없었다. 절반을 돌려주면 "옮기자"가 실제 선택이 된다.
+  // 햄스터의 공격 (D129). 이 게임 최초의 **직접 공격**이다 —
+  // 지금까지 유일한 공격은 도발(0번)이었다. 벽으로 못 막는 상황에서
+  // "한 대라도 치고 밀어낸다"를 주되, 술래잡기를 사냥으로 바꾸지 않을 만큼만.
+  atk: {
+    dmg: 14, range: 1.9, arc: 1.6,   // arc = 정면 기준 반각(rad). 1.6이면 앞쪽 거의 반원
+    cooldown: 0.5, swing: 0.18,      // swing = 휘두르는 모션 시간(초)
+    knockBase: 0.9,                  // 넉백 1포인트당 밀어내는 거리(m)
+    dmgStep: 9,                      // 딜 1포인트당 추가 피해
+    splashStep: 0.6,                 // 스플 1포인트당 튀는 반경(m)
+    splashFrac: 0.6,                 // 튄 피해는 본체의 이 비율
+    stagePoints: 1, maxPoints: 10,   // 스테이지마다 1점, 최대 10점
+  },
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
-           inset: 0.3, refundRatio: 0.5 },
+           inset: 0.3, refundRatio: 0.5,
+           // 경비탑 원격 착공 사거리(m). **0 = 무제한** (D128).
+           // 벽은 여기 안 걸린다 — 벽은 늘 직접 가서 짓는다
+           remoteRange: 0 },
   // 방어병 3종 (D51) — 타일에 배치하고 우클릭으로 재배치 명령.
   //  사수  : D29 그대로. 체력 0 = 적과 닿으면 즉사. 벽 뒤에 세워야만 쓸모가 있다
   //  근접병: 체력이 있어 붙어서 버틴다. 사거리가 짧아 몸으로 막는 역할
@@ -375,7 +390,7 @@ const P = {
   //          할지를 모른다. 다 되기 전에 F로 앞당길 수는 있다.
   //  drip    공세를 **나눠서** 내보낸다. 한 번에 쏟으면 첫 30초가 전부고 나머지는 청소다
   //  bomberEvery 공세 동안의 자폭묘 주기 (평소보다 짧다)
-  final: { enabled: 1, boost: 1.3, wave: 3.0, duration: 150, bomberOneShot: 1,
+  final: { enabled: 1, boost: 1.3, wave: 3.0, duration: 150, bomberOneShot: 0,
            // 준비 5분 (D126). 3분은 짧았다 — 이 게임에서 **처음이자 유일하게
            // 쫓기지 않는 시간**이고(D108), 계획해서 짓는 건 여기서만 할 수 있다
            prep: 300, bomberEvery: 9,
@@ -383,7 +398,7 @@ const P = {
            // 몇 번 남았는지가 안 읽혔다 — "3차 중 2차"가 보여야 버티는 그림이 된다
            waves: 3, waveGap: 40,
            // 무한 모드 (D124). 한 번 막아내면 이긴 것이고, 계속하기를 누르면 라운드가 오른다
-           endlessPrep: 45,      // 라운드 사이 준비 시간(초) — 첫 판의 prep보다 짧다
+           endlessPrep: 300,     // 라운드 사이 준비 시간(초). 첫 판과 **같은 5분**을 준다 (D128)
            endlessGrow: 1.35,    // 라운드마다 물량 배율
            endlessBoost: 0.12,   // 라운드마다 강화 배율에 더하는 값
            darkAmt: 0.8 },   // 몸을 얼마나 어둡게 (1이면 새까맣다)
@@ -542,6 +557,7 @@ const TOWER_TIERS = {
 let buildSlot = -1;
 let prevWantBuild = false;
 let prevWantSpawn = false;
+let atkSendT = 0;   // Space 연타를 쿨다운만큼만 명령으로 내보낸다 (D129)
 // 철거는 핫바 슬롯이 아니라 별도 모드다 (D88) — X로 켜고 끈다
 let removeMode = false;
 // 유닛이 나올 자리 (고스트가 서는 곳, D91)
@@ -565,6 +581,18 @@ const UPGRADES = [
   { key: 'guard', label: '방어병 화력', unit: () => `+${P.upgrade.guardStep}` },
 ];
 const newUpg = () => ({ speed: 0, radius: 0, tower: 0, guard: 0 });
+// 공격 개조 (D129) — 부품이 아니라 **스테이지 포인트**로 산다. 셋 중에 고르는 구조라
+// 포인트가 유한한 게 핵심이다 (10점을 어디에 쓸지가 곧 그 판의 성격이 된다)
+const newAtkUpg = () => ({ dmg: 0, knock: 0, splash: 0 });
+const ATK_UPG = [
+  { key: 'dmg',    label: '공격력',
+    unit: (n) => `+${P.atk.dmgStep * n} 피해 (지금 ${atkDmgOf(n)})` },
+  { key: 'knock',  label: '넉백',
+    unit: (n) => (n ? `${(P.atk.knockBase * n).toFixed(1)}m 밀어냄` : '밀어내지 못함') + ' · 톰에겐 안 통함' },
+  { key: 'splash', label: '스플래시',
+    unit: (n) => (n ? `반경 ${(P.atk.splashStep * n).toFixed(1)}m에 ${Math.round(P.atk.splashFrac * 100)}%` : '한 마리만') },
+];
+const atkDmgOf = (lv) => P.atk.dmg + P.atk.dmgStep * lv;
 
 const upgCost = (lv) => P.upgrade.baseCost + P.upgrade.costStep * lv;
 // 모든 이동 속도는 이 배율을 통과한다 (D56) — 여기 한 곳만 바꾸면 전체 템포가 바뀐다
@@ -1719,6 +1747,8 @@ const ally = players[1];
 for (const p of players) {
   p.cheese = 0;
   p.upg = newUpg();
+  p.atkUpg = newAtkUpg();
+  p.pts = 0;
   p.hp = P.player.hp;
   p.hurtT = 99;
   p.grace = 0;
@@ -2434,7 +2464,11 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
       if (distCellToPoint(ci, cj, e.x, e.z) < enemyR(e) + 0.02) return '적이 서 있는 자리입니다';
   }
   const cx = cellToWorld(i, j).x + CS / 2, cz = cellToWorld(i, j).z + CS / 2;
-  if (!asOrder && Math.hypot(p.x - cx, p.z - cz) > P.wall.range + 1.2) return '너무 멉니다';
+  // 사거리 검사는 **직접 지어야 하는 건물에만** 건다 (D128).
+  // 경비탑처럼 스스로 올라가는 건물은 걸어가지 않고 그 자리에서 착공한다 —
+  // 여기를 안 풀면 명령은 통과하고 실제 착공에서 조용히 '너무 멉니다'로 막힌다.
+  if (!asOrder && !SELF_BUILD[kind] &&
+      Math.hypot(p.x - cx, p.z - cz) > P.wall.range + 1.2) return '너무 멉니다';
   if (kind === 'depot') {
     for (const n of nodes) {
       const w = cellToWorld(n.i, n.j);
@@ -4910,6 +4944,11 @@ function advanceStage() {
   if (stage >= STAGES.length) return;   // 보스만이 승리를 결정한다 — 더 이상 진행 없음
   stage++;
   stageT = 0;
+  // 스테이지마다 공격 개조 포인트 1점 (D129). 10스테이지까지 = 10점
+  for (const q of players) {
+    q.pts = (q.pts || 0) + P.atk.stagePoints;
+    flashFor(q, `개조 포인트 +${P.atk.stagePoints} (보유 ${q.pts}) — 치즈 창고에서`, '#8fd6ff');
+  }
   spawnStageAdds(stage - 1);
   topUpToCurve(true);   // 이번 단계 구성까지 채운다 (배너가 이미 알렸으니 조용히)
   if (stage === STAGES.length) {
@@ -4964,10 +5003,17 @@ function updateSpawns() {
 }
 
 // 적끼리 겹치지 않게 서로 밀어냄 — 한 덩어리로 뭉쳐 다니는 걸 막는다
+// 겹치면 두 마리인 의미가 없어서 서로 밀어낸다. 다만 **자폭묘는 예외다** (D128).
+// 자폭묘는 벽에 붙어 터지는 게 존재 이유인데, 앞의 고양이들에게 밀려 뒤로 가면
+// 줄만 서 있다가 아무것도 못 한다. 밀지도, 밀리지도 않게 두면 무리를 통과해
+// 곧장 벽으로 간다. (D107에서 톰을 같은 이유로 예외로 뒀다 — D123)
+const noSeparate = (e) => e.type === 'bomber';
+
 function separateEnemies() {
   for (let a = 0; a < enemies.length; a++)
     for (let b = a + 1; b < enemies.length; b++) {
       const e1 = enemies[a], e2 = enemies[b];
+      if (noSeparate(e1) || noSeparate(e2)) continue;
       let dx = e2.x - e1.x, dz = e2.z - e1.z;
       let d = Math.hypot(dx, dz);
       const min = (enemyR(e1) + enemyR(e2)) * 0.875;
@@ -5895,6 +5941,8 @@ function updateActor(p, dt) {
   if (p.rollCd > 0) p.rollCd -= dt;
   if (p.rollGrace > 0) p.rollGrace -= dt;
   if (p.tauntCd > 0) p.tauntCd -= dt;
+  if (p.atkT > 0) p.atkT -= dt;
+  if (p.swingT > 0) p.swingT -= dt;
   // 도발 중에는 발이 묶인다 — 이게 도발의 대가다 (D96)
   if (p.tauntT > 0) {
     p.tauntT -= dt;
@@ -6133,6 +6181,15 @@ function applyCommand(p, c) {
       break;
     case 'wall':   queueWall(p, c.i, c.j); break;
     case 'build':
+      // **스스로 올라가는 건물(경비탑)은 걸어가지 않는다** (D128).
+      // 어차피 플레이어가 그 자리에 서 있을 필요가 없는 건물이라, 걸어가는 구간은
+      // 순수한 대기 시간이었다 — 쫓기는 중에 방어선을 보강하는 게 사실상 불가능했다.
+      // 벽은 그대로 직접 가서 짓는다 (D58) — 그 무방비 구간이 벽의 값이다.
+      if (SELF_BUILD[c.kind] && !remoteTooFar(p, c.i, c.j)) {
+        if (p.mineOrder) clearMineOrder(undefined, p);
+        startBuild(c.kind, c.i, c.j, p);
+        break;
+      }
       p.buildOrder = { kind: c.kind, i: c.i, j: c.j };
       p.orderPath.length = 0; p.orderRepathT = 0;
       if (p.mineOrder) clearMineOrder(undefined, p);
@@ -6149,6 +6206,8 @@ function applyCommand(p, c) {
     }
     case 'f':      tryUpgradeBuilding(p); break;
     case 'taunt':  startTaunt(p); break;
+    case 'atk':    attackSwipe(p); break;
+    case 'atkupg': buyAtkUpgrade(c.k, p); break;
     case 'give':   giveTo(p, c.k); break;
     case 'remove': removeAt(p, c.i, c.j); break;
     case 'upg':    buyUpgrade(c.k, p); break;
@@ -6210,7 +6269,13 @@ function updateLocalUI(dt) {
     return;
   }
 
-  const wantBuild = keys.has('Space') || mouseDown;
+  // **Space는 공격이다** (D129). 예전엔 건설의 보조 키였는데, 클릭으로 다 되는 데다
+  // 공격에 쓸 만한 키가 여기밖에 없었다. 건설은 좌클릭 하나로 통일.
+  if (keys.has('Space')) {
+    atkSendT -= dt;
+    if (atkSendT <= 0) { issueCommand({ t: 'atk' }); atkSendT = P.atk.cooldown; }
+  } else atkSendT = 0;
+  const wantBuild = mouseDown;
   const buildPressed = wantBuild && !prevWantBuild; // 눌리는 순간 (연사 방지용)
   prevWantBuild = wantBuild;
   // 유닛 생산은 Enter (D88) — 눌리는 순간에만 한 기
@@ -6398,6 +6463,14 @@ function buildTimeOf(kind) {
 // 세우는 행위 자체가 자살이 되어 아무도 안 쓴다.
 // 대신 완성 전에는 못 쏘고(D84) 적에게 두들겨 맞으므로, "제때 세웠는가"는 여전히 값이다.
 const SELF_BUILD = { tower: true };
+// 원격 착공 사거리 (D128). 0이면 무제한 — 화면에 찍히는 곳이면 어디든 선다.
+// 너무 세면 여기를 조여서 "보이는 데까지만"으로 되돌릴 수 있다
+function remoteTooFar(p, i, j) {
+  const lim = P.build.remoteRange;
+  if (!lim) return false;
+  const w = cellToWorld(i, j);
+  return Math.hypot(w.x + CS / 2 - p.x, w.z + CS / 2 - p.z) > lim;
+}
 
 function startBuild(kind, i, j, p = player) {
   if (p.buildJob) return;
@@ -6503,6 +6576,14 @@ const gui = new GUI({ title: '튜닝' });
       if (!ob.bedrock && !ob.bldgRef) ob.mesh.scale.set(P.wall.post, P.wall.height, P.wall.post);
   });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
+  f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
+  f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
+  f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
+  f.add(P.atk, 'cooldown', 0.1, 2, 0.05).name('★ 내 공격 쿨다운');
+  f.add(P.atk, 'dmgStep', 0, 40, 1).name('공격 개조 — 딜/포인트');
+  f.add(P.atk, 'knockBase', 0, 4, 0.1).name('공격 개조 — 넉백 m/포인트');
+  f.add(P.atk, 'splashStep', 0, 3, 0.1).name('공격 개조 — 스플 반경/포인트');
+  f.add(P.atk, 'stagePoints', 0, 3, 1).name('스테이지당 개조 포인트');
   f.add(P.res, 'costScale', 0.5, 3, 0.1).name('★ 전체 치즈 물가 배율');
   f.add(P.balance, 'enemyCount', 0.2, 2, 0.05).name('★ 고양이 마릿수 배율')
     .onChange(() => { if (netAuthoring()) topUpToCurve(); });
@@ -6517,7 +6598,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.final, 'endlessPrep', 0, 180, 5).name('★ 무한 라운드 준비 시간(초)');
   f.add(P.final, 'endlessGrow', 1, 2, 0.05).name('★ 라운드당 물량 배율');
   f.add(P.final, 'endlessBoost', 0, 0.5, 0.01).name('★ 라운드당 강화 증가');
-  f.add(P.final, 'bomberOneShot', 0, 1, 1).name('공세 자폭묘 한 방에 벽 관통');
+  f.add(P.final, 'bomberOneShot', 0, 1, 1).name('공세 자폭묘 한 방에 벽 관통 (0=두 방)');
   f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
   f.add(P.sfx, 'volume', 0, 1, 0.05).name('★ 효과음 크기 (0=끔)');
 
@@ -6989,7 +7070,8 @@ const flashEl = document.getElementById('flash');
 let helpOpen = false;
 const HELP_FULL = [
   '── 조작 ──',
-  'WASD 이동 · Shift 앞구르기(0.28초 **무적** 회피, 기운 34) · C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
+  'WASD 이동 · **Space 공격**(정면 근접, 넉백/스플 개조 가능) · Shift 앞구르기(0.28초 **무적**, 기운 34)',
+  'C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
   'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/업그레이드 · Q/Z 건네주기 · 0 도발',
   '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
@@ -7012,6 +7094,10 @@ const HELP_FULL = [
   '더미 위 `1/3` = 붙은 일꾼 / 정원. 꽉 차면(붉게) 다음 더미를 확보해야 한다',
   '공방을 지어야 경비탑·병력이 열린다 (Lv.1 경비탑·근접병 → Lv.2 사수 → Lv.3 정예병)',
   '근처(4m) 공방·경비탑을 **F로 제자리 업그레이드**. 공방 업그레이드는 치즈+부품이 든다',
+  '공방 옆 **개조 패널은 클릭으로 산다** (숫자키도 그대로 먹는다)',
+  '**치즈 창고 옆 = 공격 개조.** 스테이지마다 1점씩(총 10점) 받아 공격력·넉백·스플래시에 나눠 쓴다',
+  '  넉백은 **톰에게 안 통한다** — 보스를 밀 수 있으면 벽 없이 영원히 도망칠 수 있다',
+  '**경비탑은 걸어가지 않아도 선다** — 찍으면 그 자리에서 알아서 올라간다. 벽은 직접 가야 한다',
   '후반 적은 체력이 오른다 → **밖에 떨어지는 부품**을 주워 U 개조로 화력을 올려야 따라간다',
   '',
   '── 병력 · 적 ──',
@@ -7094,6 +7180,54 @@ let survival = 0;
 let hudT = 0;
 let caughtCount = 0;
 // 구르기 상태 (D77): player.rollT>0 이면 구르는 중 = 무적
+
+// ---- 햄스터의 근접 공격 (D129) ----
+// Space. 정면 부채꼴 안의 **가장 가까운 한 마리**를 친다.
+// 스플래시 포인트가 있으면 거기서 반경만큼 튄다. 넉백은 톰에게 안 통한다 —
+// 보스를 밀어낼 수 있으면 벽 없이 영원히 카이팅이 되고, 그건 이 게임이 아니다.
+function attackSwipe(p = player) {
+  if (!alive || p.stunned || p.rollT > 0 || p.buildJob || p.upgradeJob) return;
+  if ((p.atkT || 0) > 0) return;
+  p.atkT = P.atk.cooldown;
+  p.swingT = P.atk.swing;
+  const up = p.atkUpg || newAtkUpg();
+  const reach = P.atk.range + radiusOf(p);
+  let best = null, bd = 1e9;
+  for (const e of enemies) {
+    const dx = e.x - p.x, dz = e.z - p.z;
+    const d = Math.hypot(dx, dz) - enemyR(e);
+    if (d > reach || d >= bd) continue;
+    // 정면 부채꼴 판정 — 등 뒤는 안 맞는다
+    const l = Math.hypot(dx, dz) || 1;
+    const dot = (dx / l) * p.faceX + (dz / l) * p.faceZ;
+    if (Math.acos(Math.max(-1, Math.min(1, dot))) > P.atk.arc) continue;
+    bd = d; best = e;
+  }
+  if (p.local) sfx('swing');   // 내 것만 울린다 (D122)
+  if (!best) return;
+  const dmg = atkDmgOf(up.dmg);
+  const hit = [{ e: best, dmg }];
+  if (up.splash > 0) {
+    const R = P.atk.splashStep * up.splash;
+    for (const e of enemies)
+      if (e !== best && Math.hypot(e.x - best.x, e.z - best.z) - enemyR(e) <= R)
+        hit.push({ e, dmg: dmg * P.atk.splashFrac });
+  }
+  for (const h of hit) {
+    // 넉백 먼저 — damageEnemy가 죽이면 위치를 옮길 대상이 사라진다
+    if (up.knock > 0 && h.e.type !== 'boss') {
+      let kx = h.e.x - p.x, kz = h.e.z - p.z;
+      const l = Math.hypot(kx, kz) || 1;
+      const push = P.atk.knockBase * up.knock;
+      h.e.x = clamp(h.e.x + (kx / l) * push, -HALF + 0.5, HALF - 0.5);
+      h.e.z = clamp(h.e.z + (kz / l) * push, -HALF + 0.5, HALF - 0.5);
+      collideWithObstacles(h.e, enemyR(h.e));
+      h.e.path.length = 0; h.e.repathT = 0;   // 밀려났으면 길을 다시 잡아야 한다
+    }
+    damageEnemy(h.e, h.dmg, p);
+  }
+  spawnBuildFx(p.x + p.faceX * reach * 0.6, p.z + p.faceZ * reach * 0.6);
+}
 
 function startRoll(p = player) {
   if (!alive || p.stunned || p.buildJob || p.rollT > 0 || p.rollCd > 0) return;
@@ -7269,7 +7403,11 @@ function restart() {
   for (const q of players) { q.cheese = startResources(); q.carry = 0; }
   killCount = 0;
   for (const b of [...buildings]) destroyBuilding(b, false);
-  for (const p of players) { p.parts = 0; p.partsBought = 0; p.upg = newUpg(); }
+  for (const p of players) {
+    p.parts = 0; p.partsBought = 0; p.upg = newUpg();
+    p.atkUpg = newAtkUpg(); p.pts = P.atk.stagePoints;   // 1스테이지 몫을 시작할 때 준다
+    p.atkT = 0; p.swingT = 0;
+  }
   upgOpen = false;
   renderUpgrade();
   stage = 1;
@@ -7468,6 +7606,14 @@ function updateRescue() {
 
 // ---- 업그레이드 패널 (U) ----
 const upgEl = document.getElementById('upgrade');
+// 부품 개조도 **클릭으로 산다** (D129). 숫자키 경로는 남겨 두되(U를 켠 사람은 계속 쓴다)
+// 클릭이 기본이 된다 — "U를 눌러 숫자로 지정"이 불편하다는 평이 있었다
+upgEl.addEventListener('click', (e) => {
+  const row = e.target.closest('.urow');
+  if (!row || row.classList.contains('dim')) return;
+  const k = row.dataset.k;
+  issueCommand(k === 'sell' ? { t: 'sell' } : k === 'buy' ? { t: 'buyprt' } : { t: 'upg', k: +k });
+});
 let upgOpen = false;
 
 function buyUpgrade(k, p = player) {
@@ -7517,6 +7663,26 @@ function sellParts(p = player) {
 // 공방 옆(4m)에 서 있어야 개조할 수 있다 — 공방을 지키고 드나들 이유
 // 여기도 **내 공방**이어야 한다 (D121) — 동료 공방 옆에서 내 개조를 사면
 // 기술을 각자 올리는 의미가 없다
+// 공격 개조는 **치즈 창고**에서 산다 (D129). 공방은 건물·병력 기술을 다루고,
+// 창고는 내가 직접 쓰는 것을 다룬다 — 두 건물의 역할이 갈린다.
+function nearDepot(p = player) {
+  return buildings.some((b) => b.kind === 'depot' && b.owner === p.owner && !b.underBuild &&
+    Math.hypot(b.cx - p.x, b.cz - p.z) < 4.0);
+}
+
+function buyAtkUpgrade(k, p = player) {
+  const u = ATK_UPG[k];
+  if (!u) return;
+  if (!nearDepot(p)) { flashFor(p, '내 치즈 창고 옆에서만 개조합니다', '#e05050'); return; }
+  if ((p.pts || 0) <= 0) { flashFor(p, '개조 포인트가 없습니다 (스테이지마다 1점)', '#e05050'); return; }
+  const cur = p.atkUpg[u.key];
+  if (cur >= P.atk.maxPoints) { flashFor(p, '더 올릴 수 없습니다', '#e05050'); return; }
+  p.pts--;
+  p.atkUpg[u.key] = cur + 1;
+  flashFor(p, `${u.label} Lv.${cur + 1} — ${u.unit(cur + 1)}`, '#6ee07a');
+  renderAtkUpg();
+}
+
 function nearWorkshop(p = player) {
   return buildings.some((b) => b.kind === 'workshop' && b.owner === p.owner &&
     Math.hypot(b.cx - p.x, b.cz - p.z) < 4.0);
@@ -7534,14 +7700,14 @@ function renderUpgrade() {
   upgEl.innerHTML =
     `<div class="uhead">개조 · 부품 ${me.parts}` +
     (!ws ? ' · <span class="warn">공방 옆으로 가세요</span>'
-         : upgOpen ? ' · <span style="color:#6ee07a">숫자키로 구매 (U 닫기)</span>'
-                   : ' · <span class="warn">U를 눌러 구매</span>') + '</div>' +
+         : ' · <span style="color:#6ee07a">클릭해서 구매</span>') + '</div>' +
     UPGRADES.map((u, k) => {
       const lv = me.upg[u.key];
       const max = lv >= P.upgrade.maxLevel;
       const cost = upgCost(lv);
-      const can = ws && upgOpen && !max && me.parts >= cost;
-      return `<div class="urow${can ? '' : ' dim'}">` +
+      // **클릭으로 산다** (D129) — U로 켜 둘 필요가 없다. 공방 옆이기만 하면 된다
+      const can = ws && !max && me.parts >= cost;
+      return `<div class="urow${can ? '' : ' dim'}" data-k="${k}">` +
         `<b>${k + 1}</b> ${u.label} <span class="lv">Lv.${lv}/${P.upgrade.maxLevel}</span>` +
         `<span class="cost">${max ? 'MAX' : `⚙️${cost}`}</span>` +
         `<span class="eff">${u.unit()}</span></div>`;
@@ -7550,22 +7716,48 @@ function renderUpgrade() {
     // 줄 자체를 숨기면 이런 게 있다는 걸 영영 모른다 (D88과 같은 이유)
     (() => {
       const open = canSellParts(me);
-      const can = ws && upgOpen && open && me.parts >= 1;
+      const can = ws && open && me.parts >= 1;
       const buyCost = partsBuyCost(me);
-      const canBuy = ws && upgOpen && me.cheese >= buyCost;
-      return `<div class="urow${can ? '' : ' dim'}">` +
+      const canBuy = ws && me.cheese >= buyCost;
+      return `<div class="urow${can ? '' : ' dim'}" data-k="sell">` +
         `<b>${UPGRADES.length + 1}</b> 부품 환전 ` +
         `<span class="lv">${open ? `보유 ⚙️${me.parts}` : `공방 Lv.${P.upgrade.sellTier} 필요`}</span>` +
         `<span class="cost">⚙️1</span>` +
         `<span class="eff">치즈 +${P.upgrade.sellRate}</span></div>` +
         // 반대 방향 — 치즈로 부품 사기 (D107). 살수록 비싸진다
-        `<div class="urow${canBuy ? '' : ' dim'}">` +
+        `<div class="urow${canBuy ? '' : ' dim'}" data-k="buy">` +
         `<b>${UPGRADES.length + 2}</b> 부품 구매 ` +
         `<span class="lv">${me.partsBought || 0}개째</span>` +
         `<span class="cost">🧀${buyCost}</span>` +
         `<span class="eff">⚙️ +1</span></div>`;
     })();
 }
+
+// ---- 공격 개조 패널 (D129) ----
+// 창고 옆에 가면 저절로 뜨고 **클릭으로 산다.** U를 눌러 숫자를 찍는 절차가
+// 불편하다는 평이 있었다 — 개조는 급할 때 여는 것이 아니라 창고 앞에서 고르는 것이다.
+const atkEl = document.getElementById('atkup');
+function renderAtkUpg() {
+  const me = localPlayer();
+  const near = nearDepot(me);
+  if (!near) { atkEl.style.display = 'none'; return; }
+  atkEl.style.display = 'block';
+  atkEl.innerHTML =
+    `<div class="ahead">공격 개조 · 포인트 ${me.pts || 0}</div>` +
+    ATK_UPG.map((u, k) => {
+      const lv = me.atkUpg[u.key];
+      const can = (me.pts || 0) > 0 && lv < P.atk.maxPoints;
+      return `<div class="arow${can ? '' : ' dim'}" data-k="${k}">` +
+        `${u.label} <span class="lv">Lv.${lv}</span>` +
+        `<span class="eff">${u.unit(lv)}</span></div>`;
+    }).join('') +
+    `<div class="ahint">스테이지마다 1점 · 클릭해서 올린다</div>`;
+}
+atkEl.addEventListener('click', (e) => {
+  const row = e.target.closest('.arow');
+  if (!row || row.classList.contains('dim')) return;
+  issueCommand({ t: 'atkupg', k: +row.dataset.k });
+});
 
 const hotbarEl = document.getElementById('hotbar');
 function updateHotbar() {
@@ -7756,6 +7948,7 @@ function sfx(kind) {
     case 'boom':  noise({ dur: 0.42, vol: 0.7, lo: 380 });                                    // 폭발
                   beep({ freq: 120, to: 38, type: 'sawtooth', dur: 0.38, vol: 0.45 }); break;
     case 'caught':beep({ freq: 220, to: 60, type: 'sawtooth', dur: 0.5, vol: 0.55 }); break;
+    case 'swing': noise({ dur: 0.07, vol: 0.16, lo: 1500 }); break;                          // 햄스터 휘두르기 (D129)
     default: break;
   }
 }
@@ -8818,7 +9011,9 @@ function sendSnapshot(dt) {
                             p.buildJob ? r2(p.buildJob.t / p.buildJob.dur) : -1,
                             p.upgradeJob ? r2(p.upgradeJob.t / p.upgradeJob.dur) : -1,
                             p.wallOrders.length, p.buildOrder ? 1 : 0, p.mineOrder ? 1 : 0,
-                            r2(p.wipeT || 0), r2(p.tauntT || 0)]),
+                            r2(p.wipeT || 0), r2(p.tauntT || 0),
+                            // 공격 개조 (D129) — 포인트와 세 갈래 레벨
+                            p.pts || 0, p.atkUpg.dmg, p.atkUpg.knock, p.atkUpg.splash]),
     en: enemies.map((e) => [e.id, r2(e.x), r2(e.z), r2(e.dirX), r2(e.dirZ), Math.round(e.hp),
                             SNAP_TYPES.indexOf(e.type), e.windupPull ? r2(e.windupPull) : 0,
                             e.isAttacking ? 1 : 0]),
@@ -8969,6 +9164,10 @@ function applySnapshot(m) {
     p.hp = a[4]; p.stunned = !!a[5];
     p.rollSpin = a[7];
     p.cheese = a[8]; p.parts = a[9]; p.stamina = a[10];
+    if (a.length > 23) {
+      p.pts = a[23];
+      p.atkUpg.dmg = a[24]; p.atkUpg.knock = a[25]; p.atkUpg.splash = a[26];
+    }
     p.carry = a[11]; p.mineT = a[12]; p.job = jobName(a[13]); p.harvestPulse = a[14];
     // 진행 바를 그리기 위한 최소한의 가짜 작업 상태 (클라는 시뮬을 안 돌린다)
     p.wallCast = a[15] >= 0 ? { i: 0, j: 0, t: a[15] } : null;
@@ -9333,6 +9532,7 @@ function updateHUD() {
     (paused ? '⏸ 일시정지 (P)' : '');
   updateRes();
   renderUpgrade();   // 공방 근처 여부가 걸음마다 바뀌므로 여기서 같이 갱신 (D88)
+  renderAtkUpg();    // 창고 근처 여부도 마찬가지 (D129)
 }
 
 // ============================================================
