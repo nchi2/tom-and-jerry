@@ -45,6 +45,10 @@ const P = {
     // 그걸 **매 프레임** 강제해서, 방어선이 완성되는 순간 프레임이 3ms → 22ms가 됐다.
     // 실패 횟수만큼 간격을 늘린다. 벽이 바뀌면(= 세상이 바뀌면) 즉시 0으로 되돌린다.
     pathFailBackoff: 6,
+    // 우는 고양이 밈 (D132) — 0 끔 · 1 순찰묘만 · 2 고양이 전부 · 3 톰만.
+    // **기본은 꺼 둔다.** 정현이 보고 "원래 걸로 롤백, 디자인은 남겨만 두자"고 했다.
+    // 모양은 스폰할 때 정해지므로 **재시작해야 반영된다**
+    cryCat: 0,
     spawnDelay: 12,
     spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
     // 사방 등장 (D110)
@@ -1693,9 +1697,16 @@ function makeCat(type = 'chaser') {
 //   2. **눈 밑에 맺힌 눈물**
 //   3. **아래로 처진 입**과 축 늘어진 귀
 // 몸통은 밈 사진처럼 **둥글게 뭉친 덩어리**로 (Dingus 같은 '식빵' 실루엣).
-function makeCryCat(scale = 1) {
-  const white = MAT(0xf4f1ee);          // 밈 고양이는 흰 고양이다
-  const shade = MAT(0xdfd8d4);
+function makeCryCat(scale = 1, tint = null, tintAmt = 0.34) {
+  // 밈 고양이는 흰 고양이다. 다만 세 종류에 다 쓰면 구분이 사라지므로
+  // **틴트를 옅게 섞어** 종류는 색으로 계속 갈리게 한다 (기존 고양이와 같은 규칙)
+  const mix = (hex) => {
+    const c = new THREE.Color(hex);
+    if (tint) c.lerp(new THREE.Color(tint), tintAmt);
+    return c.getHex();
+  };
+  const white = MAT(mix(0xf4f1ee));
+  const shade = MAT(mix(0xdfd8d4));
   const pink = MAT(0xe9a6ad);
   const dark = MAT(0x14100f, { roughness: 0.25 });   // 눈 — 젖은 느낌이라 매끈하게
   const gloss = MAT(0xffffff, { emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.35 });
@@ -2064,10 +2075,22 @@ const byId = (arr, id) => arr.find((e) => e.id === id) || null;
 // 멀티 상태는 src/net.js가 들고 있다 (D92-5단계). 여기서는 net.isHost / net.role만 본다.
 // 솔로도 isHost = true다 — 시뮬을 자기가 돌린다는 뜻이지 방을 열었다는 뜻이 아니다.
 
+// 이 종류를 우는 고양이로 그릴까 (D132 실험)
+function cryCatFor(type) {
+  const m = P.enemy.cryCat | 0;
+  if (!m) return false;
+  if (m === 1) return type === 'chaser';
+  if (m === 2) return type !== 'boss';
+  return type === 'boss';
+}
+
 function makeEnemy(type, n) {
   const p = enemySpawnPos(n);
-  const vis = makeCat(type);
-  applyModel(vis, type, CAT_PALETTES[type] ? CAT_PALETTES[type].a : null);
+  const pal = CAT_PALETTES[type];
+  const cry = cryCatFor(type);
+  const vis = cry ? makeCryCat(1, pal ? pal.a : null) : makeCat(type);
+  // ⚠ **GLB를 씌우면 우는 얼굴이 통째로 덮인다.** 켰을 때는 건너뛴다
+  if (!cry) applyModel(vis, type, pal ? pal.a : null);
   vis.group.scale.setScalar(P[type].radius);
   vis.setOpacity(0.15);
   return {
@@ -6850,6 +6873,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
   f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
   f.add(P.enemy, 'pathPerFrame', 0, 60, 1).name('프레임당 길찾기 상한 (0=무제한)');
+  f.add(P.enemy, 'cryCat', 0, 3, 1).name('★ 우는 고양이 (0끔·1순찰묘·2전부·3톰) — 재시작부터');
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
   f.add(P.atk, 'cooldown', 0.1, 2, 0.05).name('★ 내 공격 쿨다운');
