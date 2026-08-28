@@ -4681,6 +4681,7 @@ function planEnemyPath(enemy) {
   const passBreak = canBreakWalls(enemy)
     ? (i) => canPass(clearBed, i, er)
     : (i) => canPass(clearNoBldg, i, er);
+  pathLeft--;
   const res2 = astar(start, goal, passBreak, (idx) => (canBreakOb(obAt(idx)) ? 80 : 0));
   if (res2.found && res2.path.some((idx) => canBreakOb(obAt(idx)))) {
     enemy.path = res2.path.map((idx) => ({ ...navToWorld(idx), idx }));
@@ -4697,6 +4698,8 @@ function planEnemyPath(enemy) {
     .map((b) => ({ b, d: Math.hypot(b.cx - enemy.x, b.cz - enemy.z) }))
     .sort((a, c) => a.d - c.d).slice(0, 3).map((o) => o.b);
   for (const b of raidCands) {
+    if (pathLeft <= 0) break;   // 예산은 **A* 한 번 단위**로 센다 (D131)
+    pathLeft--;
     const bres = astar(start, worldToNav(b.cx, b.cz), passAll, () => 0);
     if (bres.closestWorld < 1.6 + enemyR(enemy)) {
       const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
@@ -4735,7 +4738,8 @@ function planEnemyPath(enemy) {
 
   // ---- 마지막으로 닿았던 자리 수색 (D55-A) ----
   // 잠복도 못 하면, 최근에 목표에 닿을 수 있었던 지점으로 가서 훑는다.
-  if (enemy.lostX !== undefined && survival - enemy.lostT < P.enemy.memoryTime) {
+  if (enemy.lostX !== undefined && survival - enemy.lostT < P.enemy.memoryTime && pathLeft > 0) {
+    pathLeft--;
     const lr = astar(start, worldToNav(enemy.lostX, enemy.lostZ), passAll, () => 0);
     if (lr.found) {
       enemy.goalX = enemy.lostX; enemy.goalZ = enemy.lostZ;
