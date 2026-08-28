@@ -5312,6 +5312,36 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   keys.add(e.code);
+  // ---- 맵 에디터 (D112 → D125) — 게임 단축키보다 **먼저** 가로챈다 ----
+  // 예전엔 이 블록이 핸들러 **맨 아래**에 있었다. "에디터에서는 게임 조작이 전부
+  // 막힌다"는 주석과 달리, 위쪽 분기가 이미 다 실행된 뒤였다 —
+  // 숫자키는 붓과 **핫바를 같이** 골랐고, ESC는 메뉴를 열면서 에디터를 닫았고,
+  // P는 멈춰 둔 시뮬을 다시 돌렸다. (KeyT만 `!edOn()`으로 땜질돼 있었다.)
+  // `keys.add` 뒤에 두는 건 의도적이다 — WASD는 keys에 담겨야 걸을 수 있다.
+  if (edOn()) {
+    if (e.code === 'KeyX') { editor.erase = !editor.erase; renderEditor(); return; }
+    for (let k = 0; k < ED_BRUSH.length; k++)
+      if (e.code === 'Digit' + (k + 1)) { editor.brush = k; editor.erase = false; renderEditor(); return; }
+    // 저장·불러오기·비우기는 **F키**다. S/L/N은 WASD와 겹치거나 그 옆이라
+    // 걷다가 맵을 날리는 사고가 난다 (S가 곧 '뒤로 걷기'다)
+    if (e.code === 'F2') { e.preventDefault(); saveMapLocal(); return; }
+    if (e.code === 'F3') {
+      e.preventDefault();
+      const m = loadMapLocal();
+      if (m) { editor.map = m; customMap = m; rebuildWorld(mapIndex); renderEditor(); flashMsg('불러왔다', '#6ee07a'); }
+      else flashMsg('저장된 맵이 없다', '#e05050');
+      return;
+    }
+    if (e.code === 'F4') {
+      e.preventDefault();
+      editor.map = blankMap(); customMap = editor.map; rebuildWorld(mapIndex); renderEditor();
+      flashMsg('맵을 비웠다', '#ffb347');
+      return;
+    }
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') { closeEditor(true); return; }
+    if (e.code === 'Escape') { closeEditor(false); return; }
+    return;   // 나머지 게임 키는 여기서 끝. WASD·Space는 이미 keys에 들어갔다
+  }
   if (e.code === 'KeyC') cycleCamera(1);
   // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
   // ESC = 한 단계 물러나기. 더 물러날 게 없으면 메뉴가 뜬다 (D71)
@@ -5356,7 +5386,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'F9') { netDevOn = !netDevOn; netDevEl.classList.toggle('on', netDevOn); renderNetDev(); }
   if (e.code === 'Backquote') setHud(!hudOn);         // 좌상단 개발 정보 (D91)
   if (e.code === 'KeyM') { miniOn = !miniOn; flashMsg(miniOn ? '미니맵 켬' : '미니맵 끔', '#9aa3b2'); }
-  if (e.code === 'KeyT' && !edOn()) { setChat(true); e.preventDefault(); }
+  if (e.code === 'KeyT') { setChat(true); e.preventDefault(); }   // 에디터는 위에서 이미 걸러졌다
   // 숫자키 = **구매 모드(U)일 때만** 개조 구매, 아니면 건설 슬롯 선택.
   // 공방 옆에서 패널이 저절로 떠도(D88) 숫자키는 핫바를 계속 쓴다 —
   // 안 그러면 내 공방 옆에서 건물을 못 짓는다
@@ -5379,22 +5409,6 @@ window.addEventListener('keydown', (e) => {
   // R 즉시 재시작은 뺐다 (D121) — 쫓기다 R을 눌러 판이 통째로 날아가는 사고가 난다.
   // 다시하기는 ESC 메뉴에서만.
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
-  // ---- 맵 에디터 (D112) — 여기서는 다른 키를 전부 가로챈다 ----
-  if (edOn()) {
-    for (let k = 0; k < ED_BRUSH.length; k++)
-      if (e.code === 'Digit' + (k + 1)) { editor.brush = k; renderEditor(); return; }
-    if (e.code === 'KeyS') { saveMapLocal(); return; }
-    if (e.code === 'KeyL') {
-      const m = loadMapLocal();
-      if (m) { editor.map = m; customMap = m; rebuildWorld(mapIndex); renderEditor(); flashMsg('불러왔다', '#6ee07a'); }
-      else flashMsg('저장된 맵이 없다', '#e05050');
-      return;
-    }
-    if (e.code === 'KeyN') { editor.map = blankMap(); customMap = editor.map; rebuildWorld(mapIndex); renderEditor(); return; }
-    if (e.code === 'Enter' || e.code === 'NumpadEnter') { closeEditor(true); return; }
-    if (e.code === 'Escape') { closeEditor(false); return; }
-    return;   // 에디터에서는 게임 조작이 전부 막힌다
-  }
   if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
   // 준비 국면에서만 F가 "최후의 공세 시작"이 된다 (평소 F는 건물 업그레이드)
   if (e.code === 'KeyF' && finalPhase === 'prep') issueCommand({ t: 'final' });
@@ -5483,22 +5497,15 @@ function finishSelectDrag(e) {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || e.target !== renderer.domElement) return;
-  if (edOn()) { edPaintAtMouse(e); edDragging = true; return; }
+  // 에디터는 **tickEditor가 칠한다** (D125) — 누른 채로 걸어도 이어지게.
+  // 여기서 한 번 칠해 두는 건 눌렀다 바로 뗀 클릭이 프레임 사이에 끼는 경우를 위해서다
+  if (edOn()) { edDragging = true; if (edGhost.ok) edPaint(edGhost.i, edGhost.j); return; }
   if (beginSelectDrag(e)) return;     // 선택 드래그 중에는 건설하지 않는다
   mouseDown = true;
 });
 let edDragging = false;
-function edPaintAtMouse(e) {
-  mouseNDC.x = (e.clientX / innerWidth) * 2 - 1;
-  mouseNDC.y = -(e.clientY / innerHeight) * 2 + 1;
-  mouseValid = true;
-  raycaster.setFromCamera(mouseNDC, activeCam());
-  if (!raycaster.ray.intersectPlane(groundPlane, mouseHit)) return;
-  const c = worldToCell(mouseHit.x, mouseHit.z);
-  edPaint(c.i, c.j);
-}
 window.addEventListener('mousemove', (e) => {
-  if (edOn()) { if (edDragging) edPaintAtMouse(e); return; }
+  if (edOn()) return;   // 조준은 아래의 전역 mousemove가, 칠하기는 tickEditor가 한다
   if (!selDrag) return;
   selDrag.x1 = e.clientX; selDrag.y1 = e.clientY;
   if (Math.hypot(selDrag.x1 - selDrag.x0, selDrag.y1 - selDrag.y0) > P.command.dragMin) selDrag.moved = true;
@@ -7744,16 +7751,16 @@ function sendChat(text) {
 //  숫자 1~9로 붓을 고르고 좌클릭으로 칠한다 (드래그로 이어 칠하기).
 //  판은 멈춰 있고 고양이도 없다 — 순수하게 지도만 그린다.
 // ============================================================
+// 붓은 **적을수록 좋다** (D125). 지금 놓을 게 벽과 치즈뿐이라 둘만 둔다.
+// 지우개는 게임의 철거(X)와 같은 키를 쓴다 — 손이 이미 그렇게 배워 있다.
+// 늪·시작지점 붓은 뺐다. 맵 포맷에는 남아 있어서 옛 맵의 늪은 지우개로 지워진다.
 const ED_BRUSH = [
-  { k: 'rock',  name: '바위',        hint: '통행 불가. 지형이라 부술 수 없다' },
-  { k: 'mud',   name: '늪',          hint: '통과는 되지만 **몸집이 클수록** 느려진다 — 도망길' },
-  { k: 'n06',   name: '치즈 (작음)', hint: '매장량 0.6배' },
-  { k: 'n10',   name: '치즈 (보통)', hint: '매장량 1.0배' },
-  { k: 'n18',   name: '치즈 (큼)',   hint: '매장량 1.8배 — 멀고 위험한 자리에' },
-  { k: 'pspawn', name: '내 시작 지점', hint: '하나만. 다시 찍으면 옮겨진다' },
-  { k: 'espawn', name: '적 등장 지점', hint: '하나만. 고양이가 여기를 중심으로 퍼진다' },
-  { k: 'erase', name: '지우개',      hint: '그 칸의 지형·치즈를 지운다' },
+  { k: 'rock', name: '벽',   color: 0x8f9bb0,
+    hint: '통행 불가 지형. 게임 중에는 누구도 못 부순다 — 맵의 뼈대' },
+  { k: 'node', name: '치즈', color: 0xf0c040,
+    hint: '치즈 더미. 일꾼이 붙어서 캔다 (한 더미 3명까지)' },
 ];
+const ED_ERASE = { name: '지우개', color: 0xff8b5e, hint: '그 칸의 벽·치즈를 지운다' };
 
 let editor = null;   // { brush, map } — null이면 에디터가 아니다
 const edOn = () => !!editor;
@@ -7769,13 +7776,27 @@ function openEditor() {
   startEl.classList.add('hidden');
   setMenu(false);
   started = true;
-  paused = true;              // 시뮬은 멈춘 채로 그린다
+  // **멈추지 않는다** (D125). 예전엔 paused = true라 햄스터가 안 움직였고,
+  // 카메라는 그 햄스터를 따라다니므로 **스폰 언저리에 붙박였다** —
+  // 화면 밖 칸은 편집할 방법이 아예 없었다. 시뮬은 tickEditor가 대신 막는다.
+  paused = false;
   tut = null; renderTut();
-  editor = { brush: 0, map: loadMapLocal() || blankMap() };
+  editor = { brush: 0, erase: false, map: loadMapLocal() || blankMap() };
   customMap = editor.map;
   rebuildWorld(mapIndex);     // 지금 맵을 화면에 반영
   setEnemyCount(0);
   setCamera(0);               // 탑다운이 지도 그리기에 맞다
+  // 게임 UI는 접는다 — 핫바의 1~9가 에디터의 1~9와 겹쳐 보이면 안 된다.
+  // 좌상단 개발 HUD는 **에디터 패널과 같은 자리**라 글씨가 겹쳐 둘 다 못 읽는다
+  hotbarEl.style.display = 'none';
+  resEl.style.display = 'none';
+  bossBarEl.style.display = 'none';
+  hudEl.style.display = 'none';
+  upgEl.style.display = 'none';
+  const me = localPlayer();
+  me.buildJob = null; me.upgradeJob = null; me.buildOrder = null;
+  me.wallOrders = []; me.wallCast = null; me.mineOrder = null;
+  buildSlot = -1; removeMode = false;
   renderEditor();
 }
 
@@ -7784,6 +7805,11 @@ function closeEditor(play) {
   const m = editor.map;
   editor = null;
   edEl.style.display = 'none';
+  ghost.visible = false;
+  edDragging = false;
+  hotbarEl.style.display = '';
+  resEl.style.display = '';
+  hudEl.style.display = hudOn ? '' : 'none';   // 백틱 토글 상태를 그대로 돌려준다
   paused = false;
   if (play) { customMap = m; editorMap = m; beginMatch(); }
   else { openStart('s-mode'); }
@@ -7791,23 +7817,57 @@ function closeEditor(play) {
 
 // ---- 칠하기 ----
 const edSame = (a, i, j) => a.findIndex((c) => c[0] === i && c[1] === j);
+// 그 칸에 지금 뭐가 있나 (없으면 null). 늪은 붓에서 빠졌지만 옛 맵에 남아 있어서 같이 본다
+const edAt = (m, i, j) =>
+  edSame(m.rocks, i, j) >= 0 ? 'rock'
+  : edSame(m.nodes, i, j) >= 0 ? 'node'
+  : edSame(m.mud, i, j) >= 0 ? 'mud' : null;
+// 시작 지점을 벽으로 덮으면 그 맵은 못 쓴다. 지금은 시작지점 붓이 없어서
+// 맵의 기본값을 그대로 쓰므로, 여기서 막아 주지 않으면 되돌릴 방법도 없다
+const edIsSpawn = (m, i, j) =>
+  (m.playerSpawn[0] === i && m.playerSpawn[1] === j) ||
+  (m.enemySpawn[0] === i && m.enemySpawn[1] === j);
+const edBrushNow = () => (editor.erase ? null : ED_BRUSH[editor.brush]);
+
 function edPaint(i, j) {
-  if (!editor || i < 0 || j < 0 || i >= CELLS || j >= CELLS) return;
+  if (!editor || i < 0 || j < 0 || i >= CELLS || j >= CELLS) return false;
   const m = editor.map;
-  const b = ED_BRUSH[editor.brush];
+  const b = edBrushNow();
+  if (b && b.k === 'rock' && edIsSpawn(m, i, j)) return false;
+  // **이미 그대로면 아무것도 안 한다.** 누른 채로 끌면 매 프레임 들어오는데
+  // rebuildWorld는 지형·광맥·clearance를 통째로 다시 만드는 함수다
+  if (edAt(m, i, j) === (b ? b.k : null)) return false;
   // 어느 붓이든 **먼저 그 칸을 비운다** — 겹쳐 칠하면 뭐가 있는지 알 수 없다
   const drop = (arr) => { const k = edSame(arr, i, j); if (k >= 0) arr.splice(k, 1); };
   drop(m.rocks); drop(m.mud); drop(m.nodes);
-  if (b.k === 'rock') m.rocks.push([i, j]);
-  else if (b.k === 'mud') m.mud.push([i, j]);
-  else if (b.k === 'n06') m.nodes.push([i, j, 0.6]);
-  else if (b.k === 'n10') m.nodes.push([i, j, 1.0]);
-  else if (b.k === 'n18') m.nodes.push([i, j, 1.8]);
-  else if (b.k === 'pspawn') m.playerSpawn = [i, j];
-  else if (b.k === 'espawn') m.enemySpawn = [i, j];
+  if (b && b.k === 'rock') m.rocks.push([i, j]);
+  else if (b && b.k === 'node') m.nodes.push([i, j, 1.0]);
   customMap = m;
   rebuildWorld(mapIndex);
   renderEditor();
+  return true;
+}
+
+// ---- 고스트 (게임의 건설 고스트를 그대로 쓴다) ----
+const edGhost = { i: 0, j: 0, ok: false };
+function edUpdateGhost() {
+  if (!mouseValid) { ghost.visible = false; edGhost.ok = false; return; }
+  raycaster.setFromCamera(mouseNDC, activeCam());
+  if (!raycaster.ray.intersectPlane(groundPlane, mouseHit)) {
+    ghost.visible = false; edGhost.ok = false; return;
+  }
+  const c = worldToCell(mouseHit.x, mouseHit.z);
+  edGhost.i = c.i; edGhost.j = c.j;
+  edGhost.ok = c.i >= 0 && c.j >= 0 && c.i < CELLS && c.j < CELLS;
+  ghost.visible = edGhost.ok;
+  if (!edGhost.ok) return;
+  const b = edBrushNow();
+  const w = cellToWorld(c.i, c.j);
+  const h = b ? 1.4 : 0.35;                       // 지우개는 납작하게 — 놓는 게 아니라 지우는 것
+  const blocked = b && b.k === 'rock' && edIsSpawn(editor.map, c.i, c.j);
+  ghost.scale.set(CS * 0.98, h, CS * 0.98);
+  ghost.position.set(w.x, h / 2, w.z);
+  ghost.material.color.setHex(blocked ? 0xe05050 : b ? b.color : ED_ERASE.color);
 }
 
 // ---- 저장·불러오기 ----
@@ -7825,14 +7885,16 @@ function renderEditor() {
   if (!editor) { edEl.style.display = 'none'; return; }
   edEl.style.display = 'block';
   const m = editor.map;
-  const b = ED_BRUSH[editor.brush];
+  const b = editor.erase ? ED_ERASE : ED_BRUSH[editor.brush];
   edEl.innerHTML =
-    `<div class="ehead">맵 에디터 — 숫자 1~9로 붓 선택 · 좌클릭(드래그)으로 칠하기</div>` +
-    ED_BRUSH.map((x, k) => `<div class="ebrush${k === editor.brush ? ' sel' : ''}">` +
+    `<div class="ehead">맵 에디터 — WASD로 이동 · 마우스로 조준 · 좌클릭(누른 채로) 배치</div>` +
+    ED_BRUSH.map((x, k) => `<div class="ebrush${!editor.erase && k === editor.brush ? ' sel' : ''}">` +
       `<b>${k + 1}</b>${x.name}</div>`).join('') +
+    `<div class="ebrush${editor.erase ? ' sel' : ''}"><b>X</b>${ED_ERASE.name}</div>` +
     `<div class="ehint">${b.hint}</div>` +
-    `<div class="ecount">바위 ${m.rocks.length} · 늪 ${m.mud.length} · 치즈 ${m.nodes.length}</div>` +
-    `<div class="ekeys">S 저장 · L 불러오기 · N 비우기 · Enter 시험 플레이 · ESC 나가기</div>`;
+    `<div class="ecount">벽 ${m.rocks.length} · 치즈 ${m.nodes.length}` +
+      `${m.mud.length ? ` · 늪 ${m.mud.length} (옛 맵 — 지우개로만)` : ''}</div>` +
+    `<div class="ekeys">F2 저장 · F3 불러오기 · F4 비우기 · Enter 시험 플레이 · ESC 나가기</div>`;
 }
 
 // ============================================================
@@ -9315,8 +9377,31 @@ function presentWorld(dt) {
   }
 }
 
+// ============================================================
+// 에디터 프레임 (D125)
+//  **시뮬을 한 줄도 안 돌린다.** 햄스터만 걷고 카메라가 따라간다.
+//  걷기를 살린 이유는 조작감이 아니라 **닿는 범위**다 — 카메라가 햄스터를
+//  따라다니는 구조라, 햄스터가 안 움직이면 화면 밖은 편집할 방법이 없다.
+//  이동·충돌은 게임과 **같은 함수**(updateActor)를 쓴다. 따로 짜면 두 벌이 된다.
+// ============================================================
+function tickEditor(dt) {
+  const me = localPlayer();
+  sampleLocalInput(me);
+  updateActor(me, dt);
+  updateActorVis(me, dt);
+  for (const q of players) q.vis.group.visible = q === me;
+  edUpdateGhost();
+  // 누른 채로 끌면 이어서 놓인다 (게임의 벽 설치와 같은 손놀림).
+  // 걸어 다니는 동안에도 놓이므로 마우스를 고정한 채 몸으로 줄을 그을 수 있다
+  if (edGhost.ok && (edDragging || keys.has('Space'))) edPaint(edGhost.i, edGhost.j);
+  updateFx(dt);
+  updateCamera(dt);
+  noteFrame();
+}
+
 function tick(dt) {
   if (net.role === 'client') { tickClient(dt); return; }
+  if (edOn()) { tickEditor(dt); return; }
   if (!paused && alive && started) {
     survival += dt;
     updatePlayer(dt);
@@ -9529,7 +9614,9 @@ window.__game = {
   addMud, mudSpeedAt, segmentBlocked, rebuildWorld, rollMap, generateMap,
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
-  mudCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
+  mudCells, ED_BRUSH, ED_ERASE, saveMapLocal, loadMapLocal, closeEditor, openEditor,
+  edGhost, edUpdateGhost, tickEditor, get edDragging() { return edDragging; },
+  set edDragging(v) { edDragging = v; },
   get finalPhase() { return finalPhase; },
   get finalT() { return finalT; },
   get finalWaveNo() { return finalWaveNo; },
