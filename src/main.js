@@ -1683,6 +1683,82 @@ function makeCat(type = 'chaser') {
   return vis;
 }
 
+// ---- 우는 고양이 (밈) — 실험용 ----
+// 정현이 "우는 고양이 밈을 살린 캐릭터를 만들 수 있냐"고 물어서 만들어 본 것.
+// 에셋을 받는 대신 **게임의 저폴리 문법 그대로** 짰다 — 스타일이 저절로 맞고,
+// CC-BY 크레딧 의무도 없고, 표정을 내가 원하는 만큼 조절할 수 있다.
+//
+// 밈의 정체성은 셋뿐이다. 이 셋만 지키면 나머지는 고양이면 된다:
+//   1. **몸에 비해 말도 안 되게 큰 눈**, 젖은 것처럼 반짝이는 하이라이트
+//   2. **눈 밑에 맺힌 눈물**
+//   3. **아래로 처진 입**과 축 늘어진 귀
+// 몸통은 밈 사진처럼 **둥글게 뭉친 덩어리**로 (Dingus 같은 '식빵' 실루엣).
+function makeCryCat(scale = 1) {
+  const white = MAT(0xf4f1ee);          // 밈 고양이는 흰 고양이다
+  const shade = MAT(0xdfd8d4);
+  const pink = MAT(0xe9a6ad);
+  const dark = MAT(0x14100f, { roughness: 0.25 });   // 눈 — 젖은 느낌이라 매끈하게
+  const gloss = MAT(0xffffff, { emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.35 });
+  const tear = MAT(0x9fd8f2, {
+    emissive: new THREE.Color(0x4fb4e0), emissiveIntensity: 0.5,
+    transparent: true, opacity: 0.85,
+  });
+  const nose = MAT(0xd98a94);
+  const vis = buildCreature([
+    // 몸 — 낮고 넓게 뭉친 식빵 자세
+    sphere(0.98, white, 0, 0.72, 0.30, 1.05, 0.80, 1.10),
+    sphere(0.70, shade, 0, 0.52, -0.22, 1.02, 0.72, 0.85),   // 가슴
+    // 머리 — 크게. 밈은 얼굴이 전부다
+    sphere(0.78, white, 0, 1.18, -0.86, 1.06, 0.96, 1.0),
+    // 귀 — 살짝 눕혀서 시무룩하게 (rot으로 바깥·뒤로)
+    cone(0.30, 0.52, white, -0.46, 1.72, -0.78, 0.42),
+    cone(0.30, 0.52, white, 0.46, 1.72, -0.78, 0.42),
+    cone(0.16, 0.30, pink, -0.46, 1.68, -0.86, 0.42),
+    cone(0.16, 0.30, pink, 0.46, 1.68, -0.86, 0.42),
+    // 주둥이·코
+    sphere(0.36, white, 0, 0.98, -1.36, 1.20, 0.78, 0.80),
+    sphere(0.10, nose, 0, 1.04, -1.62, 1.1, 0.8, 0.9),
+    // ★ 눈 — 밈의 전부. 일반 고양이(0.16)의 **두 배 이상**으로 키운다
+    sphere(0.34, dark, -0.30, 1.34, -1.30, 1.0, 1.12, 0.7),
+    sphere(0.34, dark, 0.30, 1.34, -1.30, 1.0, 1.12, 0.7),
+    // ★ 젖은 하이라이트 — 이게 없으면 그냥 검은 눈이다.
+    // **좌우 대칭이어야 한다** — 한쪽만 안쪽에 있으면 사시처럼 보인다
+    sphere(0.10, gloss, -0.40, 1.45, -1.55, 1, 1, 0.55),
+    sphere(0.10, gloss, 0.40, 1.45, -1.55, 1, 1, 0.55),
+    sphere(0.05, gloss, -0.19, 1.22, -1.56, 1, 1, 0.55),
+    sphere(0.05, gloss, 0.19, 1.22, -1.56, 1, 1, 0.55),
+    // ★ 눈물 — 눈 **바깥 아래**에서 뺨을 타고 흐른다.
+    // z를 주둥이(-1.65까지 튀어나옴)보다 앞으로 빼야 안 가린다
+    sphere(0.085, tear, -0.50, 1.08, -1.44, 0.8, 1.7, 0.7),
+    sphere(0.085, tear, 0.50, 1.08, -1.44, 0.8, 1.7, 0.7),
+    sphere(0.065, tear, -0.53, 0.84, -1.36, 0.8, 1.4, 0.7),
+    sphere(0.065, tear, 0.53, 0.84, -1.36, 0.8, 1.4, 0.7),
+    // ★ 처진 입 — 아래로 굽은 선. 구 셋으로 ∨를 뒤집어 그린다
+    sphere(0.075, dark, -0.17, 0.84, -1.60, 1.2, 0.45, 0.5),
+    sphere(0.075, dark, 0.17, 0.84, -1.60, 1.2, 0.45, 0.5),
+    sphere(0.075, dark, 0, 0.90, -1.64, 1.5, 0.42, 0.5),
+    // 앞발 — 식빵이라 몸 밑에 살짝만
+    sphere(0.24, white, -0.52, 0.20, -0.66, 1, 0.8, 1.1),
+    sphere(0.24, white, 0.52, 0.20, -0.66, 1, 0.8, 1.1),
+    // 꼬리 — 힘없이 늘어뜨린다
+    sphere(0.18, white, 0.30, 0.34, 1.16, 0.9, 0.7, 1.1),
+    sphere(0.13, white, 0.62, 0.26, 1.44, 0.8, 0.6, 0.9),
+  ]);
+  if (scale !== 1) vis.group.scale.setScalar(scale);
+  // 눈물과 하이라이트는 공세 때 검게 물들면 안 된다 — 그러면 우는 게 안 보인다
+  vis.eyeMats = [gloss, tear];
+  for (const m of vis.mats) if (m.userData.baseHex === undefined) m.userData.baseHex = m.color.getHex();
+  vis.setDark = (on) => {
+    const k = on ? 1 - P.final.darkAmt : 1;
+    for (const m of vis.mats) {
+      if (vis.eyeMats.includes(m)) continue;   // 눈물은 언제나 반짝인다
+      m.color.setHex(m.userData.baseHex);
+      if (on) m.color.multiplyScalar(k);
+    }
+  };
+  return vis;
+}
+
 // 나르는 햄스터 비주얼 (동료·일꾼 공용). GLB가 로드되면 교체된다.
 function makeCarrierVis(color) {
   const v = makeHamster(color);
@@ -10131,6 +10207,7 @@ window.__game = {
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
   flattenModel, modelCache, MODEL_URL, GLTFLoader,
+  makeCryCat, makeCat, makeHamster,
   prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
   syncWallInstances, get wallIMs() { return { postIM, crackIM, bedIM }; },
   removeObstacle, applyCrackVisual, crackWall, updateWallColor,
