@@ -216,7 +216,10 @@ const P = {
   worker: {
     cost: 50, speed: 6.9, radius: 0.3,   // 50 = 가장 먼저 뽑는 것이라 값을 올렸다 (D88)
     perPile: 3,         // 치즈더미 하나에 붙을 수 있는 일꾼 수
-    max: 12,
+    // 전체 정원은 풀었다 (D124). 0 = 무제한.
+    // 수입을 실제로 막는 건 여기가 아니라 **더미 정원 3명**(perPile)이다 —
+    // 더 벌려면 더미를 더 확보해야 한다는 압박(D36)은 그대로 남는다.
+    max: 0,
     // 길이 막혔을 때 (D116). 예전엔 못 가는 더미를 붙잡고 **그 자리에 영원히 서 있었다.**
     stuckTime: 2.5,     // 이만큼 제자리면 그 더미를 포기한다(초)
     avoidTime: 12,      // 포기한 더미를 다시 안 고르는 시간(초)
@@ -3069,8 +3072,9 @@ function pileCrowd(n) {
 function hireWorker(owner = 'p') {
   const home = ownerOf(owner);
   const mine = workers.filter((w) => w.owner === owner);
-  if (mine.length >= P.worker.max) {
-    flashFor(home, '일꾼이 너무 많습니다', '#e05050');
+  // 전체 정원은 0이면 무제한이다 (D124) — 실제 제한은 더미 정원(perPile)이 건다
+  if (P.worker.max > 0 && mine.length >= P.worker.max) {
+    flashFor(home, `일꾼이 너무 많습니다 (최대 ${P.worker.max})`, '#e05050');
     return null;
   }
   const wcost = cheeseCost(P.worker.cost);
@@ -6511,7 +6515,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.command, 'pickRange', 0.5, 7, 0.1).name('우클릭 집는 반경');
   f.add(P.command, 'dragMin', 2, 40, 1).name('상자 선택 최소 드래그(px)');
   f.add(P.worker, 'perPile', 1, 8, 1).name('한 더미당 일꾼 수');
-  f.add(P.worker, 'max', 1, 30, 1).name('일꾼 최대');
+  f.add(P.worker, 'max', 0, 60, 1).name('일꾼 최대 (0 = 무제한)');
   f.add(P.worker, 'speed', 1, 18, 0.1).name('일꾼 이동 속도');
   f.add(P.worker, 'cost', 5, 120, 1).name('일꾼 비용');
 }
