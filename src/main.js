@@ -658,6 +658,12 @@ let NAV = CELLS * NAVPC;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const cellKey = (i, j) => i + ',' + j;
+// 좌표 변환의 **할당 없는** 짝 (D131). cellToWorld/worldToCell은 객체를 돌려주는데,
+// collideWithObstacles는 개체당 3패스 × 25칸을 훑는다 — 뜨거운 자리에서는 이쪽을 쓴다
+const cellX = (i) => (i + 0.5) * CS - HALF;
+const cellZ = (j) => (j + 0.5) * CS - HALF;
+const cellI = (x) => clamp(Math.floor((x + HALF) / CS), 0, CELLS - 1);
+const cellJ = (z) => clamp(Math.floor((z + HALF) / CS), 0, CELLS - 1);
 // ---- 장애물 격자 (D130) ----
 // `obstacles`(Map, 문자열 키)와 **같은 내용을 평평한 배열로도** 들고 있는다.
 // 이유는 하나: `obstacles.get(cellKey(i,j))`가 **부를 때마다 문자열을 만든다.**
@@ -4264,29 +4270,31 @@ const obHalf = (ob) =>
   : ob.bldgRef ? Math.max(CS / 2 - P.build.inset, 0.1)
   : P.wall.post / 2;
 
+// ⚠ 이 함수는 **프레임에서 가장 많이 도는 곳**이다 (개체당 3패스 × 25칸).
+// 객체를 하나도 만들지 않는다 — cellToWorld/worldToCell 대신 스칼라 짝을 쓴다 (D131)
 function collideWithObstacles(ent, r) {
   for (let pass = 0; pass < 3; pass++) {
-    const c = worldToCell(ent.x, ent.z);
+    const ci = cellI(ent.x), cj = cellJ(ent.z);
     for (let dj = -2; dj <= 2; dj++)
       for (let di = -2; di <= 2; di++) {
-        const ob = obAtCell(c.i + di, c.j + dj);
+        const ob = obAtCell(ci + di, cj + dj);
         if (!ob) continue;
-        const w = cellToWorld(ob.i, ob.j);
+        const wx = cellX(ob.i), wz = cellZ(ob.j);
         // 기둥(플레이어 벽)은 원기둥 — 원-원 밀어내기
         if (!ob.bedrock && !ob.bldgRef) {
           const pr = P.wall.post / 2;
-          let dx = ent.x - w.x, dz = ent.z - w.z;
+          let dx = ent.x - wx, dz = ent.z - wz;
           let d = Math.hypot(dx, dz);
           const need = pr + r;
           if (d >= need) continue;
           if (d < 1e-6) { dx = 1; dz = 0; d = 1; }
-          ent.x = w.x + (dx / d) * need;
-          ent.z = w.z + (dz / d) * need;
+          ent.x = wx + (dx / d) * need;
+          ent.z = wz + (dz / d) * need;
           continue;
         }
         const h = obHalf(ob);
-        const x0 = w.x - h, x1 = w.x + h;
-        const z0 = w.z - h, z1 = w.z + h;
+        const x0 = wx - h, x1 = wx + h;
+        const z0 = wz - h, z1 = wz + h;
         const px = clamp(ent.x, x0, x1);
         const pz = clamp(ent.z, z0, z1);
         let dx = ent.x - px, dz = ent.z - pz;
@@ -4313,13 +4321,14 @@ function collideWithObstacles(ent, r) {
   ent.z = clamp(ent.z, -HALF + r, HALF - r);
 }
 
+// 적 AI가 5×5 칸을 훑으며 부르는 함수다 — 객체를 만들지 않는다 (D131)
 function distToObstacle(ent, ob) {
-  const w = cellToWorld(ob.i, ob.j);
+  const wx = cellX(ob.i), wz = cellZ(ob.j);
   if (!ob.bedrock && !ob.bldgRef)
-    return Math.max(Math.hypot(ent.x - w.x, ent.z - w.z) - P.wall.post / 2, 0);
+    return Math.max(Math.hypot(ent.x - wx, ent.z - wz) - P.wall.post / 2, 0);
   const h = obHalf(ob);
-  const px = clamp(ent.x, w.x - h, w.x + h);
-  const pz = clamp(ent.z, w.z - h, w.z + h);
+  const px = clamp(ent.x, wx - h, wx + h);
+  const pz = clamp(ent.z, wz - h, wz + h);
   return Math.hypot(ent.x - px, ent.z - pz);
 }
 
@@ -6724,9 +6733,9 @@ function updateBuild(dt, p = player) {
 }
 
 function distCellToPoint(i, j, x, z) {
-  const w = cellToWorld(i, j);
-  const px = clamp(x, w.x - CS / 2, w.x + CS / 2);
-  const pz = clamp(z, w.z - CS / 2, w.z + CS / 2);
+  const wx = cellX(i), wz = cellZ(j);
+  const px = clamp(x, wx - CS / 2, wx + CS / 2);
+  const pz = clamp(z, wz - CS / 2, wz + CS / 2);
   return Math.hypot(x - px, z - pz);
 }
 
