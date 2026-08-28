@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import GUI from 'lil-gui';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { net } from './net.js';
 
 // ============================================================
@@ -654,11 +655,19 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(12, 24, 8);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
+// **그림자맵을 매 프레임 다시 굽지 않는다** (D127).
+// 유닛이 그림자를 안 만들게 되면서(위) 움직이는 캐스터가 하나도 남지 않았다 —
+// 벽·건물·지형은 바뀔 때만 바뀐다. 그때만 shadowDirty()로 한 장 다시 굽는다.
+// 실측(적 120): 렌더 1.44ms → 1.0ms, 벽이 많을수록 차이가 커진다.
+sun.shadow.autoUpdate = false;
+sun.shadow.needsUpdate = true;
 sun.shadow.camera.left = -HALF - 2;
 sun.shadow.camera.right = HALF + 2;
 sun.shadow.camera.top = HALF + 2;
 sun.shadow.camera.bottom = -HALF - 2;
 scene.add(sun);
+// 그림자를 만드는 것(벽·건물·지형)이 바뀌었다고 알린다. 안 부르면 **그림자가 옛날 그대로** 남는다
+const shadowDirty = () => { sun.shadow.needsUpdate = true; };
 
 // 바닥/그리드/외곽 림 — 맵을 바꿀 때마다 다시 만든다
 const groundGroup = new THREE.Group();
@@ -685,6 +694,7 @@ function buildGround(floorColor, gridColor) {
   groundGroup.add(gh);
   resizeTerritoryOverlay();
 
+  shadowDirty();
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x454c5e, roughness: 1 });
   const mk = (w, d, x, z) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.8, d), rimMat);
@@ -801,6 +811,7 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
   // **"이 벽이 누구 것인가"가 생사에 걸린 정보**다 — 상대가 잡히면 그 벽만 사라진다.
   if (post && owner === 'a') mat.color.setHex(0x7f93c8);
   obstacles.set(key, ob);
+  shadowDirty();
   if (post) wallEv({ a: 1, i, j, o: owner });
   return ob;
 }
@@ -808,6 +819,7 @@ function addObstacle(i, j, bedrock, building = false, owner = 'p') {
 function removeObstacle(ob) {
   if (!ob.bedrock && !ob.bldgRef) wallEv({ a: 0, i: ob.i, j: ob.j });
   obstacles.delete(cellKey(ob.i, ob.j));
+  shadowDirty();
   if (ob.mesh) {
     scene.remove(ob.mesh);
     ob.mesh.material.dispose();
@@ -833,6 +845,7 @@ const crackedWalls = () =>
 
 function applyCrackVisual(ob) {
   if (!ob.mesh) return;
+  shadowDirty();
   const f = (ob.cracks || 0) / Math.max(P.wall.crackMax, 1);   // 0..1
   const side = P.wall.post * (1 - 0.3 * f);
   ob.mesh.scale.set(side, P.wall.height * (1 - 0.12 * f), side);
@@ -1565,15 +1578,58 @@ function normalizeModel(root) {
   return g;
 }
 
-function applyModel(vis, key, tint, tintAmt) {
+// ---- GLB를 **한 덩어리로 굽는다** (D127) ----
+// Kenney 모델 하나가 메시 7개다. 그대로 쓰면 적 한 마리가 draw call 7개고,
+// 물량이 곧 draw call이 된다 — 실측 적 170마리에서 2492 calls.
+// 다행히 **7개가 재질 하나·텍스처 하나(colormap.png)를 공유한다.** 합치면 마리당 1개다.
+//
+// ⚠ **UV를 버리면 안 된다.** 색은 전부 그 텍스처에서 온다 —
+// 재질 색은 7개 모두 흰색이다. (여기서 한 번 UV를 떨어뜨렸다가
+// 고양이가 잿빛 덩어리가 됐다. 그때 "재질 색이 5종"이라고 읽은 건
+// **숨겨 둔 절차적 폴백 파츠까지 같이 센** 결과였다.)
+function flattenModel(root, tint, tintAmt) {
+  root.updateWorldMatrix(true, true);
+  const geos = [];
+  let src = null;
+  root.traverse((o) => {
+    if (!o.isMesh || Array.isArray(o.material)) return;
+    if (!src) src = o.material;
+    // 합치려면 속성 구성이 같아야 한다. tangent는 모델마다 있고 없고가 달라서 뺀다
+    // (노멀맵을 안 쓰므로 쓸 데도 없다). uv는 **반드시 남긴다**.
+    const gg = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    for (const name of Object.keys(gg.attributes))
+      if (name !== 'position' && name !== 'normal' && name !== 'uv') gg.deleteAttribute(name);
+    if (!gg.attributes.normal) gg.computeVertexNormals();
+    if (!gg.attributes.uv)
+      gg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(gg.attributes.position.count * 2), 2));
+    gg.applyMatrix4(o.matrixWorld);
+    geos.push(gg);
+  });
+  if (!geos.length || !src) return null;
+  const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+  if (!merged) return null;   // 합치기에 실패하면 절차적 모델로 남는다
+  for (const gg of geos) if (gg !== merged) gg.dispose();
+  const mat = src.clone();
+  // 종류 구분 틴트는 **텍스처를 살린 채** 색으로만 준다 (예전 동작 그대로).
+  // material.color는 map에 곱해지므로, setDark가 이걸 어둡게 하면 전체가 어두워진다
+  if (tint) mat.color.lerp(new THREE.Color(tint), tintAmt);
+  return new THREE.Mesh(merged, mat);
+}
+
+function applyModel(vis, key, tint, tintAmt = 0.22) {
   const url = MODEL_URL[key];
   if (!url) return;
-  if (modelCache[key]) { swapVis(vis, modelCache[key], tint, tintAmt); return; }
+  // 틴트가 정점에 구워지므로 캐시 키에 틴트도 들어간다
+  // ('worker' 모델은 일꾼과 방어병이 **다른 색으로** 함께 쓴다)
+  const ck = `${key}|${tint || 0}|${tintAmt}`;
+  if (modelCache[ck]) { swapVis(vis, modelCache[ck]); return; }
   new GLTFLoader().load(
     import.meta.env.BASE_URL + url,
     (gltf) => {
-      modelCache[key] = normalizeModel(gltf.scene);
-      swapVis(vis, modelCache[key], tint, tintAmt);
+      const flat = flattenModel(gltf.scene, tint, tintAmt);
+      if (!flat) return;               // 실패하면 절차적 모델 유지
+      modelCache[ck] = normalizeModel(flat);
+      swapVis(vis, modelCache[ck]);
     },
     undefined,
     () => {}   // 실패하면 절차적 모델 유지
@@ -1581,7 +1637,7 @@ function applyModel(vis, key, tint, tintAmt) {
 }
 
 // 절차적 파츠를 감추고 모델 클론을 끼운다. vis의 API(setOpacity/setEmissive)는 유지.
-function swapVis(vis, template, tint, tintAmt = 0.22) {
+function swapVis(vis, template) {
   if (vis.modelled) return;
   vis.modelled = true;
   // userData.keep = 모델을 갈아끼워도 남기는 장식 (투구·어깨 갑주 등).
@@ -1591,9 +1647,12 @@ function swapVis(vis, template, tint, tintAmt = 0.22) {
   const mats = [];
   clone.traverse((o) => {
     if (!o.isMesh) return;
-    o.material = o.material.clone();
-    if (tint) o.material.color.lerp(new THREE.Color(tint), tintAmt); // 텍스처를 살리고 종류 구분만
-    o.castShadow = true;
+    o.material = o.material.clone();   // 개체마다 따로 어두워지고 깜빡여야 한다
+    // **그림자는 안 만든다** (D127). 유닛이 캐스터의 6할이었고, 끄면 draw call이
+    // 895 → 656, 렌더 p95가 5.6 → 1.4ms로 떨어진다. 탑다운에서 캐릭터 그림자는
+    // 거의 안 보이는 데다, 지형·벽 그림자는 그대로 남아 입체감을 유지한다.
+    o.castShadow = false;
+    o.receiveShadow = true;
     mats.push(o.material);
   });
   vis.group.add(clone);
@@ -2306,6 +2365,7 @@ const pipGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
 const tierGeo = new THREE.BoxGeometry(1.0, 0.34, 1.0);
 
 function applyBuildingTierVisual(b) {
+  shadowDirty();
   const tier = Math.max(1, Math.min(3, b.tier || 1));
   const col = TIER_COLOR[tier - 1];
 
@@ -2386,6 +2446,7 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
 }
 
 function placeBuilding(kind, i, j, owner = 'p') {
+  shadowDirty();
   const cost = buildCost(kind);
   if (purse(owner) < cost) {
     flashFor(ownerOf(owner), `치즈가 부족합니다 (${BLDG_INFO[kind].label} ${cost})`, '#e05050');
@@ -2422,6 +2483,7 @@ function placeBuildingLocal(kind, i, j, owner, id) {
 }
 
 function destroyBuilding(b, byEnemy) {
+  shadowDirty();
   for (const key of b.cells) obstacles.delete(key);
   if (b.beam) { scene.remove(b.beam); b.beam.material.dispose(); b.beam = null; }
   disposeBar(b.bar);
@@ -5791,6 +5853,7 @@ function updateWallPops(dt) {
     if (!obstacles.has(cellKey(w.ob.i, w.ob.j))) { popping.splice(k, 1); continue; }
     w.ob.mesh.scale.y = h;
     w.ob.mesh.position.y = h / 2;
+    shadowDirty();   // 솟는 동안은 매 프레임 — 0.16초짜리라 값이 싸다
     if (p >= 1) popping.splice(k, 1);
   }
 }
@@ -6362,6 +6425,7 @@ function startBuild(kind, i, j, p = player) {
 
 // 완성 처리 — 채널링 건물과 자동 건설 건물이 같은 마무리를 쓴다
 function finishBuild(b) {
+  shadowDirty();   // 반투명 건설중 → 완성. 실루엣이 바뀐다
   b.underBuild = false;
   b.mesh.traverse((o) => { if (o.material) { o.material.transparent = false; o.material.opacity = 1; } });
   b.mesh.scale.y = 1;
@@ -6375,6 +6439,7 @@ function updateSelfBuild(b, dt) {
   b.selfT += dt;
   const f = Math.min(b.selfT / b.selfDur, 1);
   b.mesh.scale.y = 0.25 + 0.75 * f;
+  shadowDirty();   // 자라는 동안은 그림자도 따라와야 한다
   if (f >= 1) finishBuild(b);
 }
 
@@ -6398,6 +6463,7 @@ function updateBuild(dt, p = player) {
   p.buildJob.t += dt;
   const f = Math.min(p.buildJob.t / dur, 1);
   b.mesh.scale.y = 0.25 + 0.75 * f;
+  shadowDirty();
   if (f >= 1) { finishBuild(b); p.buildJob = null; }
 }
 
@@ -8950,7 +9016,7 @@ function applySnapshot(m) {
       const wasUnder = b.underBuild;
       b.underBuild = !!a[7];
       b.store = a[8];
-      if (a[9] >= 0) b.mesh.scale.y = 0.25 + 0.75 * a[9];
+      if (a[9] >= 0) { b.mesh.scale.y = 0.25 + 0.75 * a[9]; shadowDirty(); }
       if (wasUnder && !b.underBuild) finishBuild(b);
     },
     (b) => destroyBuilding(b, false));
@@ -9624,6 +9690,7 @@ window.__game = {
   addMud, mudSpeedAt, segmentBlocked, rebuildWorld, rollMap, generateMap,
   // ⚠ 값으로 내보내면 재할당이 안 보인다 — 실제로 여기에 속아서 스폰이 안 바뀐 줄 알았다
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
+  flattenModel, modelCache, MODEL_URL, GLTFLoader,
   mudCells, ED_BRUSH, ED_ERASE, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   edGhost, edUpdateGhost, tickEditor, get edDragging() { return edDragging; },
   set edDragging(v) { edDragging = v; },
