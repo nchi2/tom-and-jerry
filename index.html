@@ -122,6 +122,15 @@
     #overlay h1 { font-size: 42px; margin: 0 0 10px; }
     #overlay p { font-size: 16px; color: #c8cede; margin: 0; }
     #overlay.hidden { display: none; }
+    /* 무한 모드 계속하기 (D124). 오버레이 전체는 클릭을 안 받지만 이 버튼은 받아야 한다 */
+    #overlay-cont {
+      margin-top: 18px; padding: 12px 22px; border: 0; border-radius: 8px;
+      background: linear-gradient(90deg, #c0392b, #e8743a); color: #fff;
+      font-family: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    }
+    #overlay-cont:hover { filter: brightness(1.12); }
+    #overlay-cont.hidden { display: none; }
     #hotbar {
       position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
       z-index: 12; display: flex; gap: 6px; pointer-events: none;
@@ -448,6 +457,7 @@
   <div id="overlay" class="hidden">
     <h1>잡혔다!</h1>
     <p id="overlay-sub">ESC → 다시 시작</p>
+    <button id="overlay-cont" class="hidden">계속하기 [Enter]</button>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

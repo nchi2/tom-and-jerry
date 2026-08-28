@@ -374,8 +374,15 @@ const P = {
   //          할지를 모른다. 다 되기 전에 F로 앞당길 수는 있다.
   //  drip    공세를 **나눠서** 내보낸다. 한 번에 쏟으면 첫 30초가 전부고 나머지는 청소다
   //  bomberEvery 공세 동안의 자폭묘 주기 (평소보다 짧다)
-  final: { enabled: 1, boost: 1.3, wave: 2.0, duration: 150, bomberOneShot: 1,
-           prep: 180, drip: 12, dripFrac: 0.25, bomberEvery: 9,
+  final: { enabled: 1, boost: 1.3, wave: 3.0, duration: 150, bomberOneShot: 1,
+           prep: 180, bomberEvery: 9,
+           // 공세는 **딱 이 차수만큼** 나눠 온다 (D124). 예전엔 25%씩 계속 흘려서
+           // 몇 번 남았는지가 안 읽혔다 — "3차 중 2차"가 보여야 버티는 그림이 된다
+           waves: 3, waveGap: 40,
+           // 무한 모드 (D124). 한 번 막아내면 이긴 것이고, 계속하기를 누르면 라운드가 오른다
+           endlessPrep: 45,      // 라운드 사이 준비 시간(초) — 첫 판의 prep보다 짧다
+           endlessGrow: 1.35,    // 라운드마다 물량 배율
+           endlessBoost: 0.12,   // 라운드마다 강화 배율에 더하는 값
            darkAmt: 0.8 },   // 몸을 얼마나 어둡게 (1이면 새까맣다)
   // 랜덤 맵 (D117). 분포의 규칙은 여기서 조절한다
   mapgen: {
@@ -1750,7 +1757,9 @@ const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 // 생존시간에 안 묻힌다. 나머지 3종은 그대로 위협 레벨을 받는다.
 // 최후의 공세에서는 고양이가 검게 물들고 **30% 강해진다** (D108).
 // 속도만 빼고 곱한다 — 더 빨라지면 술래잡기가 아니게 된다 (threat.speedGain=0과 같은 이유).
-const finalBoost = () => (enraged() ? P.final.boost : 1);
+// 무한 라운드에서는 강화도 같이 오른다 (D124). 속도는 여전히 안 건드린다 —
+// 고양이가 햄스터보다 빨라지면 술래잡기가 아니게 된다 (D108)
+const finalBoost = () => (enraged() ? P.final.boost + P.final.endlessBoost * endlessRound : 1);
 const typeMaxHp = (type) => (type === 'boss'
   ? P.boss.hp                                       // 톰은 고정 스탯 (D83) — 배율도 안 받는다
   : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp * finalBoost());
@@ -4578,10 +4587,15 @@ let growthSpawned = 0;
 let stage = 1;        // 1..10
 let stageT = 0;       // 이번 스테이지 경과 시간
 let victory = false;
-// 최후의 공세 (D108). 'none' → 'prep'(준비, 무제한) → 'assault'(공세) → victory
+// 최후의 공세 (D108 → D124). 'none' → 'prep'(준비) → 'assault'(공세) → 'won'
+// 'won'에서 **계속하기**를 누르면 다시 'prep'으로 돌아가고 endlessRound가 오른다 (D124)
 let finalPhase = 'none';
-let finalT = 0;             // 공세 경과 시간
+let finalT = 0;             // 공세 경과 시간 (prep에서는 남은 준비 시간)
+let endlessRound = 0;       // 0 = 기본 공세, 1+ = 계속하기로 이어 간 무한 라운드
+let endlessT = 0;           // 무한 모드에서 **공세 중에만** 버틼 시간 (기록용)
 const enraged = () => finalPhase === 'assault';
+// 라운드마다 물량이 기하급수로 오른다. 라운드 0이면 1배 (기본 공세)
+const endlessMul = () => Math.pow(P.final.endlessGrow, endlessRound);
 
 // 스테이지 길이 배율 (D115). "톰이 너무 빨리 온다"는 평 →
 // 표의 숫자를 고치지 않고 여기서 곱한다 (costScale과 같은 방식 — 원래 값이 소스에 남는다).
@@ -4663,15 +4677,20 @@ function spawnBoss() {
 // 톰을 둘 다 잡으면 곧장 이기는 게 아니라 **준비 국면**으로 들어간다.
 // 이 게임에서 처음으로 쫓기지 않는 시간이다 — 지금까지 모든 벽은 도망치면서 세웠다.
 // 여기서 쌓아 둔 치즈·부품을 태워 방어선을 짓고, 준비가 끝나면 직접 시작을 누른다.
-function beginFinalPrep() {
-  if (!P.final.enabled) { winGame('톰을 막아냈다!'); return; }
-  finalPhase = 'prep';
-  finalT = P.final.prep;   // 남은 준비 시간 (0이 되면 저절로 시작한다)
-  // 남은 잔챙이는 정리한다 — "준비 시간"이라고 해 놓고 쫓기면 준비가 아니다
+// 판 위의 적을 통째로 치운다. "준비 시간"이라고 해 놓고 쫓기면 준비가 아니고,
+// 이겼는데 화면에서 계속 쫓기면 이긴 것 같지 않다 (D124에서 승리에도 쓴다).
+function clearEnemies() {
   for (const e of [...enemies]) { scene.remove(e.vis.group); disposeBar(e.bar);
     if (e.homeRing) { scene.remove(e.homeRing); e.homeRing.material.dispose(); } }
   enemies.length = 0;
   refreshReach();
+}
+
+function beginFinalPrep() {
+  if (!P.final.enabled) { winGame('톰을 막아냈다!'); return; }
+  finalPhase = 'prep';
+  finalT = P.final.prep;   // 남은 준비 시간 (0이 되면 저절로 시작한다)
+  clearEnemies();
   flashMsg(`톰을 모두 쓰러뜨렸다 — ${Math.round(P.final.prep / 60)}분 뒤 마지막이 온다. [F]로 앞당기기`, '#ffd24a');
 }
 
@@ -4679,35 +4698,49 @@ function beginFinalPrep() {
 // 공세는 **나눠서** 온다 (D123). 한 번에 쏟으면 첫 30초가 전투 전부고
 // 나머지 2분은 청소다 — 끝까지 압박이 이어져야 '버티기'가 된다.
 let finalQueue = [];     // 아직 안 나온 종류 목록
-let finalDripT = 0;
+let finalWaveT = 0;      // 다음 차수까지 남은 시계
+let finalWaveNo = 0;     // 지금까지 내보낸 차수 (1..finalWaves())
+
+const finalWaves = () => Math.max(1, Math.round(P.final.waves));
+// 이번 라운드에 이겼다고 인정하는 시간. 마지막 차수가 나온 뒤에도 버틸 시간이 남아야
+// '버티기'가 되므로, duration이 너무 짧으면 여기서 끌어올린다.
+const finalDuration = () =>
+  Math.max(P.final.duration, (finalWaves() - 1) * P.final.waveGap + 30);
 
 function startFinalAssault() {
   if (finalPhase !== 'prep') return;
   finalPhase = 'assault';
   finalT = 0;
-  finalDripT = 0;
+  finalWaveT = 0;
+  finalWaveNo = 0;
   finalQueue = [];
   const want = cumulativeComposition();
+  const mul = P.final.wave * endlessMul();
   for (const [ty, n] of Object.entries(want))
-    for (let k = 0; k < Math.round(n * P.final.wave); k++) finalQueue.push(ty);
+    for (let k = 0; k < Math.round(n * mul); k++) finalQueue.push(ty);
   // 순서를 섞는다 — 종류별로 뭉쳐 나오면 "지금은 자폭묘 차례"가 되어 버린다
   for (let k = finalQueue.length - 1; k > 0; k--) {
     const j = Math.floor(Math.random() * (k + 1));
     [finalQueue[k], finalQueue[j]] = [finalQueue[j], finalQueue[k]];
   }
-  releaseFinalWave(P.final.dripFrac);   // 첫 무리는 바로
+  releaseFinalWave();   // 1차는 바로
   for (const e of enemies) darkenEnemy(e);
   refreshReach();
-  flashMsg(`최후의 공세! ${P.final.duration}초를 버텨라`, '#ff3b3b');
+  const tag = endlessRound ? `무한 ${endlessRound}라운드` : '최후의 공세';
+  flashMsg(`${tag}! ${finalWaves()}차에 걸쳐 온다 — ${Math.round(finalDuration())}초를 버텨라`, '#ff3b3b');
 }
 
-function releaseFinalWave(frac) {
-  const n = Math.max(1, Math.round(finalQueue.length * frac));
+// 남은 물량을 **남은 차수로** 나눠 한 차수분을 내보낸다.
+// 전체를 차수로 나누면 반올림 오차가 마지막 차수에 몰려 3차만 유난히 커진다.
+function releaseFinalWave() {
+  const left = finalWaves() - finalWaveNo;
+  const n = left <= 1 ? finalQueue.length : Math.ceil(finalQueue.length / left);
   for (let k = 0; k < n && finalQueue.length; k++) {
     const e = makeEnemy(finalQueue.pop(), enemies.length);
     darkenEnemy(e);
     enemies.push(e);
   }
+  finalWaveNo++;
   refreshReach();
 }
 
@@ -4725,27 +4758,85 @@ function updateFinalPhase(dt) {
   }
   if (finalPhase === 'assault') {
     finalT += dt;
-    // 남은 무리를 주기마다 흘려보낸다
-    if (finalQueue.length) {
-      finalDripT += dt;
-      if (finalDripT >= P.final.drip) {
-        finalDripT = 0;
-        releaseFinalWave(P.final.dripFrac);
-        flashMsg('또 몰려온다!', '#ff8b5e');
+    if (endlessRound) endlessT += dt;   // 기록은 **공세 중에만** 쌓인다 (준비 시간은 공짜다)
+    // 남은 차수를 시계에 맞춰 내보낸다
+    if (finalWaveNo < finalWaves() && finalQueue.length) {
+      finalWaveT += dt;
+      if (finalWaveT >= P.final.waveGap) {
+        finalWaveT = 0;
+        releaseFinalWave();
+        flashMsg(`${finalWaveNo}차 공세!`, '#ff8b5e');
       }
     }
     // 공세 중에 새로 태어나는 놈도 검게 (탐욕 서지 등)
     for (const e of enemies) if (!e.vis.darkOn) darkenEnemy(e);
-    if (finalT >= P.final.duration) winGame('최후의 공세를 막아냈다!');
+    if (finalT >= finalDuration()) {
+      // **한 번 막아내면 거기서 이긴 것이다** (D124). 계속하기는 선택이지 숙제가 아니다.
+      commitRecord();
+      const tag = endlessRound ? `무한 ${endlessRound}라운드 돌파!` : '최후의 공세를 막아냈다!';
+      winGame(tag, true);
+    }
   }
 }
 
-function winGame(title) {
+// ---- 무한 모드 (D124) ----
+// 이긴 화면에서 [계속하기]를 누르면 라운드가 하나 오르고 더 센 공세가 다시 온다.
+// 라운드 사이에는 짧은 준비 시간을 준다 — 방어선을 고치지 못하면 계속하기가
+// "다시 하기"가 아니라 "곧바로 죽기"가 된다.
+function startEndlessRound() {
+  if (finalPhase !== 'won' || !victory) return;
+  if (!netAuthoring()) return;   // 라운드는 적을 만든다 — 호스트만 (D92-6단계)
+  endlessRound++;
+  victory = false;
+  overlayEl.classList.add('hidden');
+  setOverlayContinue(false);
+  finalPhase = 'prep';
+  finalT = P.final.endlessPrep;
+  clearEnemies();
+  flashMsg(`무한 ${endlessRound}라운드 — ${Math.round(P.final.endlessPrep)}초 뒤 더 센 공세. [F]로 앞당기기`, '#ffd24a');
+}
+
+// ---- 기록 (D124) ----
+// 무한 모드에 발을 들인 판만 기록한다. 기본 공세는 이기면 그만이라 기록할 게 없다.
+const BEST_KEY = 'tj.endless.best';
+function loadBest() {
+  try { return JSON.parse(localStorage.getItem(BEST_KEY)) || null; } catch { return null; }
+}
+function commitRecord() {
+  if (!endlessRound) return;
+  const best = loadBest();
+  if (best && !(endlessRound > best.round || (endlessRound === best.round && endlessT > best.t))) return;
+  try {
+    localStorage.setItem(BEST_KEY, JSON.stringify({ round: endlessRound, t: endlessT }));
+  } catch { /* 시크릿 창 등 — 기록이 안 남을 뿐 게임은 계속된다 */ }
+}
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+// 끝난 판의 한 줄 요약. 호스트와 참가자가 **같은 함수**를 쓴다 —
+// 예전엔 세 군데에서 따로 만들어서 무한 라운드 같은 걸 붙이면 하나가 빠졌다.
+function resultLine(won) {
+  const bits = [won ? MAPS[mapIndex].name : `스테이지 ${stage}`, `${survival.toFixed(0)}초 생존`];
+  if (caughtCount) bits.push(`잡힘 ${caughtCount}회`);
+  if (endlessRound) bits.push(`무한 ${endlessRound}라운드 · 버틴 시간 ${mmss(endlessT)}`);
+  const best = loadBest();
+  if (best) bits.push(`최고 ${best.round}라운드 ${mmss(best.t)}`);
+  return `${bits.join(' · ')} — ESC → 다시 시작`;
+}
+
+const contBtn = document.getElementById('overlay-cont');
+function setOverlayContinue(on) {
+  contBtn.textContent = `계속하기 — 무한 ${endlessRound + 1}라운드 [Enter]`;
+  contBtn.classList.toggle('hidden', !on);
+}
+contBtn.onclick = () => issueCommand({ t: 'endless' });
+
+function winGame(title, canContinue = false) {
   victory = true;
   finalPhase = 'won';
+  clearEnemies();   // 이겼는데 화면에서 계속 쫓기면 이긴 것 같지 않다
   overlayEl.querySelector('h1').textContent = title;
-  document.getElementById('overlay-sub').textContent =
-    `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 · 잡힘 ${caughtCount}회 — ESC → 다시 시작`;
+  document.getElementById('overlay-sub').textContent = resultLine(true);
+  setOverlayContinue(canContinue);
   overlayEl.classList.remove('hidden');
 }
 
@@ -5200,6 +5291,16 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   // 시작 화면 위에서는 게임 단축키를 받지 않는다 (D93) — 코드 입력칸이 R·P·G를 먹히면 안 된다
   if (!started) return;
+  // 이긴 화면의 [계속하기] 단축키 (D124). 버튼이 실제로 떠 있을 때만 먹는다 —
+  // 그래야 평소의 Enter(유닛 생산, D88)를 안 뺏는다.
+  // 에디터·메뉴가 열려 있으면 양보한다 — 거기서도 Enter가 제 일을 갖고 있고,
+  // 이 분기가 그 핸들러들보다 **앞에** 있어서 안 비키면 조용히 가로챈다
+  if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !editor && !menuOpen
+      && !contBtn.classList.contains('hidden')) {
+    issueCommand({ t: 'endless' });
+    e.preventDefault();
+    return;
+  }
   keys.add(e.code);
   if (e.code === 'KeyC') cycleCamera(1);
   // ESC = 한 단계 물러나기. 짓던 것 → 들고 있는 것 → 채굴 명령 → 선택 → 개조 패널
@@ -5930,6 +6031,9 @@ function applyCommand(p, c) {
     if (net.role === 'host' && net.connected) net.send({ k: 'HELLO', full: fullSnapshot() });
     return;
   }
+  // 계속하기도 **이긴 화면에서** 쓰는 명령이라 alive 검사보다 먼저 온다 (D124).
+  // 누구든 누를 수 있다 — 참가자가 눌러도 호스트가 라운드를 연다
+  if (c.t === 'endless') { startEndlessRound(); return; }
   if (!alive) return;
   switch (c.t) {
     case 'roll':
@@ -6316,8 +6420,13 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.balance, 'enemyHp', 0.2, 2, 0.05).name('★ 고양이 체력 배율');
   f.add(P.final, 'enabled', 0, 1, 1).name('★ 최후의 공세 (0=톰 잡으면 바로 승리)');
   f.add(P.final, 'boost', 1, 3, 0.05).name('공세 고양이 강화 배율');
-  f.add(P.final, 'wave', 0.5, 5, 0.1).name('공세 물량 배율');
+  f.add(P.final, 'wave', 0.5, 8, 0.1).name('공세 물량 배율');
+  f.add(P.final, 'waves', 1, 6, 1).name('★ 공세 차수 (몇 번에 나눠 오나)');
+  f.add(P.final, 'waveGap', 10, 90, 5).name('★ 차수 간격(초)');
   f.add(P.final, 'duration', 30, 600, 10).name('공세 버티는 시간(초)');
+  f.add(P.final, 'endlessPrep', 0, 180, 5).name('★ 무한 라운드 준비 시간(초)');
+  f.add(P.final, 'endlessGrow', 1, 2, 0.05).name('★ 라운드당 물량 배율');
+  f.add(P.final, 'endlessBoost', 0, 0.5, 0.01).name('★ 라운드당 강화 증가');
   f.add(P.final, 'bomberOneShot', 0, 1, 1).name('공세 자폭묘 한 방에 벽 관통');
   f.add(P.res, 'terrIncome', 0, 0.02, 0.001).name('★ 영토 ㎡당 치즈/초 (0=끔)');
   f.add(P.sfx, 'volume', 0, 1, 0.05).name('★ 효과음 크기 (0=끔)');
@@ -7074,6 +7183,10 @@ function restart() {
   stageT = 0;
   victory = false;
   finalPhase = 'none'; finalT = 0;
+  // 무한 모드도 판과 함께 처음으로. 기록은 이미 localStorage에 넘겼다 (D124)
+  endlessRound = 0; endlessT = 0;
+  finalQueue = []; finalWaveNo = 0; finalWaveT = 0;
+  setOverlayContinue(false);
   if (tut) { tut = null; renderTut(); }   // 재시작하면 연습판을 벗어난다 (D111)
   growthSpawned = 0;
   // 두 햄스터를 같은 초기 상태로 (D92-1c)
@@ -7193,9 +7306,10 @@ function caught(who) {
 function gameOver() {
   alive = false;
   ghost.visible = false;
+  commitRecord();   // 무한 모드에서 죽었으면 여기까지가 기록이다 (D124)
   overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
-  document.getElementById('overlay-sub').textContent =
-    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 · 잡힘 ${caughtCount}회 — ESC → 다시 시작`;
+  document.getElementById('overlay-sub').textContent = resultLine(false);
+  setOverlayContinue(false);
   overlayEl.classList.remove('hidden');
 }
 
@@ -7452,9 +7566,10 @@ document.getElementById('m-quit').onclick = () => {
   alive = false;
   paused = false;
   ghost.visible = false;
+  commitRecord();
   overlayEl.querySelector('h1').textContent = '게임 종료';
-  document.getElementById('overlay-sub').textContent =
-    `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — ESC → 다시 시작`;
+  document.getElementById('overlay-sub').textContent = resultLine(false);
+  setOverlayContinue(false);
   overlayEl.classList.remove('hidden');
 };
 
@@ -8323,6 +8438,8 @@ function fullSnapshot() {
     // 예전엔 인덱스만 보내면 됐다 — 양쪽이 같은 표를 갖고 있었으니까.
     cmap: customMap,
     stage, stageT, survival,
+    // 다시 붙는 사람도 지금이 몇 라운드 몇 차인지 알아야 한다 (D124)
+    finalPhase, finalT, finalWaveNo, endlessRound, endlessT,
     walls,
     buildings: buildings.map((b) => ({ id: b.id, kind: b.kind, i: b.i, j: b.j, owner: b.owner,
                                        hp: b.hp, tier: b.tier, underBuild: b.underBuild })),
@@ -8346,6 +8463,11 @@ function applyFull(f, msg) {
   else restart();
   if (f.settings) applySettings(f.settings);
   stage = f.stage; stageT = f.stageT; survival = f.survival;
+  if (f.finalPhase) {
+    finalPhase = f.finalPhase; finalT = f.finalT || 0;
+    finalWaveNo = f.finalWaveNo || 0;
+    endlessRound = f.endlessRound || 0; endlessT = f.endlessT || 0;
+  }
   if (f.nodes) f.nodes.forEach((amt, k) => { if (nodes[k]) nodes[k].amount = amt; });
   // **벽과 건물을 실제로 세운다** (D94). 예전엔 HELLO에 실어 보내 놓고 쓰지를 않았다.
   // 처음 붙을 때는 호스트도 방금 새 판을 연 참이라 티가 안 났지만, 끊겼다 다시 붙으면
@@ -8489,6 +8611,9 @@ function onNetMessage(m, fromSlot) {
 //  숫자는 배열로 담는다 — 키 이름이 페이로드의 절반을 먹기 때문이다.
 // ============================================================
 const SNAP_TYPES = ['chaser', 'runner', 'bomber', 'boss'];
+// 최후의 공세 상태도 스냅샷에 싣는다 (D124). 예전엔 안 실어서 **참가자 화면에는
+// 준비 국면·공세 배너가 아예 안 떴다** — 화면이 조용한데 갑자기 검은 고양이가 몰려왔다.
+const FINAL_PHASES = ['none', 'prep', 'assault', 'won'];
 const SNAP_GUARDS = ['melee', 'archer', 'elite'];
 const r2 = (v) => Math.round(v * 100) / 100;
 const jobCode = (j) => (j === 'mine' ? 1 : j === 'drop' ? 2 : 0);
@@ -8534,6 +8659,8 @@ function sendSnapshot(dt) {
     k: 'SNAP',
     t: r2(survival), st: stage, sT: r2(stageT), al: alive ? 1 : 0, ki: killCount,
     tr: Math.round(territoryArea), vi: victory ? 1 : 0,
+    fp: FINAL_PHASES.indexOf(finalPhase), fT: r2(finalT),
+    fw: finalWaveNo, er: endlessRound, eT: r2(endlessT),
     act: players.map((p) => (p.active ? 1 : 0)),
     ps: players.map((p) => [r2(p.x), r2(p.z), r2(p.faceX), r2(p.faceZ), Math.round(p.hp),
                             p.stunned ? 1 : 0, r2(p.rollT), r2(p.rollSpin), r2(p.cheese),
@@ -8649,6 +8776,12 @@ function applySnapshot(m) {
   lastSnapT = m.t;
   survival = m.t; stage = m.st; stageT = m.sT; killCount = m.ki;
   territoryArea = m.tr; victory = !!m.vi;
+  // 공세 상태도 호스트가 준 것을 그대로 쓴다 (D124) — 배너·계속하기 버튼이 여기에 달려 있다
+  if (m.fp !== undefined) {
+    finalPhase = FINAL_PHASES[m.fp] || 'none';
+    finalT = m.fT || 0; finalWaveNo = m.fw || 0;
+    endlessRound = m.er || 0; endlessT = m.eT || 0;
+  }
   // 게임의 끝은 호스트가 정한다. 클라는 오버레이 문구만 맞춰 준다
   const won = !!m.vi;
   if (!!m.al !== alive || won !== overlayWasVictory) {
@@ -8657,10 +8790,14 @@ function applySnapshot(m) {
     const done = won || !alive;
     overlayEl.classList.toggle('hidden', !done);
     if (done) {
-      overlayEl.querySelector('h1').textContent = won ? '톰을 막아냈다!' : '모두 잡혔다!';
-      document.getElementById('overlay-sub').textContent = won
-        ? `${MAPS[mapIndex].name} · ${survival.toFixed(0)}초 — ESC → 다시 시작`
-        : `스테이지 ${stage} · ${survival.toFixed(0)}초 생존 — ESC → 다시 시작`;
+      overlayEl.querySelector('h1').textContent = won
+        ? (endlessRound ? `무한 ${endlessRound}라운드 돌파!` : '톰을 막아냈다!')
+        : '모두 잡혔다!';
+      document.getElementById('overlay-sub').textContent = resultLine(won);
+      // 참가자도 계속하기를 누를 수 있다 — 명령이 호스트로 가서 라운드를 연다 (D124)
+      setOverlayContinue(won && finalPhase === 'won');
+    } else {
+      setOverlayContinue(false);
     }
   }
 
@@ -8916,18 +9053,25 @@ function captiveBanner() {
 
 function finalBanner() {
   if (finalPhase === 'prep') {
+    const total = endlessRound ? P.final.endlessPrep : P.final.prep;
     const left = Math.max(0, finalT);
-    const f = Math.max(0, Math.min(1, left / Math.max(P.final.prep, 0.01)));
-    const m = Math.floor(left / 60), sec = Math.floor(left % 60);
-    return `<div class="row"><div class="lbl"><span>준비 국면 — 방어선을 세우세요</span>` +
-      `<span>${m}:${String(sec).padStart(2, '0')} · [F] 앞당기기</span></div>` +
+    const f = Math.max(0, Math.min(1, left / Math.max(total, 0.01)));
+    const lbl = endlessRound
+      ? `무한 ${endlessRound}라운드 준비 — 방어선을 고치세요`
+      : '준비 국면 — 방어선을 세우세요';
+    return `<div class="row"><div class="lbl"><span>${lbl}</span>` +
+      `<span>${mmss(left)} · [F] 앞당기기</span></div>` +
       `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
       `background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
   }
   if (finalPhase === 'assault') {
-    const left = Math.max(0, P.final.duration - finalT);
-    const f = 1 - left / Math.max(P.final.duration, 0.01);
-    return `<div class="row"><div class="lbl"><span>최후의 공세</span>` +
+    const dur = finalDuration();
+    const left = Math.max(0, dur - finalT);
+    const f = 1 - left / Math.max(dur, 0.01);
+    // 몇 차까지 왔는지를 같이 보여 준다 (D124) — 남은 시간만으로는 압박이 안 읽힌다
+    const tag = endlessRound ? `무한 ${endlessRound}라운드` : '최후의 공세';
+    return `<div class="row"><div class="lbl">` +
+      `<span>${tag} — ${finalWaveNo}/${finalWaves()}차</span>` +
       `<span>${left.toFixed(0)}초 남음</span></div>` +
       `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%"></div></div></div>`;
   }
@@ -9374,6 +9518,11 @@ window.__game = {
   mudCells, ED_BRUSH, saveMapLocal, loadMapLocal, closeEditor, openEditor,
   get finalPhase() { return finalPhase; },
   get finalT() { return finalT; },
+  get finalWaveNo() { return finalWaveNo; },
+  get finalQueueLeft() { return finalQueue.length; },
+  get endlessRound() { return endlessRound; },
+  get endlessT() { return endlessT; },
+  finalWaves, finalDuration, startEndlessRound, loadBest,
   startFinalAssault, beginFinalPrep,
   set stageT(v) { stageT = v; },
   advanceStage, stageDur, hasWorkshop, depotCount, maxWorkshopTier, TOWER_TIERS, spawnBoss,
