@@ -4694,9 +4694,10 @@ function beginFinalPrep() {
   flashMsg(`톰을 모두 쓰러뜨렸다 — ${Math.round(P.final.prep / 60)}분 뒤 마지막이 온다. [F]로 앞당기기`, '#ffd24a');
 }
 
-// 플레이어가 직접 연다. 준비 시간에 제한이 없으므로 이 입력이 유일한 방아쇠다.
-// 공세는 **나눠서** 온다 (D123). 한 번에 쏟으면 첫 30초가 전투 전부고
-// 나머지 2분은 청소다 — 끝까지 압박이 이어져야 '버티기'가 된다.
+// 플레이어가 직접 연다 (F). 준비 시간이 다 되면 저절로 열린다.
+// 공세는 **정해진 차수만큼** 나눠 온다 (D124). 한 번에 쏟으면 첫 30초가 전투 전부고
+// 나머지는 청소다. 예전엔 25%씩 계속 흘렸는데(D123) 그건 반대로 **언제 끝나는지가
+// 안 읽혔다** — 차수로 세어야 남은 두 번이 곧 남은 위험이 된다.
 let finalQueue = [];     // 아직 안 나온 종류 목록
 let finalWaveT = 0;      // 다음 차수까지 남은 시계
 let finalWaveNo = 0;     // 지금까지 내보낸 차수 (1..finalWaves())
@@ -4865,6 +4866,10 @@ function updateBomberTrickle(dt) {
   // 계속할지 고르는 상태**가 됐다 — 그동안 자폭묘가 계속 와서 안 보이는 채로 벽을 갉았다.
   // updateStageTimer는 원래 victory를 봤는데 여기만 안 봤다.
   if (victory) return;
+  // 준비 국면도 마찬가지다 (D124). beginFinalPrep은 "쫓기지 않는 시간"이라며 잔챙이를
+  // 통째로 치우는데(D108), 여기가 40초쯤에 자폭묘를 하나 다시 넣고 있었다 —
+  // 치워 놓고 다시 넣으니 **치운 의미가 없다.** 무한 모드에서는 라운드마다 반복된다.
+  if (finalPhase === 'prep') return;
   if (P.bomber.every <= 0) return;
   if (stage < P.bomber.fromStage && !enraged()) return;
   bomberT += dt;
@@ -8798,6 +8803,10 @@ function applySnapshot(m) {
       overlayEl.querySelector('h1').textContent = won
         ? (endlessRound ? `무한 ${endlessRound}라운드 돌파!` : '톰을 막아냈다!')
         : '모두 잡혔다!';
+      // 참가자도 **자기 기록을** 남긴다 (D124). commitRecord는 호스트 경로에서만
+      // 불리는데, 무한 라운드와 버틴 시간은 이미 스냅샷으로 와 있다 —
+      // 여기서 안 부르면 같이 버틴 사람만 최고 기록이 영영 비어 있다.
+      commitRecord();
       document.getElementById('overlay-sub').textContent = resultLine(won);
       // 참가자도 계속하기를 누를 수 있다 — 명령이 호스트로 가서 라운드를 연다 (D124)
       setOverlayContinue(won && finalPhase === 'won');
