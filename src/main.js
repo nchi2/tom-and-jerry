@@ -375,7 +375,9 @@ const P = {
   //  drip    공세를 **나눠서** 내보낸다. 한 번에 쏟으면 첫 30초가 전부고 나머지는 청소다
   //  bomberEvery 공세 동안의 자폭묘 주기 (평소보다 짧다)
   final: { enabled: 1, boost: 1.3, wave: 3.0, duration: 150, bomberOneShot: 1,
-           prep: 180, bomberEvery: 9,
+           // 준비 5분 (D126). 3분은 짧았다 — 이 게임에서 **처음이자 유일하게
+           // 쫓기지 않는 시간**이고(D108), 계획해서 짓는 건 여기서만 할 수 있다
+           prep: 300, bomberEvery: 9,
            // 공세는 **딱 이 차수만큼** 나눠 온다 (D124). 예전엔 25%씩 계속 흘려서
            // 몇 번 남았는지가 안 읽혔다 — "3차 중 2차"가 보여야 버티는 그림이 된다
            waves: 3, waveGap: 40,
@@ -4691,7 +4693,7 @@ function beginFinalPrep() {
   finalPhase = 'prep';
   finalT = P.final.prep;   // 남은 준비 시간 (0이 되면 저절로 시작한다)
   clearEnemies();
-  flashMsg(`톰을 모두 쓰러뜨렸다 — ${Math.round(P.final.prep / 60)}분 뒤 마지막이 온다. [F]로 앞당기기`, '#ffd24a');
+  flashMsg(`톰을 모두 쓰러뜨렸다 — ${Math.round(P.final.prep / 60)}분 뒤 마지막이 온다. [B]로 지금 시작`, '#ffd24a');
 }
 
 // 플레이어가 직접 연다 (F). 준비 시간이 다 되면 저절로 열린다.
@@ -4794,7 +4796,7 @@ function startEndlessRound() {
   finalPhase = 'prep';
   finalT = P.final.endlessPrep;
   clearEnemies();
-  flashMsg(`무한 ${endlessRound}라운드 — ${Math.round(P.final.endlessPrep)}초 뒤 더 센 공세. [F]로 앞당기기`, '#ffd24a');
+  flashMsg(`무한 ${endlessRound}라운드 — ${Math.round(P.final.endlessPrep)}초 뒤 더 센 공세. [B]로 지금 시작`, '#ffd24a');
 }
 
 // ---- 기록 (D124) ----
@@ -5362,9 +5364,11 @@ window.addEventListener('keydown', (e) => {
     else setMenu(true);
   }
   if (e.code === 'KeyE' && alive) issueCommand({ t: 'mine' });
-  // F — 공방·경비탑 제자리 업그레이드 (R은 이미 재시작에 쓰인다)
-  // 준비 국면에서는 F가 **최후의 공세 시작**이다 (아래 참조) — 겹치지 않게 여기서 뺀다
-  if (e.code === 'KeyF' && alive && finalPhase !== 'prep') issueCommand({ t: 'f' });
+  // F — 공방·경비탑 제자리 업그레이드·수리. **언제나 이것 하나다** (D126).
+  // 예전엔 준비 국면에서만 F가 '최후의 공세 시작'으로 바뀌었다. 하필 준비 국면이
+  // **업그레이드를 제일 많이 하는 시간**이라, 공방을 올리려다 준비도 못 하고
+  // 공세를 열어 버렸다. 시작은 B로 갈랐다 (아래).
+  if (e.code === 'KeyF' && alive) issueCommand({ t: 'f' });
   // 0번 = 도발 (D96). 이 게임의 유일한 '공격'이다
   if ((e.code === 'Digit0' || e.code === 'Numpad0') && alive) issueCommand({ t: 'taunt' });
   // 건네주기 — 옆에 붙어야 넘어간다 (D96)
@@ -5411,7 +5415,9 @@ window.addEventListener('keydown', (e) => {
   // X = 철거 모드 토글 (핫바 슬롯을 안 잡아먹는다, D88)
   if (e.code === 'KeyX') { removeMode = !removeMode; if (removeMode) buildSlot = -1; updateHotbar(); }
   // 준비 국면에서만 F가 "최후의 공세 시작"이 된다 (평소 F는 건물 업그레이드)
-  if (e.code === 'KeyF' && finalPhase === 'prep') issueCommand({ t: 'final' });
+  // B — 준비를 끝내고 공세를 지금 연다 (D126). WASD에서 멀고 다른 데 안 쓰는 키다.
+  // 되돌릴 수 없는 데다 준비 5분을 통째로 날리는 입력이라, 손이 자주 가는 키에 두면 안 된다
+  if (e.code === 'KeyB' && finalPhase === 'prep') issueCommand({ t: 'final' });
 
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -6438,6 +6444,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.final, 'enabled', 0, 1, 1).name('★ 최후의 공세 (0=톰 잡으면 바로 승리)');
   f.add(P.final, 'boost', 1, 3, 0.05).name('공세 고양이 강화 배율');
   f.add(P.final, 'wave', 0.5, 8, 0.1).name('공세 물량 배율');
+  f.add(P.final, 'prep', 30, 600, 10).name('★ 준비 국면 시간(초)');
   f.add(P.final, 'waves', 1, 6, 1).name('★ 공세 차수 (몇 번에 나눠 오나)');
   f.add(P.final, 'waveGap', 10, 90, 5).name('★ 차수 간격(초)');
   f.add(P.final, 'duration', 30, 600, 10).name('공세 버티는 시간(초)');
@@ -6916,7 +6923,7 @@ const flashEl = document.getElementById('flash');
 let helpOpen = false;
 const HELP_FULL = [
   '── 조작 ──',
-  'WASD 이동 · Shift 앞구르기(무적, 기운 소모) · C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
+  'WASD 이동 · Shift 앞구르기(0.28초 **무적** 회피, 기운 34) · C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
   'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/업그레이드 · Q/Z 건네주기 · 0 도발',
   '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
@@ -6947,6 +6954,9 @@ const HELP_FULL = [
   '적은 앞을 노리고, 일부는 퇴로를 막고, 못 들어가는 틈 앞에서 기다린다',
   '오래 못 때리면 목표를 놓고 내 건물을 뜯으러 간다 — 숨는 건 공짜가 아니다',
   '10스테이지엔 보스 "톰"이 쳐들어온다. **처치해야 클리어**된다',
+  '톰을 둘 다 잡으면 **준비 국면 5분** — 쫓기지 않고 방어선을 계획해 짓는 유일한 시간이다',
+  '준비가 끝나면 **최후의 공세**가 3차에 걸쳐 온다. **B**를 누르면 기다리지 않고 지금 연다',
+  '한 번 막아내면 승리 확정. 거기서 **[계속하기]**를 누르면 라운드마다 더 세지고 버틴 시간이 기록된다',
   '',
   '── 협동 (2~4인, D92~D97) ──',
   '시작 화면에서 **2인 협동** 또는 **3~4인 협동** → 방 만들기(코드가 나온다) / 방 코드로 참가.',
@@ -9136,7 +9146,7 @@ function finalBanner() {
       ? `무한 ${endlessRound}라운드 준비 — 방어선을 고치세요`
       : '준비 국면 — 방어선을 세우세요';
     return `<div class="row"><div class="lbl"><span>${lbl}</span>` +
-      `<span>${mmss(left)} · [F] 앞당기기</span></div>` +
+      `<span>${mmss(left)} · [B] 지금 시작</span></div>` +
       `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
       `background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
   }
