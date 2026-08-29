@@ -2666,42 +2666,106 @@ function buildingAt(i, j) {
   return ob && ob.bldgRef ? ob.bldgRef : null;
 }
 
+// ---- 건물 생김새 (D135) ----
+// 예전엔 셋 다 **같은 상자**였다 (몸통 1.9×1.0×1.9 + 납작한 지붕, 색만 다름).
+// 색은 멀리서 안 읽히고 기능도 안 알려 준다 — 정현: "여전히 별로다".
+// **실루엣으로 가른다.** 멀리서 형태만 보고 뭔지 알아야 한다:
+//   창고  = 넓고 낮은 헛간 + 박공지붕 + 앞에 쌓인 치즈 (뭘 넣는 곳인지 보인다)
+//   공방  = 중간 높이 + **굴뚝** (D82 주석이 이미 "굴뚝이 자란다"고 약속했었다)
+//   경비탑 = 좁고 높게 + 총안 + 포탑 머리
+// 벽·바닥과 같은 텍스처를 옅게 입혀 새 배경과 묶는다.
+const bldgTex = () => (P.look.wallTex ? getBrickTex() : null);
+const BLDG_MAT = (color, opts = {}) =>
+  new THREE.MeshStandardMaterial({ color, roughness: 0.85, map: bldgTex(), ...opts });
+// 박공지붕·치즈에 쓰는 삼각기둥 (반지름 0.5·높이 1인 3각 실린더를 눕혀서 쓴다)
+const prismGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 3);
+
 function makeBuildingMesh(kind, owner) {
   const info = BLDG_INFO[kind];
   const g = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.9, 1.0, 1.9),
-    new THREE.MeshStandardMaterial({ color: info.body, roughness: 0.8 })
-  );
-  body.position.y = 0.5;
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(2.05, 0.28, 2.05),
-    new THREE.MeshStandardMaterial({
-      color: new THREE.Color(info.roof).lerp(new THREE.Color(OWNER_COLOR[owner] || 0xffffff), 0.55),
-      roughness: 0.9,
-    })
-  );
+  const ownCol = OWNER_COLOR[owner] || 0xffffff;
+  const roofCol = new THREE.Color(info.roof).lerp(new THREE.Color(ownCol), 0.55);
+  let body, roof, flagAt;
+
+  if (kind === 'depot') {
+    // 넓고 낮게 — "물건을 쌓아 두는 곳"
+    body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.8, 1.7), BLDG_MAT(info.body));
+    body.position.y = 0.4;
+    // 박공지붕 — 삼각기둥을 눕힌다
+    roof = new THREE.Mesh(prismGeo, BLDG_MAT(roofCol, { map: null }));
+    roof.scale.set(1.35, 2.15, 1.35);
+    roof.rotation.z = Math.PI / 2;      // 능선이 X축을 따라 눕는다
+    roof.rotation.y = Math.PI / 6;      // 삼각형 밑면이 수평이 되게
+    roof.position.y = 1.06;
+    g.add(body, roof);
+    // ★ 치즈 세 덩이 — 이 건물이 뭐 하는 곳인지 한눈에
+    const cheeseMat = BLDG_MAT(0xf0c040, { map: null, roughness: 0.6 });
+    for (const [x, y, z, sc] of [[-0.5, 0.22, -1.0, 0.42], [0.15, 0.2, -1.05, 0.36], [-0.18, 0.55, -0.98, 0.3]]) {
+      const w = new THREE.Mesh(prismGeo, cheeseMat);
+      w.scale.set(sc, sc * 1.5, sc);
+      w.rotation.x = Math.PI / 2;
+      w.position.set(x, y, z);
+      w.castShadow = true;
+      g.add(w);
+    }
+    flagAt = [0.85, 1.55, 0.72];
+  } else if (kind === 'workshop') {
+    body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.15, 1.8), BLDG_MAT(info.body));
+    body.position.y = 0.58;
+    roof = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.24, 1.95), BLDG_MAT(roofCol, { map: null }));
+    roof.position.y = 1.28;
+    g.add(body, roof);
+    // ★ 굴뚝 — 공방의 표식. 등급이 오르면 자란다 (applyBuildingTierVisual)
+    const stack = new THREE.Mesh(new THREE.BoxGeometry(0.34, 1.0, 0.34), BLDG_MAT(0x5a4a42));
+    stack.position.set(-0.55, 1.85, 0.55);
+    stack.castShadow = true;
+    g.add(stack);
+    g.userData.stack = stack;
+    flagAt = [0.72, 1.85, -0.6];
+  } else {
+    // 경비탑 — **좁고 높게.** 다른 둘보다 확실히 솟아야 "탑"으로 읽힌다
+    body = new THREE.Mesh(new THREE.BoxGeometry(1.15, 2.0, 1.15), BLDG_MAT(info.body));
+    body.position.y = 1.0;
+    // ★ 총안 — 꼭대기 네 귀퉁이. 등급 색이 여기 붙는다
+    roof = new THREE.Group();
+    const merlonGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    const merlonMat = BLDG_MAT(roofCol, { map: null });
+    for (const [x, z] of [[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45]]) {
+      const m = new THREE.Mesh(merlonGeo, merlonMat);
+      m.position.set(x, 0, z);
+      m.castShadow = true;
+      roof.add(m);
+    }
+    roof.position.y = 2.12;
+    // 등급 색을 한 곳에서 바꿀 수 있게 재질을 들려 둔다 (Group에는 material이 없다)
+    roof.material = merlonMat;
+    g.add(body, roof);
+    flagAt = [0.62, 2.6, 0.62];
+  }
+
+  body.castShadow = body.receiveShadow = true;
+  if (roof.isMesh) roof.castShadow = true;
+  g.userData.body = body;
+  // ⚠ 예전엔 `b.mesh.children[1]`로 지붕을 찾았다. 종류마다 구성이 달라진 지금은
+  // 그 인덱스가 깨진다 — 이름표로 들고 다닌다
+  g.userData.roof = roof;
+
   // 소유자 깃대 — 멀리서도 누구 건물인지 보이게
   const flag = new THREE.Mesh(
-    new THREE.BoxGeometry(0.16, 0.9, 0.16),
+    new THREE.BoxGeometry(0.14, 0.8, 0.14),
     new THREE.MeshStandardMaterial({
-      color: OWNER_COLOR[owner] || 0xffffff,
-      emissive: new THREE.Color(OWNER_COLOR[owner] || 0xffffff), emissiveIntensity: 0.45,
+      color: ownCol, emissive: new THREE.Color(ownCol), emissiveIntensity: 0.45,
     })
   );
-  flag.position.set(0.78, 1.7, 0.78);
+  flag.position.set(flagAt[0], flagAt[1], flagAt[2]);
   flag.castShadow = true;
   g.add(flag);
-  roof.position.y = 1.14;
-  body.castShadow = roof.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body, roof);
-  g.userData.body = body;
+
   if (kind === 'tower') {
     // 포탑 머리 — 조준 대상 쪽으로 돈다 (연출 전용)
     const head = new THREE.Group();
     const dome = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 14, 10),
+      new THREE.SphereGeometry(0.46, 14, 10),
       new THREE.MeshStandardMaterial({ color: 0xb9aee8, roughness: 0.5 })
     );
     dome.castShadow = true;
@@ -2715,7 +2779,7 @@ function makeBuildingMesh(kind, owner) {
     horn.rotation.x = -Math.PI / 2;
     horn.position.z = -0.7;
     head.add(dome, horn);
-    head.position.y = 1.5;
+    head.position.y = 2.42;
     g.add(head);
     g.userData.head = head;
   }
@@ -2751,12 +2815,12 @@ function applyBuildingTierVisual(b) {
     pips.add(p);
   }
   // 포탑(경비탑 Lv.3은 y≈2.2까지 올라온다)보다 확실히 위 — 어디서도 안 가려진다
-  pips.position.y = 3.1;
+  pips.position.y = b.kind === 'tower' ? 3.9 : 2.4;
   b.mesh.add(pips);
   b.pips = pips;
 
   // --- 2. 지붕 색 ---
-  const roof = b.mesh.children[1];
+  const roof = b.mesh.userData.roof;
   roof.material.color.setHex(col);
   if (!roof.material.emissive) roof.material.emissive = new THREE.Color(col);
   else roof.material.emissive.setHex(col);
@@ -2764,9 +2828,15 @@ function applyBuildingTierVisual(b) {
 
   // --- 3. 기하: 등급마다 한 층 (Lv.1은 없음) ---
   if (b.tiers) { b.mesh.remove(b.tiers); b.tiers.traverse((o) => o.material?.dispose?.()); }
+  // 굴뚝은 등급만큼 자란다 — D82 주석이 약속했던 것 (D135에서 실제로 구현)
+  if (b.kind === 'workshop' && b.mesh.userData.stack) {
+    const st = b.mesh.userData.stack;
+    st.scale.y = 1 + (tier - 1) * 0.55;
+    st.position.y = 1.85 + (tier - 1) * 0.28;
+  }
   const stack = new THREE.Group();
   const stackMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.65, metalness: 0.25 });
-  for (let k = 1; k < tier; k++) {
+  for (let k = 1; k < tier && b.kind !== 'tower'; k++) {
     const s = new THREE.Mesh(tierGeo, stackMat);
     s.scale.setScalar(1 - (k - 1) * 0.18);
     s.position.y = 1.3 + (k - 1) * 0.36;
@@ -2780,7 +2850,7 @@ function applyBuildingTierVisual(b) {
   if (b.kind === 'tower' && b.mesh.userData.head) {
     const head = b.mesh.userData.head;
     head.scale.setScalar(1 + (tier - 1) * 0.3);
-    head.position.y = 1.5 + (tier - 1) * 0.36;
+    head.position.y = 2.42 + (tier - 1) * 0.3;
     const horn = head.children[1];
     horn.material.emissiveIntensity = 0.5 + (tier - 1) * 0.6;
     horn.material.color.setHex(tier >= 3 ? 0xffd9a0 : 0xe6e0ff);
