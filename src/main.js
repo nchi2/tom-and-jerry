@@ -46,8 +46,10 @@ const P = {
     // 실패 횟수만큼 간격을 늘린다. 벽이 바뀌면(= 세상이 바뀌면) 즉시 0으로 되돌린다.
     pathFailBackoff: 6,
     // 우는 고양이 밈 (D132) — 0 끔 · 1 순찰묘만 · 2 고양이 전부 · 3 톰만.
-    // **기본은 꺼 둔다.** 정현이 보고 "원래 걸로 롤백, 디자인은 남겨만 두자"고 했다.
-    // 모양은 스폰할 때 정해지므로 **재시작해야 반영된다**
+    // **꺼져 있다. 튜닝 패널에서도 뺐다.** 정현이 "원래 걸로 롤백, 디자인은
+    // 남겨만 두라"고 했고, 그 뒤 다시 "빼라"고 했다 — 게임에서는 완전히 안 보인다.
+    // 코드는 `makeCryCat`과 함께 남겨 둔다(설계 기록). 되살리려면 여기를 1로 두고
+    // 슬라이더를 다시 붙이면 된다
     cryCat: 0,
     spawnDelay: 12,
     spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
@@ -6990,7 +6992,6 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.wall, 'castTime', 0, 2, 0.05).name('벽 짓는 시간(무방비)');
   f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
   f.add(P.enemy, 'pathPerFrame', 0, 60, 1).name('프레임당 길찾기 상한 (0=무제한)');
-  f.add(P.enemy, 'cryCat', 0, 3, 1).name('★ 우는 고양이 (0끔·1순찰묘·2전부·3톰) — 재시작부터');
   f.add(P.look, 'floorTex', 0, 1, 1).name('★ 바닥 타일 (0=예전 단색+격자)').onChange(rebakeTextures);
   f.add(P.look, 'wallTex', 0, 1, 1).name('★ 벽돌 벽 (0=민무늬)').onChange(rebakeTextures);
   f.add(P.look, 'tileTone', 0, 0.4, 0.01).name('타일 대비').onChange(rebakeTextures);
