@@ -110,7 +110,11 @@ window.__perfBaseline = {
   maxEnemyMeshes: 2,         // GLB 병합 결과 마리당 1 (여유 1)
   maxCallsSteady: 470,       // 그림자 갱신 없는 프레임
   maxCallsShadow: 800,       // 그림자 갱신 프레임
-  maxTickP95: 14,            // ms
+  // ⚠ tick은 **기기 부하에 크게 흔들린다.** 같은 빌드가 4ms도 14ms도 나온다
+  //    (함정 8). 그래서 상한을 느슨하게 둔다 — 진짜 회귀(예: A* 예산을 없애면
+  //    115ms까지 갔다)는 여전히 걸리고, 잡음으로는 안 걸린다.
+  //    **믿을 신호는 draw call과 구조 검사다** — 그쪽은 기기와 무관하다.
+  maxTickP95: 25,            // ms (참고용. 걸리면 짝지어 다시 재 볼 것)
 };
 
 window.__perfGuard = async (opts = {}) => {

@@ -298,6 +298,15 @@ const P = {
     splashFrac: 0.6,                 // 튄 피해는 본체의 이 비율
     stagePoints: 1, maxPoints: 10,   // 스테이지마다 1점, 최대 10점
   },
+  // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
+  look: {
+    floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
+    wallTex: 1,       // 벽돌 벽
+    // 대비. 처음엔 0.12/0.18로 뒀는데 **바닥이 어두워서(0x2b3040) 안 보였다**.
+    // 회색조 텍스처는 바닥색에 곱해지므로, 바닥이 어두우면 그만큼 죽는다
+    tileTone: 0.30,   // 타일 대비 (0이면 민무늬)
+    brickTone: 0.26,  // 벽돌 대비
+  },
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
            inset: 0.3, refundRatio: 0.5,
            // 경비탑 원격 착공 사거리(m). **0 = 무제한** (D128).
@@ -737,6 +746,98 @@ const shadowDirty = () => { sun.shadow.needsUpdate = true; };
 const groundGroup = new THREE.Group();
 scene.add(groundGroup);
 
+// ============================================================
+// 절차적 텍스처 (D134)
+//  캔버스로 굽는다. 파일을 안 받는 이유는 셋:
+//   1. 게임 색에서 직접 뽑으므로 **스타일이 무조건 맞는다**
+//      (Kenney의 Retro 팩을 실제로 열어 보니 어둡고 사실적인 중세 마을이라
+//       이 밝은 만화풍과 정면으로 충돌했다. 태그만 보고 고르면 이렇게 된다)
+//   2. 파일이 없다 = 용량 0, 라이선스 0
+//   3. 인게임 슬라이더로 즉시 조절
+//
+//  ⚠ **반드시 불투명**이어야 한다. 알파가 있으면 그림자 패스가 alphaTest를 타서
+//     D127에서 잡아 둔 그림자 비용이 도로 올라간다.
+//  ⚠ **회색조로 굽는다.** 벽은 재질이 하나(InstancedMesh)라 소유자 색을
+//     인스턴스 색이 곱해야 하고, 바닥도 맵마다 색이 다르다.
+//     텍스처가 색을 들고 있으면 그 둘이 죽는다.
+// ============================================================
+const texCanvas = (n) => {
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  return c;
+};
+const finishTex = (c, repeat) => {
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeat, repeat);
+  t.anisotropy = 4;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+};
+
+// 바닥 타일 — 한 칸이 정확히 격자 한 칸이 되게 굽는다.
+// 그래서 GridHelper를 지울 수 있다 (draw call 하나 덜고 보기도 낫다).
+function makeFloorTexture() {
+  const N = 128, c = texCanvas(N), g = c.getContext('2d');
+  const tone = P.look.tileTone;
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, N, N);
+  // 타일마다 아주 살짝 다른 밝기 — 완전히 균일하면 플라스틱처럼 보인다
+  const cells = 2;              // 텍스처 한 장 = 2×2 칸 (이음매가 덜 티 난다)
+  const s = N / cells;
+  for (let j = 0; j < cells; j++)
+    for (let i = 0; i < cells; i++) {
+      const v = 1 - tone * (((i + j) % 2) * 0.55 + Math.random() * 0.35);
+      g.fillStyle = `rgb(${(255 * v) | 0},${(255 * v) | 0},${(255 * v) | 0})`;
+      g.fillRect(i * s, j * s, s, s);
+    }
+  // 줄눈 — 격자선을 대신한다
+  const m = Math.max(1, Math.round(N * 0.012));
+  g.strokeStyle = `rgba(0,0,0,${0.10 + tone})`;
+  g.lineWidth = m;
+  for (let k = 0; k <= cells; k++) {
+    const p = k * s;
+    g.beginPath(); g.moveTo(p, 0); g.lineTo(p, N); g.stroke();
+    g.beginPath(); g.moveTo(0, p); g.lineTo(N, p); g.stroke();
+  }
+  return finishTex(c, CELLS / cells);
+}
+
+// 벽돌 — 원기둥에 감긴다. u가 둘레, v가 높이다.
+function makeBrickTexture() {
+  const N = 128, c = texCanvas(N), g = c.getContext('2d');
+  const tone = P.look.brickTone;
+  const rows = 5, cols = 4;             // 둘레 4장 × 높이 5줄
+  const bw = N / cols, bh = N / rows;
+  g.fillStyle = `rgb(${(255 * (1 - tone * 1.5)) | 0},${(255 * (1 - tone * 1.5)) | 0},${(255 * (1 - tone * 1.5)) | 0})`;
+  g.fillRect(0, 0, N, N);               // 줄눈(어두운 바탕)
+  const mortar = Math.max(1, Math.round(N * 0.02));
+  for (let r = 0; r < rows; r++) {
+    // 줄마다 반 장씩 어긋나게 — 이게 없으면 격자무늬지 벽돌이 아니다
+    const off = (r % 2) * (bw / 2);
+    for (let k = -1; k <= cols; k++) {
+      const v = 1 - tone * (0.15 + Math.random() * 0.5);
+      g.fillStyle = `rgb(${(255 * v) | 0},${(255 * v) | 0},${(255 * v) | 0})`;
+      g.fillRect(k * bw + off + mortar / 2, r * bh + mortar / 2, bw - mortar, bh - mortar);
+    }
+  }
+  const t = finishTex(c, 1);
+  t.repeat.set(1, 1);                   // 기둥 하나에 한 장
+  return t;
+}
+
+let floorTex = null, brickTex = null;
+const getFloorTex = () => (floorTex ||= makeFloorTexture());
+const getBrickTex = () => (brickTex ||= makeBrickTexture());
+// 색조 슬라이더를 만지면 다시 굽는다
+function rebakeTextures() {
+  floorTex?.dispose(); brickTex?.dispose();
+  floorTex = brickTex = null;
+  for (const im of [postIM, crackIM, bedIM])
+    if (im) { im.material.map = P.look.wallTex ? getBrickTex() : null; im.material.needsUpdate = true; }
+  buildGround(MAPS[mapIndex].floor, MAPS[mapIndex].gridColor);
+}
+
 function buildGround(floorColor, gridColor) {
   while (groundGroup.children.length) {
     const c = groundGroup.children.pop();
@@ -744,18 +845,26 @@ function buildGround(floorColor, gridColor) {
     c.geometry?.dispose?.();
     if (c.material) (Array.isArray(c.material) ? c.material : [c.material]).forEach((m) => m.dispose());
   }
+  const useTex = !!P.look.floorTex;
   const fl = new THREE.Mesh(
     new THREE.PlaneGeometry(CELLS * CS, CELLS * CS),
-    new THREE.MeshStandardMaterial({ color: floorColor, roughness: 1 })
+    new THREE.MeshStandardMaterial({
+      color: floorColor, roughness: 1,
+      map: useTex ? getFloorTex() : null,   // 회색조라 floorColor가 그대로 산다
+    })
   );
   fl.rotation.x = -Math.PI / 2;
   fl.receiveShadow = true;
   groundGroup.add(fl);
-  const gh = new THREE.GridHelper(CELLS * CS, CELLS, gridColor, gridColor);
-  gh.material.opacity = 0.5;
-  gh.material.transparent = true;
-  gh.position.y = 0.01;
-  groundGroup.add(gh);
+  // 텍스처에 줄눈이 들어 있으면 격자선을 따로 그릴 이유가 없다 —
+  // 보기도 낫고 draw call도 하나 준다
+  if (!useTex) {
+    const gh = new THREE.GridHelper(CELLS * CS, CELLS, gridColor, gridColor);
+    gh.material.opacity = 0.5;
+    gh.material.transparent = true;
+    gh.position.y = 0.01;
+    groundGroup.add(gh);
+  }
   resizeTerritoryOverlay();
 
   shadowDirty();
@@ -871,11 +980,19 @@ function makeWallIM(geo, mat, cap) {
 
 function ensureWallIMs() {
   if (postIM) return;
-  postIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }), WALL_INST_CAP);
-  crackIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.9, emissive: new THREE.Color(0x772222), emissiveIntensity: 0.45,
+  // ⚠ 텍스처는 **셋이 같은 것을 공유**한다. 벽마다 다른 텍스처를 쓰면
+  // InstancedMesh가 쪼개져 D131이 통째로 무효가 된다
+  const tex = () => (P.look.wallTex ? getBrickTex() : null);
+  postIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.9, map: tex(),
   }), WALL_INST_CAP);
-  bedIM = makeWallIM(wallGeo, new THREE.MeshStandardMaterial({ color: 0x4a4f5c, roughness: 0.9 }), WALL_INST_CAP);
+  crackIM = makeWallIM(postGeo, new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.9, map: tex(),
+    emissive: new THREE.Color(0x772222), emissiveIntensity: 0.45,
+  }), WALL_INST_CAP);
+  bedIM = makeWallIM(wallGeo, new THREE.MeshStandardMaterial({
+    color: 0x4a4f5c, roughness: 0.9, map: tex(),
+  }), WALL_INST_CAP);
 }
 
 // 벽 하나의 **보이는 상태**. 예전엔 이게 전부 mesh.scale / mesh.material에 있었다
@@ -6874,6 +6991,10 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.build, 'remoteRange', 0, 40, 1).name('★ 경비탑 원격 착공 사거리 (0=무제한)');
   f.add(P.enemy, 'pathPerFrame', 0, 60, 1).name('프레임당 길찾기 상한 (0=무제한)');
   f.add(P.enemy, 'cryCat', 0, 3, 1).name('★ 우는 고양이 (0끔·1순찰묘·2전부·3톰) — 재시작부터');
+  f.add(P.look, 'floorTex', 0, 1, 1).name('★ 바닥 타일 (0=예전 단색+격자)').onChange(rebakeTextures);
+  f.add(P.look, 'wallTex', 0, 1, 1).name('★ 벽돌 벽 (0=민무늬)').onChange(rebakeTextures);
+  f.add(P.look, 'tileTone', 0, 0.4, 0.01).name('타일 대비').onChange(rebakeTextures);
+  f.add(P.look, 'brickTone', 0, 0.5, 0.01).name('벽돌 대비').onChange(rebakeTextures);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
   f.add(P.atk, 'cooldown', 0.1, 2, 0.05).name('★ 내 공격 쿨다운');
@@ -10232,6 +10353,7 @@ window.__game = {
   get PLAYER_SPAWN() { return PLAYER_SPAWN; }, get ENEMY_SPAWN() { return ENEMY_SPAWN; },
   flattenModel, modelCache, MODEL_URL, GLTFLoader,
   makeCryCat, makeCat, makeHamster,
+  rebakeTextures, getFloorTex, getBrickTex,
   prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
   syncWallInstances, get wallIMs() { return { postIM, crackIM, bedIM }; },
   removeObstacle, applyCrackVisual, crackWall, updateWallColor,
