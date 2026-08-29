@@ -47,6 +47,26 @@
       color: #0d1117; background: #8fe0a0; border-radius: 4px;
       padding: 0 5px; font-weight: 700;
     }
+    /* 기운 (D137) — Shift를 지금 쓸 수 있는지가 한눈에 보여야 한다.
+       예전엔 백틱으로 꺼지는 개발 HUD에만 있었다 (D118의 미니맵과 같은 실수). */
+    #res .stamina { border-color: #2f5570; font-size: 12px; }
+    #res .stamina .sbar {
+      position: relative; width: 68px; height: 9px; border-radius: 5px;
+      background: #232a3a; overflow: hidden; display: inline-block;
+    }
+    #res .stamina .sbar i {
+      position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px;
+      background: linear-gradient(90deg, #4f8fd0, #8fd6ff); transition: width .08s linear;
+    }
+    /* 눈금 = 구르기 한 번분. 이 선을 넘겨야 구를 수 있다 */
+    #res .stamina .sbar u {
+      position: absolute; top: -1px; bottom: -1px; width: 2px;
+      background: rgba(255,255,255,.75);
+    }
+    #res .stamina .rate { color: #8fd6ff; }
+    #res .stamina.dry { border-color: #7a4030; }
+    #res .stamina.dry .sbar i { background: linear-gradient(90deg, #8a4a3a, #d98a70); }
+    #res .stamina .warn { color: #e0a050; font-size: 11px; }
     /* 내 땅 안에 서 있으면 테두리가 살아난다 — 지금 혜택을 받는 중이라는 표시 */
     #res .terr.inside { border-color: #8fe0a0; background: rgba(24, 48, 32, .9); }
     body.gui-on #res, body.gui-on #net { right: 268px; }

@@ -51,7 +51,11 @@ const P = {
     // 코드는 `makeCryCat`과 함께 남겨 둔다(설계 기록). 되살리려면 여기를 1로 두고
     // 슬라이더를 다시 붙이면 된다
     cryCat: 0,
-    spawnDelay: 12,
+    // 12 → **30초** (D137). 두 사람이 같은 말을 했다: "시작하고 적이 너무 빨리 쫓아와서
+    // 여유가 없다." 정현은 익숙해서 넘겼지만 처음 하는 사람에게는 배울 시간이 없다.
+    // ⚠ 이건 **임시 조치**다 — 제대로 된 답은 난이도(easy/normal/hard)를 가르는 것이고,
+    //    그건 04-백로그.md에 있다.
+    spawnDelay: 30,
     spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
     // 사방 등장 (D110)
     spawnRing: 34,         // 맵 중앙에서 이만큼 떨어진 둘레에 선다
@@ -164,7 +168,9 @@ const P = {
   bomber: { radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
             blastRadius: 2.55, fuse: 0.9,
             // 상시 보충 (D121) — 이 주기마다 한 마리씩, maxLive까지
-            every: 22, maxLive: 3, fromStage: 5 },
+            every: 22, maxLive: 3, fromStage: 5,
+            // 벽에 **닿기만 하면** 터진다 (D137). 0이면 예전처럼 "막혔을 때만".
+            hitWallAlways: 1 },
   // 보스 "톰" — 10스테이지에 쳐들어온다 (D83). 위협 레벨 스케일링에서 제외된
   // 고정 스탯으로 승부한다 (typeMaxHp·건물 dps 가산 둘 다 boss는 예외 처리).
   // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
@@ -207,7 +213,9 @@ const P = {
   //   폭발은 벽을 없애는 대신 **금을 낸다.** crackMax번까지는 버티고, 그 다음 폭발에 무너진다.
   //   금 간 벽은 **F로 수리**한다 (repairCost). 자폭묘 하나로 방어선이 뚫리던 걸 막고,
   //   대신 "터진 자리를 제때 메우는" 유지 노동을 만든다.
-  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 2.0, post: 1.0,
+  // range 2.0 → **3.0** (D137, 정현 "짓는 범위를 1.5배로").
+  // 쫓기면서 세우는 게임이라 사거리가 곧 여유다.
+  wall: { cost: 1, removeCost: 1, cooldown: 0.05, height: 2.0, range: 3.0, post: 1.0,
           // crackMax = 폭발을 **몇 번까지 버티는가** (D90 → D107).
           // 1이면 첫 폭발은 금만 가고 **두 번째 폭발에 무너진다.**
           castTime: 0.3, crackMax: 1, repairCost: 2 },
@@ -308,6 +316,8 @@ const P = {
     // 회색조 텍스처는 바닥색에 곱해지므로, 바닥이 어두우면 그만큼 죽는다
     tileTone: 0.30,   // 타일 대비 (0이면 민무늬)
     brickTone: 0.26,  // 벽돌 대비
+    // 느린 기계에서 **스스로 화질을 낮춘다** (D137). 0이면 항상 '높음'으로 고정.
+    autoQuality: 1,
   },
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
            inset: 0.3, refundRatio: 0.5,
@@ -2540,6 +2550,73 @@ function refreshTerritory() {
   }
   territory = out;
   territoryArea = n * navRes * navRes;
+  assignTerritoryOwners();
+}
+
+// ---- 영토의 주인 (D137) ----
+// D86은 영토를 **하나의 덩어리**로만 셌다 ("누가 만들었는지 구분할 필요가 없다").
+// 솔로에서는 맞는 말이었지만 멀티에서는 그게 버그가 된다 —
+// 정현: "친구가 먹은 영역이 내 땅에 편입되고, 나만 이득을 보고
+//        친구는 벽을 가로막아도 영역 구분이 안 됐다."
+// 수입도 **벽 개수 비율**로 나눠서, 벽을 많이 쌓은 쪽이 남이 막아 놓은 땅까지 먹었다.
+//
+// 규칙: **가장 가까운 벽의 주인이 그 칸의 주인이다.**
+// 벽들에서 동시에 퍼져 나가는 BFS 한 번이면 나온다(먼저 닿는 쪽이 임자).
+// 지형만으로 둘러싸여 어느 벽에도 안 닿는 칸은 주인이 없다 — 아무도 못 먹는다.
+let territoryOwn = null;          // Uint8Array — 칸마다 소유자 인덱스 (255 = 주인 없음)
+let territoryAreaBy = [0, 0, 0, 0];
+let terrBFS = null;
+
+function assignTerritoryOwners() {
+  const N = NAV * NAV;
+  const own = new Uint8Array(N).fill(255);
+  if (!terrBFS || terrBFS.length < N) terrBFS = new Int32Array(N);
+  let head = 0, tail = 0;
+  // 씨앗: 벽과 건물. 자기 구조물 둘레가 자기 땅이 된다
+  const seed = (i, j, oi) => {
+    for (let dj = 0; dj < NAVPC; dj++)
+      for (let di = 0; di < NAVPC; di++) {
+        const nx = i * NAVPC + di, nz = j * NAVPC + dj;
+        if (nx < 0 || nz < 0 || nx >= NAV || nz >= NAV) continue;
+        const idx = nz * NAV + nx;
+        if (own[idx] !== 255) continue;
+        own[idx] = oi;
+        terrBFS[tail++] = idx;
+      }
+  };
+  for (const ob of obstacles.values()) {
+    if (ob.bedrock) continue;
+    const owner = ob.bldgRef ? ob.bldgRef.owner : ob.owner;
+    const oi = OWNERS.indexOf(owner);
+    if (oi >= 0) seed(ob.i, ob.j, oi);
+  }
+  // 벽에서 바깥으로 퍼진다 — **영토 칸만** 밟는다
+  while (head < tail) {
+    const cur = terrBFS[head++];
+    const cx = cur % NAV, cz = (cur / NAV) | 0;
+    const o = own[cur];
+    for (let d = 0; d < 4; d++) {
+      const nx = cx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+      const nz = cz + (d === 2 ? 1 : d === 3 ? -1 : 0);
+      if (nx < 0 || nz < 0 || nx >= NAV || nz >= NAV) continue;
+      const ni = nz * NAV + nx;
+      if (own[ni] !== 255 || !territory[ni]) continue;
+      own[ni] = o;
+      terrBFS[tail++] = ni;
+    }
+  }
+  territoryOwn = own;
+  const by = [0, 0, 0, 0];
+  for (let k = 0; k < N; k++) if (territory[k] && own[k] !== 255) by[own[k]]++;
+  const a = navRes * navRes;
+  territoryAreaBy = by.map((c) => c * a);
+}
+
+// 내 영토 넓이(㎡). 솔로에서는 전체와 같다
+function myTerritoryArea(p = localPlayer()) {
+  const oi = OWNERS.indexOf(p.owner);
+  if (oi < 0 || !territoryOwn) return territoryArea;
+  return territoryAreaBy[oi] || 0;
 }
 
 const inTerritory = (x, z) => !!(territory && territory[worldToNav(x, z)]);
@@ -3204,20 +3281,12 @@ function updateWallOrder(dt, p = player) {
     if (p.cheese < P.wall.cost) { clearWallOrders('치즈가 부족해 벽 명령을 취소', p); return; }
     const w = cellToWorld(o.i, o.j);
     const dCen = Math.hypot(w.x - p.x, w.z - p.z);
-    const tooClose = P.wall.post / 2 + P.player.radius + 0.15;
 
-    // 1) 내가 그 자리에 서 있으면 **살짝 비켜선다** (원작 프로브가 자리를 내주듯)
-    if (dCen < tooClose) {
-      let ax = p.x - w.x, az = p.z - w.z;
-      const al = Math.hypot(ax, az);
-      if (al < 1e-4) { ax = p.faceX || 1; az = p.faceZ || 0; }
-      else { ax /= al; az /= al; }
-      const gx = clamp(w.x + ax * (tooClose + 0.2), -HALF + 1, HALF - 1);
-      const gz = clamp(w.z + az * (tooClose + 0.2), -HALF + 1, HALF - 1);
-      stepToward(gx, gz, 0.12, dt, p);
-      p.wallCast = null;
-      return;
-    }
+    // **내 몸에 겹쳐도 그냥 짓는다** (D137). 예전엔 여기서 "살짝 비켜선다"를 먼저
+    // 했는데, 겹친 채로 계속 서 있으면 비켜서기만 반복하고 **영원히 안 지어졌다**.
+    // 쫓기는 중에는 그 자리를 내주기가 어려워서 사실상 발밑에 못 세웠다.
+    // 지금은 그냥 세우고, 물리(collideWithObstacles)가 나를 기둥 밖으로 밀어낸다 —
+    // 어차피 벽은 원기둥이라 밀려나는 거리가 짧다.
     // 2) 아직 멀면 걸어간다
     if (dCen > P.wall.range) {
       // 목표가 아니라 **시공 자리**로 간다 (D67). 0.4초마다 다시 고른다.
@@ -5734,8 +5803,17 @@ function updateEnemy(enemy, dt) {
         if (!ob || ob.bedrock || ob.bldgRef) continue;
         if (distToObstacle(enemy, ob) <= reach) { blockingWall = ob; break; }
       }
-    // 길이 뚫려 있으면(추격 중) 굳이 안 터진다 — 막혔을 때만
-    if (blockingWall && enemy.aiMode === '추격' && enemy.stallT < 0.3) blockingWall = null;
+    // **닿으면 터진다** (D137). 예전엔 "막혔을 때만"이었다:
+    //   `if (blockingWall && aiMode === '추격' && stallT < 0.3) blockingWall = null;`
+    // 그런데 자폭묘는 이제 다른 적에게 안 밀리므로(D128) 정체를 안 하고,
+    // 그래서 **벽에 닿고도 그냥 지나쳐 버렸다** (실측: 6.5m 앞에서 출발해
+    // 벽을 통과해 17m를 더 갔는데도 안 터짐).
+    // 예전에 "차례를 기다렸다 터지는" 것처럼 보인 것도 같은 원인이다 —
+    // 남에게 밀려 정체될 때까지 기다렸던 것이다.
+    // 이제 무리를 통과해 곧장 벽에 붙어 터진다. 이게 D121이 말한
+    // "벽을 부술 수 있는 유일한 상시 수단"의 실제 동작이다.
+    if (blockingWall && !P.bomber.hitWallAlways
+        && enemy.aiMode === '추격' && enemy.stallT < 0.3) blockingWall = null;
   }
   if (enemy.type === 'bomber' && (hitTarget || bldgTarget || blockingWall)) {
     // 점화: fuse 동안 부풀었다가 터진다 (피할 시간을 준다)
@@ -7635,14 +7713,9 @@ renderHelp();
 // 2P에서는 수입이 **내 벽 비율만큼**이므로(D95) 화면에도 내 몫을 보여준다.
 // "같이 벌고 있다"가 아니라 "내가 쌓은 만큼 번다"가 읽혀야 한다.
 function myTerritoryRate(me) {
-  if (P.res.terrIncome <= 0 || territoryArea <= 0) return 0;
-  const total = territoryArea * P.res.terrIncome;
-  const share = humans();
-  if (share.length <= 1) return total;
-  let mine = 0, all = 0;
-  for (const ob of obstacles.values())
-    if (!ob.bedrock && !ob.bldgRef) { all++; if (ob.owner === me.owner) mine++; }
-  return all ? total * (mine / all) : total / share.length;
+  if (P.res.terrIncome <= 0) return 0;
+  // 내 땅 넓이 × 단가. 벽 개수 비율로 어림잡던 걸 걷어냈다 (D137)
+  return myTerritoryArea(me) * P.res.terrIncome;
 }
 
 function updateRes() {
@@ -7652,12 +7725,28 @@ function updateRes() {
   // 영토가 **뭘 해 주는지**를 숫자로 붙인다 (D118). 넓이만 보여주면
   // "그래서 내가 뭘 얻고 있는데?"에 답이 안 된다. 지금 서 있는 곳까지 표시한다.
   const total = rate + P.res.idleIncome;
+  // ---- 기운 (D137) ----
+  // 예전엔 좌상단 **개발 HUD**에만 있었다. 그건 백틱으로 끄는 디버그 오버레이라,
+  // 끄는 순간 "Shift를 지금 쓸 수 있나"를 알 방법이 사라진다.
+  // D118에서 미니맵이 똑같은 이유로 hudOn에 묶여 있다가 떨어져 나왔다 — 같은 실수다.
+  // 구르기 한 번분(stamRoll)에 눈금을 박아 **"지금 구를 수 있나"가 한눈에** 보이게 한다.
+  const stamF = Math.max(0, Math.min(1, me.stamina / P.player.stamMax));
+  const canRoll = me.stamina >= P.player.stamRoll;
+  const rollMark = (P.player.stamRoll / P.player.stamMax) * 100;
   resEl.innerHTML =
+    `<div class="r stamina${canRoll ? '' : ' dry'}">` +
+      `<span class="ic">⚡</span>` +
+      `<span class="sbar"><i style="width:${(stamF * 100).toFixed(0)}%"></i>` +
+      `<u style="left:${rollMark.toFixed(0)}%"></u></span>` +
+      `<b class="rate">${Math.ceil(me.stamina)}</b>` +
+      (canRoll ? '' : '<b class="warn">숨참</b>') + '</div>' +
     `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}` +
     (total > 0 ? `<b class="rate">+${total.toFixed(1)}/s</b>` : '') + '</div>' +
-    (territoryArea > 0
+    // **내 땅만** 센다 (D137). 예전엔 전체 덩어리를 보여줘서, 친구가 막아 놓은
+    // 땅까지 내 숫자에 들어왔다
+    (myTerritoryArea(me) > 0
       ? `<div class="r terr${inside ? ' inside' : ''}"><span class="ic">🌿</span>` +
-        `${territoryArea.toFixed(0)}㎡` +
+        `${myTerritoryArea(me).toFixed(0)}㎡` +
         `<b class="rate">치즈 +${rate.toFixed(1)}/s</b>` +
         `<b class="stam">기운 ×${P.player.terrStamMul}</b>` +
         (inside ? '<b class="here">내 땅 안</b>' : '') + '</div>'
@@ -9987,11 +10076,13 @@ function updateHUD() {
     `체력 ${bar(me.hp, P.player.hp, '█', '░')} ${Math.ceil(me.hp)}\n` +
     `기운 ${bar(me.stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(me.stamina)}` +
     (inTerritory(me.x, me.z) ? '  🌿내 땅' : '') + '\n' +
-    // 영토 (D86) — 벽으로 감싸 고양이가 못 오게 만든 땅의 넓이
-    `영토 ${territoryArea.toFixed(0)}㎡` +
+    // 영토 (D86 → D137) — **내 땅만** 센다. 옆에 전체를 같이 보여 주면
+    // 멀티에서 "내 몫이 얼마인가"가 바로 읽힌다
+    `영토 ${myTerritoryArea(me).toFixed(0)}㎡` +
+    (humans().length > 1 ? ` (전체 ${territoryArea.toFixed(0)})` : '') +
     (wallCount ? ` · 벽 ${wallCount}개` : '') +
-    (territoryArea > 0 && P.res.terrIncome > 0
-      ? ` · +${(territoryArea * P.res.terrIncome).toFixed(1)}/s` : '') + '\n' +
+    (myTerritoryArea(me) > 0 && P.res.terrIncome > 0
+      ? ` · +${(myTerritoryArea(me) * P.res.terrIncome).toFixed(1)}/s` : '') + '\n' +
     `공방 ${maxWorkshopTier() > 0 ? `Lv.${maxWorkshopTier()}` : '없음(4)'}` +
     ` · 일꾼 ${workers.filter((w) => w.owner === me.owner).length}` +
     ` · 방어병 ${guardsOf(me.owner).length}` +
@@ -10281,15 +10372,10 @@ function tick(dt) {
     if (P.res.idleIncome > 0) for (const q of humans()) q.cheese += P.res.idleIncome * dt;
     if (P.res.terrIncome > 0) {
       const share = humans();
-      const total = territoryArea * P.res.terrIncome * dt;
-      if (share.length === 1) share[0].cheese += total;
-      else {
-        const mine = {}; let all = 0;
-        for (const ob of obstacles.values())
-          if (!ob.bedrock && !ob.bldgRef) { mine[ob.owner] = (mine[ob.owner] || 0) + 1; all++; }
-        // 아직 아무도 안 쌓았으면 반씩 (0으로 나누지 않게)
-        for (const q of share) q.cheese += all ? total * ((mine[q.owner] || 0) / all) : total / share.length;
-      }
+      // **자기가 막은 땅만큼만 번다** (D137). 예전엔 전체 영토를 **벽 개수 비율**로
+      // 나눴다 — 벽을 많이 쌓은 쪽이 남이 막아 놓은 땅까지 먹었다.
+      // 이제 칸마다 주인이 있으므로 그냥 자기 넓이를 쓴다.
+      for (const q of share) q.cheese += myTerritoryArea(q) * P.res.terrIncome * dt;
     }
   }
   pf('연출'); updateFx(dt);
@@ -10337,6 +10423,66 @@ function stepBy(elapsedMs, draw) {
   }
 }
 
+// ============================================================
+// 화질 자동 조절 (D137)
+//  정현은 멀쩡한데 친구 **둘 다** 끊긴다고 했다. 같은 URL을 쓰는데 왜 다른가:
+//   · pixelRatio 상한이 2였다 — 1080p에 dpr 2면 **그리는 픽셀이 네 배**다
+//   · 그 위에 antialias + PCFSoftShadowMap(가장 비싼 그림자 필터)이 얹힌다
+//   · 두 사람 다 CAD/빌드로 이미 눌린 기계였다
+//  친구에게 "설정 들어가서 그림자 꺼"라고 할 수는 없다. **스스로 내려간다.**
+//  ⚠ 올라가는 문턱을 내려가는 문턱보다 훨씬 낮게 둔다(히스테리시스) —
+//     안 그러면 경계에서 화질이 초당 몇 번씩 오르내린다.
+// ============================================================
+const QUALITY = [
+  { name: '높음', dpr: 2.0,  shadows: true,  soft: true },
+  { name: '보통', dpr: 1.25, shadows: true,  soft: false },
+  { name: '낮음', dpr: 1.0,  shadows: false, soft: false },
+];
+let qLevel = 0;
+let qHoldT = 0;
+
+function applyQuality(lv) {
+  qLevel = Math.max(0, Math.min(QUALITY.length - 1, lv));
+  const q = QUALITY[qLevel];
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.dpr));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (renderer.shadowMap.enabled !== q.shadows) {
+    renderer.shadowMap.enabled = q.shadows;
+    // 그림자를 켜고 끄면 셰이더를 다시 컴파일해야 한다
+    scene.traverse((o) => {
+      if (!o.material) return;
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.needsUpdate = true; });
+    });
+  }
+  renderer.shadowMap.type = q.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+  shadowDirty();
+  persp.aspect = viewAspect();
+  persp.updateProjectionMatrix();
+}
+
+// 최근 프레임의 중앙값으로 본다 — 평균은 스파이크 하나에 통째로 흔들린다
+function frameMedian() {
+  if (frameMs.length < 40) return 0;
+  const v = [...frameMs].sort((a, b) => a - b);
+  return v[v.length >> 1];
+}
+
+function autoQuality(dt) {
+  if (!P.look.autoQuality) return;
+  const med = frameMedian();
+  if (!med) return;
+  qHoldT += dt;
+  if (qHoldT < 1.5) return;   // 1.5초는 지켜본다 — 한두 프레임으로 안 바꾼다
+  qHoldT = 0;
+  // 22ms(≈45fps)보다 느리면 내린다 / 12ms(≈83fps)보다 빠르면 올린다
+  if (med > 22 && qLevel < QUALITY.length - 1) {
+    applyQuality(qLevel + 1);
+    flashMsg(`화질을 '${QUALITY[qLevel].name}'으로 낮췄다 (프레임 ${med.toFixed(0)}ms)`, '#ffb347');
+  } else if (med < 12 && qLevel > 0) {
+    applyQuality(qLevel - 1);
+  }
+}
+
 function loop() {
   requestAnimationFrame(loop);
   if (document.hidden) return;          // 숨어 있으면 심장박동이 대신 돈다
@@ -10344,6 +10490,7 @@ function loop() {
   const el = now - prevT;
   prevT = now;
   stepBy(el, true);
+  autoQuality(Math.min(el / 1000, 0.1));
 }
 loop();
 
@@ -10429,6 +10576,10 @@ window.__game = {
   flattenModel, modelCache, MODEL_URL, GLTFLoader,
   makeCryCat, makeCat, makeHamster,
   rebakeTextures, getFloorTex, getBrickTex,
+  applyQuality, QUALITY, frameMedian, get qLevel() { return qLevel; },
+  myTerritoryArea, myTerritoryRate, OWNERS,
+  get territoryAreaBy() { return territoryAreaBy; },
+  get territoryOwn() { return territoryOwn; },
   prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
   syncWallInstances, get wallIMs() { return { postIM, crackIM, bedIM }; },
   removeObstacle, applyCrackVisual, crackWall, updateWallColor,
