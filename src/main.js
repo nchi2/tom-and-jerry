@@ -3064,7 +3064,10 @@ function placeBuildingLocal(kind, i, j, owner, id) {
   // tier: 공방·경비탑만 의미가 있다 (제자리 업그레이드, D82). 새로 지으면 항상 1.
   const b = { kind, id, i, j, owner, cells: [], hp, maxHp: hp, store: 0, mesh, cx, cz, bitT: 0,
               underBuild: false, tier: 1,
-              bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6) };
+              bar: makeBar(owner === 'a' ? 0x5fa8ff : 0x5fd07a, 1.6),
+              // 선택 링 (D143) — 일괄 업그레이드는 **뭘 골랐는지 안 보이면 위험하다**
+              ring: makeSelRing(0x8fd6ff, 1.9) };
+  b.ring.position.set(cx, 0.07, cz);
   for (const [ci, cj] of [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]]) {
     const key = cellKey(ci, cj);
     const bc = { i: ci, j: cj, bedrock: false, bldgRef: b, mesh: null };
@@ -3080,6 +3083,8 @@ function placeBuildingLocal(kind, i, j, owner, id) {
 
 function destroyBuilding(b, byEnemy) {
   shadowDirty();
+  selectedBldgs.delete(b);   // 부서진 건물이 선택에 남아 있으면 안 된다 (D143)
+  if (b.ring) { scene.remove(b.ring); b.ring.material.dispose(); b.ring = null; }
   for (const key of b.cells) {
     const ob = obstacles.get(key);
     if (ob && ob.i >= 0 && ob.j >= 0 && ob.i < CELLS && ob.j < CELLS) obGrid[obIdx(ob.i, ob.j)] = undefined;
@@ -3114,6 +3119,10 @@ function updateBuildings(dt) {
   minedCount = 0;
   for (const b of buildings) {
     setBar(b.bar, b.hp / b.maxHp, b.cx, 1.9, b.cz, b.hp < b.maxHp - 0.5);
+    // ⚠ 건물의 매 프레임 표시는 **경로가 둘**이다 — 여기(호스트)와 presentWorld(클라).
+    // 선택 링을 클라 쪽에만 넣었더니 **솔로에서 아예 안 보였다** (솔로는 호스트다).
+    // D101이 반대 방향으로 겪은 함정이다: 한쪽에만 쓰면 다른 쪽 화면에서 죽어 있다.
+    if (b.ring) b.ring.visible = selectedBldgs.has(b);
     updateSelfBuild(b, dt);   // 경비탑은 혼자 지어진다 (D87)
     if (b.kind === 'tower') { updateTower(b, dt); continue; }
     if (b.kind !== 'depot') continue;
@@ -3703,6 +3712,38 @@ function tryUpgradeBuilding(p = player) {
   flashMsg(`${BLDG_INFO[b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
 }
 
+// ---- 선택한 건물 일괄 업그레이드 (D143) ----
+// 경비탑은 **한 번에 펑**이라(D88) 여러 개를 동시에 올려도 문제가 없다.
+// 공방은 채널링이라 하나만 — 여러 개를 동시에 채널링할 수는 없다.
+// ⚠ 선택은 **각자 화면의 것**이라 시뮬에 못 넘긴다. 그래서 id 목록으로 보낸다
+//    (D92: 명령에는 격자 좌표와 엔티티 id만 담는다).
+function upgradeBuildings(p, ids) {
+  const list = (ids || []).map(bldgById)
+    .filter((b) => b && b.owner === p.owner && (b.tier || 1) < 3);
+  if (!list.length) { flashFor(p, '올릴 수 있는 건물이 없습니다', '#e05050'); return; }
+  // 싼 것부터 올린다 — 돈이 모자랄 때 비싼 하나에 다 쓰고 끝나면 손해가 크다
+  list.sort((a, b) => upgradeSpec(a).cost - upgradeSpec(b).cost);
+  let done = 0, blocked = null;
+  for (const b of list) {
+    const why = upgradeBlockedWhy(b, p);
+    if (why) { blocked = blocked || why; continue; }
+    const { cost, parts: needParts, time } = upgradeSpec(b);
+    if (b.kind === 'tower') {
+      p.cheese -= cost; p.parts -= needParts;
+      b.tier = (b.tier || 1) + 1;
+      applyBuildingTierVisual(b);
+      spawnBuildFx(b.cx, b.cz);
+      done++;
+    } else if (!p.upgradeJob) {          // 공방은 한 번에 하나
+      p.cheese -= cost; p.parts -= needParts;
+      p.upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
+      done++;
+    }
+  }
+  if (done) flashFor(p, `${done}개 업그레이드`, '#8fd6ff');
+  else if (blocked) flashFor(p, blocked, '#e05050');
+}
+
 function cancelUpgrade(refund = true, p = player) {
   if (!p.upgradeJob) return;
   const { cost, parts: spentParts } = p.upgradeJob;
@@ -3803,6 +3844,18 @@ function clearWorkers(owner) {
 // 한 더미의 정원(P.worker.perPile)은 명령으로도 못 넘는다 — D36의 확장 압박이
 // 조작 편의로 무너지면 안 되기 때문이다.
 const selectedUnits = new Set();
+// ---- 건물 선택 (D143) ----
+// 예전엔 업그레이드가 **`fAction`의 4m 하드코딩**뿐이었다 — 타워 앞까지 걸어가야 했다.
+// 후반에 타워가 열 개쯤 되면 그게 곧 "열 번 걸어간다"다.
+// 유닛과 **다른 집합**으로 둔다. 같이 담으면 우클릭 이동 명령이 건물에게도 가고,
+// 그걸 거르는 조건이 명령마다 하나씩 붙는다.
+const selectedBldgs = new Set();
+const myBuildings = (p = localPlayer()) => buildings.filter((b) => b.owner === p.owner);
+const bldgById = (id) => buildings.find((b) => b.id === id) || null;
+// 올릴 수 있는 것만 — 이미 3등급이거나 남의 것이면 셀 이유가 없다
+const selUpgradable = () =>
+  [...selectedBldgs].filter((b) => buildings.includes(b) && (b.tier || 1) < 3
+    && (b.kind === 'tower' || b.kind === 'workshop'));
 
 // 내가 명령할 수 있는 유닛 = **내 소유자 태그가 붙은 것**뿐이다 (D92-2단계).
 // 예전엔 일꾼만 'p'로 거르고 방어병은 전부 통과시켰다 (방어병에 owner가 없었으니까).
@@ -3821,6 +3874,18 @@ function enemyAtScreen(clientX, clientY, maxPx = P.command.pickPx * 1.6) {
     if (!s) continue;
     const d = Math.hypot(s.x - clientX, s.y - clientY);
     if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
+// 건물 집기 (D143). 유닛보다 크므로 화면 반경을 넉넉히 준다
+function bldgAtScreen(clientX, clientY, maxPx = P.command.pickPx * 1.7) {
+  let best = null, bd = maxPx;
+  for (const b of myBuildings()) {
+    const s = worldToScreen(b.cx, 1.0, b.cz);
+    if (!s) continue;
+    const d = Math.hypot(s.x - clientX, s.y - clientY);
+    if (d < bd) { bd = d; best = b; }
   }
   return best;
 }
@@ -6104,7 +6169,7 @@ window.addEventListener('keydown', (e) => {
     else if (removeMode) { removeMode = false; updateHotbar(); }
     else if (buildSlot >= 0) { buildSlot = -1; updateHotbar(); }
     else if (me.mineOrder) issueCommand({ t: 'cancel', lvl: 'mineOrder' });
-    else if (selectedUnits.size) selectedUnits.clear();
+    else if (selectedUnits.size || selectedBldgs.size) { selectedUnits.clear(); selectedBldgs.clear(); }
     else if (upgOpen) { upgOpen = false; renderUpgrade(); }
     else if (helpOpen) { helpOpen = false; renderHelp(); }
     else setMenu(true);
@@ -6114,7 +6179,13 @@ window.addEventListener('keydown', (e) => {
   // 예전엔 준비 국면에서만 F가 '최후의 공세 시작'으로 바뀌었다. 하필 준비 국면이
   // **업그레이드를 제일 많이 하는 시간**이라, 공방을 올리려다 준비도 못 하고
   // 공세를 열어 버렸다. 시작은 B로 갈랐다 (아래).
-  if (e.code === 'KeyF' && alive) issueCommand({ t: 'f' });
+  // F — 건물을 골라 뒀으면 **그것들을 한 번에** 올린다 (D143).
+  // 아무것도 안 골랐으면 예전처럼 발밑 4m 안의 것 하나 (수리가 우선, D90)
+  if (e.code === 'KeyF' && alive) {
+    const picked = selUpgradable();
+    if (picked.length) issueCommand({ t: 'bupg', ids: picked.map((b) => b.id) });
+    else issueCommand({ t: 'f' });
+  }
   // 0번 = 도발 (D96). 이 게임의 유일한 '공격'이다
   if ((e.code === 'Digit0' || e.code === 'Numpad0') && alive) issueCommand({ t: 'taunt' });
   // 건네주기 — 옆에 붙어야 넘어간다 (D96)
@@ -6124,7 +6195,7 @@ window.addEventListener('keydown', (e) => {
   // Tab = 방어병 전원 선택 (전투 중에 상자로 훑을 여유가 없다)
   if (e.code === 'Tab') {
     e.preventDefault();
-    selectedUnits.clear();
+    selectedUnits.clear(); selectedBldgs.clear();
     const mine = guardsOf(localPlayer().owner);
     for (const gu of mine) selectedUnits.add(gu);
     if (mine.length) selectionMsg();
@@ -6216,11 +6287,16 @@ function beginSelectDrag(e) {
 
 function selectionMsg() {
   const w = selWorkers().length, g = selGuards().length;
-  if (!w && !g) return;
+  const b = selUpgradable().length;
+  if (!w && !g && !b) return;
   const bits = [];
   if (w) bits.push(`일꾼 ${w}`);
   if (g) bits.push(`방어병 ${g}`);
-  flashMsg(`${bits.join(' · ')} 선택 — 우클릭으로 명령`, '#9fe8a0');
+  if (b) bits.push(`건물 ${b}`);
+  // 건물을 골랐으면 **F로 한 번에 올린다**는 걸 그 자리에서 알려 준다 (D143)
+  const how = b ? (w || g ? '우클릭 명령 · F 일괄 업그레이드' : 'F로 일괄 업그레이드')
+                : '우클릭으로 명령';
+  flashMsg(`${bits.join(' · ')} 선택 — ${how}`, '#9fe8a0');
 }
 
 function finishSelectDrag(e) {
@@ -6230,19 +6306,28 @@ function finishSelectDrag(e) {
   if (d.moved) {
     const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1);
     const y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
-    if (!d.add) selectedUnits.clear();
+    if (!d.add) { selectedUnits.clear(); selectedBldgs.clear(); }
     if (d.seed) selectedUnits.add(d.seed);
     // 발밑과 머리 둘 중 하나만 상자에 들어와도 잡는다 (관대하게)
     const inBox = (s) => s && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1;
     for (const u of myUnits())
       if (inBox(worldToScreen(u.x, 0, u.z)) || inBox(worldToScreen(u.x, 0.9, u.z)))
         selectedUnits.add(u);
+    // 건물도 같이 담는다 (D143) — 상자로 훑어 **한 번에 올리려고**
+    for (const b of myBuildings())
+      if (inBox(worldToScreen(b.cx, 0, b.cz)) || inBox(worldToScreen(b.cx, 1.4, b.cz)))
+        selectedBldgs.add(b);
   } else {
+    // 유닛을 먼저 본다 — 건물 위에 겹쳐 선 일꾼을 못 집으면 답답하다
     const u = unitAtScreen(e.clientX, e.clientY);
+    const b = u ? null : bldgAtScreen(e.clientX, e.clientY);
     if (u) {
       if (d.add && selectedUnits.has(u)) selectedUnits.delete(u);
-      else { if (!d.add) selectedUnits.clear(); selectedUnits.add(u); }
-    } else if (!d.add) selectedUnits.clear();
+      else { if (!d.add) { selectedUnits.clear(); selectedBldgs.clear(); } selectedUnits.add(u); }
+    } else if (b) {
+      if (d.add && selectedBldgs.has(b)) selectedBldgs.delete(b);
+      else { if (!d.add) { selectedUnits.clear(); selectedBldgs.clear(); } selectedBldgs.add(b); }
+    } else if (!d.add) { selectedUnits.clear(); selectedBldgs.clear(); }
   }
   selectionMsg();
 }
@@ -6842,6 +6927,7 @@ function applyCommand(p, c) {
       break;
     }
     case 'f':      tryUpgradeBuilding(p); break;
+    case 'bupg':   upgradeBuildings(p, c.ids); break;   // 선택한 건물 일괄 (D143)
     case 'taunt':  startTaunt(p); break;
     case 'atk':    attackSwipe(p); break;
     case 'atkupg': buyAtkUpgrade(c.k, p); break;
@@ -10486,7 +10572,10 @@ function presentWorld(dt) {
     g.ring.visible = selectedUnits.has(g);
     if (g.bar) setBar(g.bar, g.hp / g.maxHp, g.x, barY(g.vis), g.z, g.hp < g.maxHp - 0.5);
   }
-  for (const b of buildings) setBar(b.bar, b.hp / b.maxHp, b.cx, 1.9, b.cz, b.hp < b.maxHp - 0.5);
+  for (const b of buildings) {
+    setBar(b.bar, b.hp / b.maxHp, b.cx, 1.9, b.cz, b.hp < b.maxHp - 0.5);
+    if (b.ring) b.ring.visible = selectedBldgs.has(b);   // 선택 링 (D143)
+  }
   for (const u of pickups) {
     u.t += dt;
     u.mesh.rotation.y += dt * 2;
@@ -10837,6 +10926,7 @@ window.__game = {
   applyQuality, QUALITY, frameMedian, get qLevel() { return qLevel; },
   myTerritoryArea, myTerritoryRate, OWNERS,
   DIFFS, setDiff, spawnDelayNow, typeMaxHp, enemySpawnPos,
+  selectedBldgs, selUpgradable, upgradeBuildings, bldgAtScreen, myBuildings,
   spawnZoneInner, inSpawnZone, rebuildDangerRing,
   get territoryAreaBy() { return territoryAreaBy; },
   get territoryOwn() { return territoryOwn; },
