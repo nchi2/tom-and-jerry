@@ -62,6 +62,7 @@ const P = {
     spread: 7.5,           // (구값 — 지금은 안 쓴다. D110에서 둘레 배치로 바뀌었다)
     // 사방 등장 (D110)
     spawnRing: 34,         // 맵 중앙에서 이만큼 떨어진 둘레에 선다
+    zonePad: 2.0,          // 출몰 띠를 안팎으로 이만큼 넓혀 건설을 막는다 (D147)
     ringBias: 0.25,        // 적 본진 쪽으로 얼마나 몰까 (0=완전히 고르게, 1=예전처럼 한 곳)
     ringJitter: 0.8,       // 각도 흔들기(라디안) — 매번 같은 자리가 되지 않게
     aggroRange: 10.5,       // 추격 중 이 거리 안의 건물에 한눈팔 수 있음
@@ -1063,12 +1064,20 @@ const terrMesh = new THREE.Mesh(
 terrMesh.rotation.x = -Math.PI / 2;
 terrMesh.position.y = 0.02;   // 바닥 위, 격자선 아래
 
-// ---- 고양이 출몰 구간 (D138) ----
-// 적은 맵 바깥 둘레의 띠에서 나타난다. 거기에 건물을 지으면 **짓자마자 두들겨 맞는다** —
-// 그런데 화면에는 아무 표시가 없어서 처음 하는 사람은 알 방법이 없었다.
-// ⚠ 안쪽 반지름은 **스포너와 같은 식으로** 구한다(`enemySpawnPos`의 rr 하한).
-//    숫자를 따로 적어 두면 spawnRing을 바꿨을 때 표시와 실제가 조용히 어긋난다.
-const spawnZoneInner = () => Math.min(HALF - 2, P.enemy.spawnRing) * 0.82;
+// ---- 고양이 출몰 구간 (D138 → D147에서 바깥 경계 수정) ----
+// 적은 맵 가운데를 두르는 **띠**에서 나타난다. 거기에 건물을 지으면 짓자마자 두들겨 맞는다 —
+// 화면에 표시가 없으면 처음 하는 사람은 알 방법이 없다.
+//
+// ⚠⚠ 두 반지름을 **둘 다** 스포너에서 가져온다 (`enemySpawnPos`의 rr = R × 0.82~1.00).
+//    D138은 안쪽만 그렇게 하고 **바깥쪽은 `HALF * 1.45`로 따로 적었다.**
+//    스폰링(34)이 맵 반폭(63)보다 훨씬 작아서, 고양이가 오지도 않는 27.9~91m를
+//    전부 금지 구역으로 칠했다 — **맵의 84.5%, 광맥 27개 중 24개**가 잠겨서
+//    창고를 못 지었다. D36의 확장 압박이 통째로 죽어 있었다.
+//    바로 위 주석이 "따로 적으면 조용히 어긋난다"고 경고해 놓고 그 실수를 저지른 자리다.
+const SPAWN_RR_LO = 0.82, SPAWN_RR_HI = 1.00;   // enemySpawnPos의 rr 범위와 **같아야 한다**
+const spawnRingR = () => Math.min(HALF - 2, P.enemy.spawnRing);
+const spawnZoneInner = () => spawnRingR() * SPAWN_RR_LO - P.enemy.zonePad;
+const spawnZoneOuter = () => spawnRingR() * SPAWN_RR_HI + P.enemy.zonePad;
 let dangerRing = null;
 function rebuildDangerRing() {
   if (dangerRing) {
@@ -1078,8 +1087,8 @@ function rebuildDangerRing() {
     dangerRing = null;
   }
   if (!P.look.dangerZone) return;
-  const inner = spawnZoneInner();
-  const outer = HALF * 1.45;            // 모서리까지 덮는다
+  const inner = Math.max(0, spawnZoneInner());
+  const outer = spawnZoneOuter();       // ← 하드코딩이 아니라 스포너에서 나온다 (D147)
   dangerRing = new THREE.Mesh(
     new THREE.RingGeometry(inner, outer, 96),
     new THREE.MeshBasicMaterial({
@@ -1092,8 +1101,13 @@ function rebuildDangerRing() {
   dangerRing.renderOrder = 0;
   groundGroup.add(dangerRing);
 }
-// 이 지점이 출몰 구간인가 — 표시와 건설 금지가 **같은 함수**를 본다
-const inSpawnZone = (x, z) => Math.hypot(x, z) >= spawnZoneInner();
+// 이 지점이 출몰 구간인가 — 표시와 건설 금지가 **같은 함수**를 본다.
+// 띠 **바깥**은 다시 지을 수 있다 (D147): 고양이는 거기서 안 나오고,
+// 광맥과 부품 상자는 대부분 그 바깥에 있다 — 나가서 확보하는 게 이 게임의 압박이다 (D22·D36).
+const inSpawnZone = (x, z) => {
+  const d = Math.hypot(x, z);
+  return d >= spawnZoneInner() && d <= spawnZoneOuter();
+};
 terrMesh.renderOrder = 1;
 scene.add(terrMesh);
 
@@ -7568,6 +7582,9 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.look, 'wallTex', 0, 1, 1).name('★ 벽돌 벽 (0=민무늬)').onChange(rebakeTextures);
   f.add(P.look, 'tileTone', 0, 0.4, 0.01).name('타일 대비').onChange(rebakeTextures);
   f.add(P.look, 'brickTone', 0, 0.5, 0.01).name('벽돌 대비').onChange(rebakeTextures);
+  // 출몰 띠 (D147) — 표시와 건설 금지가 같은 값을 본다. 껐다 켜면 바로 다시 그린다
+  f.add(P.look, 'dangerZone', 0, 1, 1).name('★ 고양이 출몰 띠 표시').onChange(rebuildDangerRing);
+  f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
   f.add(P.atk, 'cooldown', 0.1, 2, 0.05).name('★ 내 공격 쿨다운');
