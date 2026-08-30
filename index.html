@@ -110,6 +110,12 @@
       text-shadow: 0 1px 2px rgba(0,0,0,.9);
     }
     @keyframes vpulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.5); } }
+    /* 남은 목숨 (D142) — 하트로 세어져야 마지막에 안 놀란다 */
+    #vitals .lives {
+      margin-left: 30px; font-size: 14px; letter-spacing: 3px;
+      color: #6b7385; text-shadow: 0 1px 3px rgba(0,0,0,.9);
+    }
+    #vitals .lives.last { animation: vpulse .8s ease-in-out infinite; }
     /* 내 땅 안에 서 있으면 테두리가 살아난다 — 지금 혜택을 받는 중이라는 표시 */
     #res .terr.inside { border-color: #8fe0a0; background: rgba(24, 48, 32, .9); }
     body.gui-on #res, body.gui-on #net { right: 268px; }
@@ -343,6 +349,25 @@
       height: 100%; background: linear-gradient(90deg, #ff3b3b, #ff8b5e);
       transition: width .15s linear;
     }
+    /* ---- 타이머 (D141) ----
+       예전엔 준비 국면·공세·잡힘 카운트다운까지 전부 **막대**로 그렸다.
+       막대가 넷씩 겹치니 정작 톰 체력바가 안 보이고, 남은 시간도 숫자가 작아 안 읽혔다.
+       **막대는 체력에만** 쓰고(줄어드는 양이 의미 있는 건 그것뿐이다),
+       시간은 큼직한 숫자로 보여 준다. */
+    #bossbar .timer {
+      display: flex; align-items: baseline; justify-content: center; gap: 10px;
+      margin-bottom: 6px; padding: 3px 0;
+    }
+    #bossbar .timer .t {
+      font-size: 26px; font-weight: 700; letter-spacing: .02em;
+      color: #ffd24a; text-shadow: 0 2px 6px rgba(0,0,0,.9);
+      font-variant-numeric: tabular-nums;
+    }
+    #bossbar .timer .cap { font-size: 12px; color: #cdd4e4; text-shadow: 0 1px 3px #000; }
+    #bossbar .timer .hint { font-size: 11px; color: #8b94a8; }
+    #bossbar .timer.urgent .t { color: #ff5a4a; animation: tpulse .8s ease-in-out infinite; }
+    #bossbar .timer.calm .t { color: #8fe0a0; }
+    @keyframes tpulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
     /* 튜토리얼 (D111) — 왼쪽 세로 목록. 지금 할 것 하나만 밝게 */
     #tut {
       position: fixed; left: 12px; top: 168px; width: 300px; display: none; z-index: 6;

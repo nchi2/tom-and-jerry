@@ -11,6 +11,9 @@ const P = {
   // 한 방에 죽지 않는다 — 공격을 맞아 체력이 다 깎여야 잡힌다 (원작 프로브가
   // 울트라 두 방을 버티던 것). 죽음이 "한순간의 실수"가 아니라 "누적된 실수"가 된다.
   player: { speed: 9.0, radius: 0.26, graceTime: 1.5,
+            // 혼자 할 때 잡혀도 되는 횟수 (D142). **0이면 난이도 값을 따른다**.
+            // 0보다 크면 난이도를 무시하고 이 값을 쓴다 — 따로 시험하려고 남겨 둔 손잡이
+            lives: 0,
             // 적 본진에 떨궈진 직후의 무적(초). **없으면 즉시 다시 잡힌다** —
             // 떨어지는 자리가 고양이 한복판이라 빠져나올 시간이 필요하다 (D95).
             // 예전엔 기절 상태라 안 맞았는데, AI 동료를 걷어내면서 솔로는 기절하지 않는다.
@@ -2237,15 +2240,19 @@ const finalBoost = () => (enraged() ? P.final.boost + P.final.endlessBoost * end
 // 손대는 건 넷뿐: 마릿수 · 체력 · 첫 등장까지 · 스테이지 길이.
 // **속도는 안 건드린다** — 고양이가 햄스터보다 느려지면 술래잡기의 긴장이 사라진다
 // (D108이 공세 강화에서 속도를 뺀 것과 같은 이유).
+// lives = 혼자 할 때 잡혀도 되는 횟수 (D142). 0이면 무제한
 const DIFFS = {
-  easy:   { name: '쉬움',   count: 0.55, hp: 0.55, delay: 2.0, stage: 1.5,
-            desc: '적이 절반, 첫 등장도 1분 뒤' },
-  normal: { name: '보통',   count: 0.75, hp: 0.75, delay: 1.5, stage: 1.25,
-            desc: '숨 돌릴 틈은 있다' },
-  hard:   { name: '어려움', count: 1.0,  hp: 1.0,  delay: 1.0, stage: 1.0,
-            desc: '지금까지의 기준. 쉬지 않고 온다' },
+  easy:   { name: '쉬움',   count: 0.55, hp: 0.55, delay: 2.0, stage: 1.5, lives: 5,
+            desc: '적이 절반, 첫 등장도 1분 뒤 · 목숨 5' },
+  normal: { name: '보통',   count: 0.75, hp: 0.75, delay: 1.5, stage: 1.25, lives: 3,
+            desc: '숨 돌릴 틈은 있다 · 목숨 3' },
+  hard:   { name: '어려움', count: 1.0,  hp: 1.0,  delay: 1.0, stage: 1.0, lives: 2,
+            desc: '지금까지의 기준. 쉬지 않고 온다 · 목숨 2' },
 };
 const D = () => DIFFS[P.diff.level] || DIFFS.hard;
+// 목숨은 **혼자 할 때만** 센다 (D142). 둘 이상이면 서로 구해 주는 게 이미 규칙이다(D95).
+// 튜닝 패널의 `P.player.lives`가 0보다 크면 그쪽이 이긴다 — 난이도와 따로 시험하려고
+const livesMax = () => (humans().length > 1 ? 0 : (P.player.lives > 0 ? P.player.lives : D().lives || 0));
 
 const typeMaxHp = (type) => (type === 'boss'
   ? P.boss.hp                                       // 톰은 고정 스탯 (D83) — 배율도 안 받는다
@@ -7816,6 +7823,21 @@ function updateVitals(me) {
   if (vitTicks.st !== rolls) { setTicks(vitSt, rolls); vitTicks.st = rolls; }
   vitSt.querySelector('.fill').style.width = `${(stF * 100).toFixed(1)}%`;
   vitSt.querySelector('.num').textContent = Math.ceil(me.stamina);
+  // 남은 목숨 (D142) — 숫자로만 알려 주면 마지막에 놀란다. 하트로 세어지게
+  const max = livesMax();
+  const left = max > 0 ? (me.lives === undefined ? max : me.lives) : 0;
+  let lifeEl = vitEl.querySelector('.lives');
+  if (max > 0) {
+    if (!lifeEl) {
+      lifeEl = document.createElement('div');
+      lifeEl.className = 'lives';
+      vitEl.appendChild(lifeEl);
+    }
+    const want = '🐹'.repeat(Math.max(0, left)) + '·'.repeat(Math.max(0, max - left));
+    if (lifeEl.dataset.v !== want) { lifeEl.textContent = want; lifeEl.dataset.v = want; }
+    lifeEl.classList.toggle('last', left <= 1);
+  } else if (lifeEl) lifeEl.remove();
+
   const canRoll = me.stamina >= P.player.stamRoll;
   vitSt.classList.toggle('dry', !canRoll);
   vitSt.querySelector('.rollmark').style.left =
@@ -8100,7 +8122,10 @@ function restart() {
   if (tut) { tut = null; renderTut(); }   // 재시작하면 연습판을 벗어난다 (D111)
   growthSpawned = 0;
   // 두 햄스터를 같은 초기 상태로 (D92-1c)
-  for (const p of players) { p.hp = P.player.hp; p.hurtT = 99; p.grace = 0; p.stunned = false; p.wipeT = 0; }
+  for (const p of players) {
+    p.hp = P.player.hp; p.hurtT = 99; p.grace = 0; p.stunned = false; p.wipeT = 0;
+    p.lives = undefined;   // 새 판에서 목숨도 처음으로 (D142)
+  }
   camShake = 0;
   surgeDone = 0;
   // 슬롯마다 제자리에서 시작. 사람이 앉은 슬롯만 켠다 (D97)
@@ -8203,6 +8228,20 @@ function caught(who) {
   // 혼자면 기절할 이유가 없다 — 구해 줄 사람이 없다 (D95).
   // 원작처럼 **본진에 떨궈지고 다시 시작**한다. 잃은 건 지은 것이고, 판은 계속된다.
   if (humans().length < 2) {
+    // ---- 목숨 (D142) ----
+    // 예전엔 여기서 그냥 돌아갔다 = **부활이 무한**이었다. 잡혀도 잃는 게
+    // "지은 것"뿐이라, 계속 잡히면서 버티는 게 오히려 이득인 구간이 생겼다.
+    // 이제 횟수가 있다. 0이면 무제한(옛 동작).
+    const max = livesMax();
+    if (max > 0) {
+      who.lives = (who.lives === undefined ? max : who.lives) - 1;
+      if (who.lives <= 0) {
+        flashMsg('마지막 목숨까지 잡혔다', '#ff3b3b');
+        return gameOver();
+      }
+      flashMsg(`잡혔다! 남은 목숨 ${who.lives}`, '#ff6b6b');
+      return;
+    }
     flashMsg('잡혔다! 적 본진으로 끌려났다', '#ff6b6b');
     return;
   }
@@ -10189,45 +10228,42 @@ const bossBarEl = document.getElementById('bossbar');
 // "지금 뭘 기다리는 중인지"를 모르면 그냥 멈춘 게임처럼 보인다. 보스바 자리를 같이 쓴다.
 // 잡혔을 때 남은 시간 (D118). 5분이나 되는데 어디에도 안 보이면
 // "언제까지 뭘 해야 하는지"를 알 수가 없다. 상단 가운데에 크게 건다.
+// ---- 타이머 줄 (D141) ----
+// **막대는 체력에만 쓴다.** 예전엔 준비 국면·공세·잡힘까지 전부 막대라,
+// 넷이 겹치면 정작 톰 체력바가 안 보이고 남은 시간 숫자도 작아서 안 읽혔다.
+// 줄어드는 양이 의미 있는 건 체력뿐이다 — 시간은 큰 숫자 하나면 된다.
+const timerRow = (cap, time, hint = '', mood = '') =>
+  `<div class="timer${mood ? ' ' + mood : ''}">` +
+    `<span class="cap">${cap}</span>` +
+    `<span class="t">${time}</span>` +
+    (hint ? `<span class="hint">${hint}</span>` : '') +
+  '</div>';
+
 function captiveBanner() {
   const me = localPlayer();
   const t = me && me.wipeT ? me.wipeT : 0;
   if (t <= 0) return '';
-  const total = Math.max(P.coop.wipeGrace, 0.01);
-  const f = Math.max(0, Math.min(1, t / total));
   const m = Math.floor(t / 60), sec = Math.floor(t % 60);
   const label = humans().length > 1 ? '구출되지 않으면 전부 무너진다' : '내 땅으로 돌아가야 한다';
-  // 1분 아래로 내려가면 붉게
-  const col = t < 60 ? '#ff3b3b, #ff8b5e' : '#c8901f, #ffd24a';
-  return `<div class="row"><div class="lbl"><span>잡혔다 — ${label}</span>` +
-    `<span>${m}:${String(sec).padStart(2, '0')}</span></div>` +
-    `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
-    `background:linear-gradient(90deg,${col})"></div></div></div>`;
+  // 1분 아래로 내려가면 붉게 깜빡인다
+  return timerRow(`잡혔다 — ${label}`,
+    `${m}:${String(sec).padStart(2, '0')}`, '', t < 60 ? 'urgent' : '');
 }
 
 function finalBanner() {
   if (finalPhase === 'prep') {
-    const total = endlessRound ? P.final.endlessPrep : P.final.prep;
     const left = Math.max(0, finalT);
-    const f = Math.max(0, Math.min(1, left / Math.max(total, 0.01)));
     const lbl = endlessRound
       ? `무한 ${endlessRound}라운드 준비 — 방어선을 고치세요`
       : '준비 국면 — 방어선을 세우세요';
-    return `<div class="row"><div class="lbl"><span>${lbl}</span>` +
-      `<span>${mmss(left)} · [B] 지금 시작</span></div>` +
-      `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%;` +
-      `background:linear-gradient(90deg,#3d6b47,#8fe0a0)"></div></div></div>`;
+    return timerRow(lbl, mmss(left), '[B] 지금 시작', 'calm');
   }
   if (finalPhase === 'assault') {
-    const dur = finalDuration();
-    const left = Math.max(0, dur - finalT);
-    const f = 1 - left / Math.max(dur, 0.01);
+    const left = Math.max(0, finalDuration() - finalT);
     // 몇 차까지 왔는지를 같이 보여 준다 (D124) — 남은 시간만으로는 압박이 안 읽힌다
     const tag = endlessRound ? `무한 ${endlessRound}라운드` : '최후의 공세';
-    return `<div class="row"><div class="lbl">` +
-      `<span>${tag} — ${finalWaveNo}/${finalWaves()}차</span>` +
-      `<span>${left.toFixed(0)}초 남음</span></div>` +
-      `<div class="track"><div class="fill" style="width:${(f * 100).toFixed(1)}%"></div></div></div>`;
+    return timerRow(`${tag} — ${finalWaveNo}/${finalWaves()}차`,
+      `${left.toFixed(0)}초`, '버텨라', left < 30 ? 'urgent' : '');
   }
   return '';
 }
