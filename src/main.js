@@ -308,6 +308,11 @@ const P = {
     splashFrac: 0.6,                 // 튄 피해는 본체의 이 비율
     stagePoints: 1, maxPoints: 10,   // 스테이지마다 1점, 최대 10점
   },
+  // 난이도 (D138). **어려움 = 지금까지의 기준값**이고, 쉬움·보통이 그 아래로 붙는다.
+  // 튜닝 패널의 `P.balance`와 **곱해서** 쓴다 — 둘을 합치면 슬라이더를 만질 때마다
+  // 난이도가 흔들려서 무엇이 무엇을 바꾸는지 알 수 없게 된다.
+  //  count = 마릿수 · hp = 체력 · delay = 첫 등장까지 시간 · stage = 스테이지 길이
+  diff: { level: 'normal' },
   // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
   look: {
     floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
@@ -318,6 +323,8 @@ const P = {
     brickTone: 0.26,  // 벽돌 대비
     // 느린 기계에서 **스스로 화질을 낮춘다** (D137). 0이면 항상 '높음'으로 고정.
     autoQuality: 1,
+    // 고양이가 나타나는 바깥 띠를 붉게 칠한다 (D138). 거기엔 건물을 못 짓는다
+    dangerZone: 1,
   },
   build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
            inset: 0.3, refundRatio: 0.5,
@@ -458,6 +465,9 @@ const P = {
   // 그래야 타격·투척·폭발 사이의 **상대적 균형이 그대로** 유지된다.
   // ESC 메뉴 슬라이더로 언제든 올릴 수 있다.
   sfx: { volume: 0.24, minGap: 0.05 },
+  // 배경음악 (D139) — 코드가 즉석에서 만든다. **효과음과 볼륨을 따로 둔다**:
+  // 하나로 묶으면 타격음을 줄이려다 음악까지 사라진다
+  bgm: { on: 1, volume: 0.16 },
   // 채팅 (D120). lines = 화면에 남는 줄 수, hold = 한 줄이 머무는 시간(초)
   chat: { lines: 6, hold: 14 },
   // 튜토리얼 (D113). bigTime = 가운데 큰 안내가 떠 있는 시간(초)
@@ -882,6 +892,7 @@ function buildGround(floorColor, gridColor) {
     groundGroup.add(gh);
   }
   resizeTerritoryOverlay();
+  rebuildDangerRing();   // 맵 크기가 바뀌면 띠도 다시 그린다 (D138)
 
   shadowDirty();
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x454c5e, roughness: 1 });
@@ -920,6 +931,38 @@ const terrMesh = new THREE.Mesh(
 );
 terrMesh.rotation.x = -Math.PI / 2;
 terrMesh.position.y = 0.02;   // 바닥 위, 격자선 아래
+
+// ---- 고양이 출몰 구간 (D138) ----
+// 적은 맵 바깥 둘레의 띠에서 나타난다. 거기에 건물을 지으면 **짓자마자 두들겨 맞는다** —
+// 그런데 화면에는 아무 표시가 없어서 처음 하는 사람은 알 방법이 없었다.
+// ⚠ 안쪽 반지름은 **스포너와 같은 식으로** 구한다(`enemySpawnPos`의 rr 하한).
+//    숫자를 따로 적어 두면 spawnRing을 바꿨을 때 표시와 실제가 조용히 어긋난다.
+const spawnZoneInner = () => Math.min(HALF - 2, P.enemy.spawnRing) * 0.82;
+let dangerRing = null;
+function rebuildDangerRing() {
+  if (dangerRing) {
+    groundGroup.remove(dangerRing);
+    dangerRing.geometry.dispose();
+    dangerRing.material.dispose();
+    dangerRing = null;
+  }
+  if (!P.look.dangerZone) return;
+  const inner = spawnZoneInner();
+  const outer = HALF * 1.45;            // 모서리까지 덮는다
+  dangerRing = new THREE.Mesh(
+    new THREE.RingGeometry(inner, outer, 96),
+    new THREE.MeshBasicMaterial({
+      color: 0xff5a4a, transparent: true, opacity: 0.13,
+      depthWrite: false, side: THREE.DoubleSide,
+    })
+  );
+  dangerRing.rotation.x = -Math.PI / 2;
+  dangerRing.position.y = 0.015;        // 바닥 위, 영토 오버레이 아래
+  dangerRing.renderOrder = 0;
+  groundGroup.add(dangerRing);
+}
+// 이 지점이 출몰 구간인가 — 표시와 건설 금지가 **같은 함수**를 본다
+const inSpawnZone = (x, z) => Math.hypot(x, z) >= spawnZoneInner();
 terrMesh.renderOrder = 1;
 scene.add(terrMesh);
 
@@ -2189,9 +2232,24 @@ const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
 // 무한 라운드에서는 강화도 같이 오른다 (D124). 속도는 여전히 안 건드린다 —
 // 고양이가 햄스터보다 빨라지면 술래잡기가 아니게 된다 (D108)
 const finalBoost = () => (enraged() ? P.final.boost + P.final.endlessBoost * endlessRound : 1);
+// ---- 난이도 (D138) ----
+// **어려움이 지금까지의 기준값**이다 (전부 1.0). 쉬움·보통이 그 아래로 붙는다.
+// 손대는 건 넷뿐: 마릿수 · 체력 · 첫 등장까지 · 스테이지 길이.
+// **속도는 안 건드린다** — 고양이가 햄스터보다 느려지면 술래잡기의 긴장이 사라진다
+// (D108이 공세 강화에서 속도를 뺀 것과 같은 이유).
+const DIFFS = {
+  easy:   { name: '쉬움',   count: 0.55, hp: 0.55, delay: 2.0, stage: 1.5,
+            desc: '적이 절반, 첫 등장도 1분 뒤' },
+  normal: { name: '보통',   count: 0.75, hp: 0.75, delay: 1.5, stage: 1.25,
+            desc: '숨 돌릴 틈은 있다' },
+  hard:   { name: '어려움', count: 1.0,  hp: 1.0,  delay: 1.0, stage: 1.0,
+            desc: '지금까지의 기준. 쉬지 않고 온다' },
+};
+const D = () => DIFFS[P.diff.level] || DIFFS.hard;
+
 const typeMaxHp = (type) => (type === 'boss'
   ? P.boss.hp                                       // 톰은 고정 스탯 (D83) — 배율도 안 받는다
-  : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp * finalBoost());
+  : (P[type].hp + threatLevel() * P.threat.hpGain) * P.balance.enemyHp * D().hp * finalBoost());
 const enemyMaxHp = (e) => typeMaxHp(e.type);
 
 // 멀티에서 명령·스냅샷이 엔티티를 가리키려면 **이름이 필요하다** (D92-0단계).
@@ -2948,6 +3006,10 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
   if (kind === 'tower' && maxWorkshopTier(p.owner) < 1) return '공방이 필요합니다';
   const cells = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]];
   for (const [ci, cj] of cells) {
+    // 고양이가 나타나는 띠에는 못 짓는다 (D138) — 지어 봐야 즉시 두들겨 맞는다.
+    // 화면의 붉은 띠와 **같은 함수**를 본다
+    if (P.look.dangerZone && inSpawnZone(cellX(ci), cellZ(cj)))
+      return '고양이가 나타나는 자리입니다 (붉은 띠)';
     if (obstacles.has(cellKey(ci, cj))) return '자리가 막혀 있습니다 (2x2 공터 필요)';
     if (nodeAt(ci, cj)) return '광맥 위에는 지을 수 없습니다';
     if (!asOrder && distCellToPoint(ci, cj, p.x, p.z) < P.player.radius + 0.02) return '내가 서 있는 자리입니다';
@@ -5173,11 +5235,12 @@ function segmentClearFor(x0, z0, x1, z1, r) {
 }
 
 // 적 등장 전 준비 시간 — 이 동안 광맥을 확보해 둘 수 있다
-const enemyActive = () => survival >= P.enemy.spawnDelay;
+const spawnDelayNow = () => P.enemy.spawnDelay * D().delay;   // 난이도가 곱해진다 (D138)
+const enemyActive = () => survival >= spawnDelayNow();
 
 // 위협 레벨: 적이 등장한 뒤부터 시간이 지날수록 강해짐
 function threatLevel() {
-  return Math.max(0, Math.floor((survival - P.enemy.spawnDelay) / P.threat.interval));
+  return Math.max(0, Math.floor((survival - spawnDelayNow()) / P.threat.interval));
 }
 // ---- 시간에 따른 적 투입 ----
 //  1) 스테이지 표(STAGES)가 증원과 새 종류 등장을 결정한다
@@ -5201,7 +5264,8 @@ const endlessMul = () => Math.pow(P.final.endlessGrow, endlessRound);
 
 // 스테이지 길이 배율 (D115). "톰이 너무 빨리 온다"는 평 →
 // 표의 숫자를 고치지 않고 여기서 곱한다 (costScale과 같은 방식 — 원래 값이 소스에 남는다).
-const stageDur = () => STAGES[Math.min(stage, STAGES.length) - 1].time * P.threat.stageScale;
+const stageDur = () =>
+  STAGES[Math.min(stage, STAGES.length) - 1].time * P.threat.stageScale * D().stage;
 
 // 지금까지의 스테이지 표에 등장한 종류들 (증원 스폰 풀)
 function unlockedTypes() {
@@ -7718,6 +7782,53 @@ function myTerritoryRate(me) {
   return myTerritoryArea(me) * P.res.terrIncome;
 }
 
+// ---- 체력·기운 게이지 (D140) ----
+// 예전엔 체력이 개발 HUD의 **아스키 블록**(████░░░░)이었고 기운은 자원바 한 칸에
+// 끼어 있었다. 둘 다 "지금 죽는가 / 지금 구를 수 있는가"를 순간적으로 읽어야 하는
+// 정보인데 생김새가 그 급을 못 따라갔다.
+//   · 눈금을 **한 대 맞는 양**으로 쪼갠다 — "몇 대 더 버티나"가 세어진다
+//   · 기운 눈금은 **구르기 한 번분** — 이 선을 넘겨야 Shift가 먹는다
+//   · 체력이 낮으면 색이 바뀌고 깜빡인다 (숫자를 안 읽어도 안다)
+// ⚠ 개발 HUD(백틱)와 **무관하게 항상 보인다**. D118·D137에서 두 번 당한 실수다.
+const vitEl = document.getElementById('vitals');
+const vitHp = vitEl && vitEl.querySelector('.hp');
+const vitSt = vitEl && vitEl.querySelector('.st');
+let vitTicks = { hp: -1, st: -1 };
+const setTicks = (row, n) => {
+  const box = row.querySelector('.ticks');
+  box.innerHTML = '<span></span>'.repeat(Math.max(1, Math.min(20, n)));
+};
+function updateVitals(me) {
+  if (!vitEl) return;
+  // 체력 — 눈금 하나 = 순찰묘 한 대
+  const hpF = Math.max(0, Math.min(1, me.hp / P.player.hp));
+  const perHit = Math.max(1, P.chaser.dmg);
+  const hpN = Math.round(P.player.hp / perHit);
+  if (vitTicks.hp !== hpN) { setTicks(vitHp, hpN); vitTicks.hp = hpN; }
+  vitHp.querySelector('.fill').style.width = `${(hpF * 100).toFixed(1)}%`;
+  vitHp.querySelector('.num').textContent = Math.ceil(me.hp);
+  vitHp.classList.toggle('warn', hpF <= 0.5 && hpF > 0.25);
+  vitHp.classList.toggle('crit', hpF <= 0.25);
+
+  // 기운 — 눈금 하나 = 구르기 한 번
+  const stF = Math.max(0, Math.min(1, me.stamina / P.player.stamMax));
+  const rolls = Math.max(1, Math.round(P.player.stamMax / P.player.stamRoll));
+  if (vitTicks.st !== rolls) { setTicks(vitSt, rolls); vitTicks.st = rolls; }
+  vitSt.querySelector('.fill').style.width = `${(stF * 100).toFixed(1)}%`;
+  vitSt.querySelector('.num').textContent = Math.ceil(me.stamina);
+  const canRoll = me.stamina >= P.player.stamRoll;
+  vitSt.classList.toggle('dry', !canRoll);
+  vitSt.querySelector('.rollmark').style.left =
+    `${((P.player.stamRoll / P.player.stamMax) * 100).toFixed(1)}%`;
+  let tag = vitSt.querySelector('.tag');
+  if (!canRoll && !tag) {
+    tag = document.createElement('b');
+    tag.className = 'tag';
+    tag.textContent = '숨참';
+    vitSt.querySelector('.track').appendChild(tag);
+  } else if (canRoll && tag) tag.remove();
+}
+
 function updateRes() {
   const me = localPlayer();
   const rate = myTerritoryRate(me);
@@ -7725,21 +7836,8 @@ function updateRes() {
   // 영토가 **뭘 해 주는지**를 숫자로 붙인다 (D118). 넓이만 보여주면
   // "그래서 내가 뭘 얻고 있는데?"에 답이 안 된다. 지금 서 있는 곳까지 표시한다.
   const total = rate + P.res.idleIncome;
-  // ---- 기운 (D137) ----
-  // 예전엔 좌상단 **개발 HUD**에만 있었다. 그건 백틱으로 끄는 디버그 오버레이라,
-  // 끄는 순간 "Shift를 지금 쓸 수 있나"를 알 방법이 사라진다.
-  // D118에서 미니맵이 똑같은 이유로 hudOn에 묶여 있다가 떨어져 나왔다 — 같은 실수다.
-  // 구르기 한 번분(stamRoll)에 눈금을 박아 **"지금 구를 수 있나"가 한눈에** 보이게 한다.
-  const stamF = Math.max(0, Math.min(1, me.stamina / P.player.stamMax));
-  const canRoll = me.stamina >= P.player.stamRoll;
-  const rollMark = (P.player.stamRoll / P.player.stamMax) * 100;
+  updateVitals(me);   // 체력·기운은 자기 패널로 나갔다 (D140)
   resEl.innerHTML =
-    `<div class="r stamina${canRoll ? '' : ' dry'}">` +
-      `<span class="ic">⚡</span>` +
-      `<span class="sbar"><i style="width:${(stamF * 100).toFixed(0)}%"></i>` +
-      `<u style="left:${rollMark.toFixed(0)}%"></u></span>` +
-      `<b class="rate">${Math.ceil(me.stamina)}</b>` +
-      (canRoll ? '' : '<b class="warn">숨참</b>') + '</div>' +
     `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}` +
     (total > 0 ? `<b class="rate">+${total.toFixed(1)}/s</b>` : '') + '</div>' +
     // **내 땅만** 센다 (D137). 예전엔 전체 덩어리를 보여줘서, 친구가 막아 놓은
@@ -8472,6 +8570,8 @@ function audio() {
 function wakeAudio() {
   const a = audio();
   if (a && a.state === 'suspended') a.resume();
+  // 브라우저는 사용자 입력 전에는 소리를 안 내 준다 — 그 첫 입력에 음악도 같이 켠다
+  bgmStart();
 }
 
 // 소리 하나 = 짧은 오실레이터 + 감쇠. type/주파수/길이만 바꿔 네 가지를 만든다.
@@ -8512,6 +8612,110 @@ function noise({ dur = 0.2, vol = 0.4, lo = 300 }) {
   g2.gain.value = Math.max(0.0001, vol * P.sfx.volume);
   src.connect(f).connect(g2).connect(a.destination);
   src.start();
+}
+
+// ============================================================
+// 배경음악 (D139) — **코드가 즉석에서 만든다**
+//  파일을 안 쓰는 이유:
+//   · 이 게임의 소리는 이미 전부 WebAudio 합성이다 (D122) — 결이 맞는다
+//   · 저작권도 용량도 0. 배포본이 무거워지지 않는다
+//   · 구간 전환(평상시 ↔ 공세)을 내가 원하는 박자에 맞출 수 있다
+//
+//  5음 음계(펜타토닉)를 쓴다 — 아무 순서로 눌러도 어긋난 소리가 안 난다.
+//  그래서 매 마디를 즉석에서 만들어도 늘 들을 만하다. 같은 곡이 반복되지 않는다.
+//
+//  ⚠ **미리 예약해야 한다.** rAF에 맞춰 소리를 내면 프레임이 흔들릴 때마다
+//     박자가 같이 흔들린다. 0.2초마다 깨어나 0.6초 앞까지 미리 잡아 둔다.
+// ============================================================
+const BGM_SCALE = [0, 3, 5, 7, 10];        // 단5음 — 어떤 조합도 불협이 안 난다
+const BGM_MOOD = {
+  // 평상시 — 느리고 낮게. 오래 들어도 안 지치는 게 목적이다
+  calm: { bpm: 82, root: 55, wave: 'triangle', bassVol: 0.5, arpVol: 0.22,
+          arpEvery: 2, lead: 0.10, cut: 900 },
+  // 준비 국면 — 더 조용하게. 이 게임에서 유일하게 안 쫓기는 시간이다 (D108)
+  prep: { bpm: 68, root: 49, wave: 'sine', bassVol: 0.34, arpVol: 0.18,
+          arpEvery: 4, lead: 0.16, cut: 1200 },
+  // 최후의 공세 — 빠르고 낮고 거칠게
+  tense: { bpm: 138, root: 41, wave: 'sawtooth', bassVol: 0.6, arpVol: 0.3,
+           arpEvery: 1, lead: 0.05, cut: 700 },
+};
+let bgmGain = null, bgmFilter = null;
+let bgmStep = 0, bgmNextT = 0, bgmTimer = null;
+let bgmMood = 'calm', bgmWantMood = 'calm';
+
+function bgmNow() {
+  if (finalPhase === 'assault' || enemies.some((e) => e.type === 'boss')) return 'tense';
+  if (finalPhase === 'prep' || finalPhase === 'won') return 'prep';
+  return 'calm';
+}
+
+function bgmEnsure() {
+  const a = audio();
+  if (!a || a.state !== 'running') return null;
+  if (!bgmGain) {
+    bgmFilter = a.createBiquadFilter();
+    bgmFilter.type = 'lowpass';
+    bgmFilter.frequency.value = 900;
+    bgmGain = a.createGain();
+    bgmGain.gain.value = 0;
+    bgmFilter.connect(bgmGain).connect(a.destination);
+  }
+  return a;
+}
+
+// 음 하나. 마디 안에서 **미리 정해진 시각**에 울린다
+function bgmNote(a, freq, at, dur, vol, wave) {
+  const osc = a.createOscillator();
+  const g = a.createGain();
+  osc.type = wave;
+  osc.frequency.setValueAtTime(freq, at);
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0001, vol), at + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  osc.connect(g).connect(bgmFilter);
+  osc.start(at);
+  osc.stop(at + dur + 0.05);
+}
+
+const bgmHz = (semi) => 440 * Math.pow(2, (semi - 69) / 12);
+
+function bgmSchedule() {
+  const a = bgmEnsure();
+  if (!a) return;
+  const want = P.bgm.on ? P.bgm.volume : 0;
+  bgmGain.gain.setTargetAtTime(want, a.currentTime, 0.35);   // 크로스페이드
+  if (!P.bgm.on || P.bgm.volume <= 0) return;
+
+  bgmWantMood = bgmNow();
+  const m = BGM_MOOD[bgmWantMood];
+  bgmFilter.frequency.setTargetAtTime(m.cut, a.currentTime, 0.5);
+  const beat = 60 / m.bpm / 2;              // 8분음표 하나
+  if (bgmNextT < a.currentTime) bgmNextT = a.currentTime + 0.05;
+
+  while (bgmNextT < a.currentTime + 0.6) {
+    const s = bgmStep;
+    const bar = Math.floor(s / 8);
+    // 마디마다 근음을 5음 음계 안에서 옮긴다 — 코드 진행 대신 **자리 이동**이다
+    const deg = BGM_SCALE[(bar * 2 + (bar >> 2)) % BGM_SCALE.length];
+    const root = m.root + deg;
+    if (s % 4 === 0) bgmNote(a, bgmHz(root), bgmNextT, beat * 2.2, m.bassVol, m.wave);
+    if (s % m.arpEvery === 0) {
+      const step = BGM_SCALE[(s * 3 + bar) % BGM_SCALE.length];
+      bgmNote(a, bgmHz(root + 12 + step), bgmNextT, beat * 1.1, m.arpVol, 'triangle');
+    }
+    // 가끔 높은 음 하나 — 반복이 지겨워지지 않게
+    if (Math.random() < m.lead) {
+      const step = BGM_SCALE[Math.floor(Math.random() * BGM_SCALE.length)];
+      bgmNote(a, bgmHz(root + 24 + step), bgmNextT, beat * 1.6, m.arpVol * 0.7, 'sine');
+    }
+    bgmNextT += beat;
+    bgmStep = (s + 1) % 64;
+  }
+}
+
+function bgmStart() {
+  if (bgmTimer) return;
+  bgmTimer = setInterval(bgmSchedule, 200);
 }
 
 // 같은 소리가 한 프레임에 몰리면 귀가 아프다 — 종류마다 최소 간격을 둔다
@@ -9557,7 +9761,8 @@ const humanCount = () => humans().length;
 const coopScale = () => 1 + Math.max(0, humanCount() - 1) * (P.coop.enemyScale - 1);
 // 1마리 추가는 0마리로 반올림되지 않게 최소 1을 지킨다 —
 // 스테이지 표의 `+1`이 배율 때문에 통째로 사라지면 그 스테이지의 성격이 없어진다
-const scaled = (n) => (n <= 0 ? 0 : Math.max(1, Math.round(n * coopScale() * P.balance.enemyCount)));
+const scaled = (n) =>
+  (n <= 0 ? 0 : Math.max(1, Math.round(n * coopScale() * P.balance.enemyCount * D().count)));
 
 // 호스트가 튜닝 패널을 열고 있는 동안은 P를 계속 흘려 보낸다 (D92-6단계).
 // 슬라이더를 만지는 그 순간부터 두 사람이 다른 규칙으로 보게 되므로,
@@ -9874,6 +10079,23 @@ $('s-solo').onclick = () => {
   player.local = true; ally.local = false; ally.ai = true;
   beginMatch();
 };
+// ---- 난이도 고르기 (D138) ----
+// 마지막 선택을 기억한다 — 매번 다시 고르게 하면 결국 아무도 안 바꾼다
+const DIFF_KEY = 'tj.diff';
+function setDiff(lv, save = true) {
+  if (!DIFFS[lv]) lv = 'normal';
+  P.diff.level = lv;
+  for (const b of document.querySelectorAll('#s-diff button'))
+    b.classList.toggle('on', b.dataset.d === lv);
+  const el = $('s-diffdesc');
+  if (el) el.textContent = `${DIFFS[lv].name} — ${DIFFS[lv].desc}`;
+  if (save) { try { localStorage.setItem(DIFF_KEY, lv); } catch { /* 시크릿 창 */ } }
+}
+for (const b of document.querySelectorAll('#s-diff button'))
+  b.onclick = () => setDiff(b.dataset.d);
+try { setDiff(localStorage.getItem(DIFF_KEY) || 'normal', false); }
+catch { setDiff('normal', false); }
+
 $('s-editor').onclick = () => { net.leave(); openEditor(); };
 // 연습판 (D111) — 솔로와 같은 판에 안내만 얹는다
 $('s-tut').onclick = () => {
@@ -10032,7 +10254,7 @@ function updateHUD() {
   let wallCount = 0;
   for (const ob of obstacles.values()) if (!ob.bedrock && !ob.bldgRef) wallCount++;
   const lvl = threatLevel();
-  const nextIn = P.threat.interval - ((survival - P.enemy.spawnDelay) % P.threat.interval);
+  const nextIn = P.threat.interval - ((survival - spawnDelayNow()) % P.threat.interval);
   const waiting = !enemyActive();
   const attacking = enemies.filter((e) => e.isAttacking).length;
   // ---- 좌상단 — 지금 벌어지는 일만 (D88) ----
@@ -10071,11 +10293,11 @@ function updateHUD() {
     (victory ? ' 돌파!' : ` 다음 웨이브 ${Math.max(stageDur() - stageT, 0).toFixed(0)}s`) +
     (waiting ? '' : ` · 위협 Lv.${lvl}`) + '\n' +
     (waiting
-      ? `적 등장까지 ${(P.enemy.spawnDelay - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
+      ? `적 등장까지 ${(spawnDelayNow() - survival).toFixed(1)}s — 지금 광맥을 확보하세요\n`
       : `적 ${enemies.length}마리${attacking ? ` · ${attacking}마리 공격 중!` : ''}\n`) +
-    `체력 ${bar(me.hp, P.player.hp, '█', '░')} ${Math.ceil(me.hp)}\n` +
-    `기운 ${bar(me.stamina, P.player.stamMax, '▰', '▱')} ${Math.ceil(me.stamina)}` +
-    (inTerritory(me.x, me.z) ? '  🌿내 땅' : '') + '\n' +
+    // 체력·기운은 **자기 게이지 패널**로 나갔다 (D140) — 여기 아스키 블록은 걷어냈다.
+    // 개발 HUD는 백틱으로 꺼지는데, 목숨줄이 거기 얹혀 있으면 안 된다
+    (inTerritory(me.x, me.z) ? '🌿 내 땅\n' : '') +
     // 영토 (D86 → D137) — **내 땅만** 센다. 옆에 전체를 같이 보여 주면
     // 멀티에서 "내 몫이 얼마인가"가 바로 읽힌다
     `영토 ${myTerritoryArea(me).toFixed(0)}㎡` +
@@ -10326,7 +10548,7 @@ function tick(dt) {
       // 접촉 즉사는 없다 — updateEnemy 안의 공격 로직이 체력을 깎는다
     } else {
       // 등장 대기: 스폰 지점에서 반투명하게 예고
-      const t = survival / Math.max(P.enemy.spawnDelay, 0.001);
+      const t = survival / Math.max(spawnDelayNow(), 0.001);
       for (const e of enemies) {
         e.vis.setOpacity(0.15 + 0.35 * t);
         e.vis.group.position.set(e.x, 0, e.z);
@@ -10578,6 +10800,8 @@ window.__game = {
   rebakeTextures, getFloorTex, getBrickTex,
   applyQuality, QUALITY, frameMedian, get qLevel() { return qLevel; },
   myTerritoryArea, myTerritoryRate, OWNERS,
+  DIFFS, setDiff, spawnDelayNow, typeMaxHp, enemySpawnPos,
+  spawnZoneInner, inSpawnZone, rebuildDangerRing,
   get territoryAreaBy() { return territoryAreaBy; },
   get territoryOwn() { return territoryOwn; },
   prof, profDump, separateEnemies, obAtCell, astar, hpPush, collideWithObstacles,
