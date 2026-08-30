@@ -178,7 +178,10 @@ const P = {
   // 고정 스탯으로 승부한다 (typeMaxHp·건물 dps 가산 둘 다 boss는 예외 처리).
   // canBreak는 자폭묘처럼 자폭하지 않고, 쿨다운마다 막힌 벽 하나를 강타해 부순다
   // (smashCooldown·smashWindup) — 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다.
-  boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 12000, reward: 0, dmg: 55,
+  // 톰 처치 보상 **10000** (D144, 임시). 0이었다 — 12000 체력을 깎아 놓고
+  // 돌아오는 게 없었다. 이 보상은 곧바로 **준비 국면**(D108)으로 이어지므로,
+  // "밑천이 생긴 직후에 안전하게 쓸 시간이 온다"가 저절로 성립한다.
+  boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 12000, reward: 10000, dmg: 55,
           smashCooldown: 8.0, smashWindup: 0.9,
           // 강타 **몇 번**에 벽이 무너지는가 (D99). 한 방이면 벽을 세우는 행위가
           // 보스 앞에서 무의미해진다 — 한 번 맞고 금이 간 벽은 아직 막고 있으므로
@@ -7342,6 +7345,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.enemy, 'spawnDelay', 0, 60, 1).name('적 등장까지(초)');
   f.add(P.chaser, 'hp', 100, 4000, 50).name('순찰묘 체력');
   f.add(P.chaser, 'reward', 0, 60, 1).name('처치 보상 (순찰묘)');
+  f.add(P.boss, 'reward', 0, 30000, 500).name('★ 톰 처치 보상');
   f.add(P.enemy, 'attackRange', 0, 4, 0.1).name('적 공격 사거리(+몸)');
   f.add(P.enemy, 'attackWindup', 0.1, 2, 0.05).name('적 예비동작(피할 시간)');
   f.add(P.chaser, 'radius', 0.3, 3, 0.05).name('순찰묘 몸집');
