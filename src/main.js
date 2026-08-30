@@ -282,11 +282,27 @@ const P = {
   //  t1(배치 시 기본): 약하고 저렴 — 좁은 구간을 값싸게 메우는 용도
   //  t2(업그레이드): 지금까지의 기본값 그대로. t3(업그레이드): 겁나 세고 겁나 비쌈
   // cost는 t2/t3에서는 "배치값"이 아니라 "그 등급으로 올리는 업그레이드값"이다.
+  // ---- 경비탑 15단 강화 (D145) ----
+  // 3등급 고정표(t1/t2/t3)를 버리고 **Lv.1부터 Lv.15까지 한 줄기**로 바꿨다.
+  // 등급마다 값을 손으로 적으면 15개를 다 조율할 수 없다 — **공식 + 성장률**로 낸다.
+  // Lv.1 값이 곧 옛 t1이고, 나머지는 거기서 자란다.
   tower: {
     t1Cost: 20, t1Hp: 70, t1Range: 8.0, t1Dmg: 14, t1Reload: 1.1,
-    t2Cost: 60, t2Hp: 110, t2Range: 10.5, t2Dmg: 30, t2Reload: 1.0,
-    // 1000은 실지출 1500이라(costScale 1.5) 후반에도 손이 안 갔다 — 600(실 900)으로 내린다 (D107)
-    t3Cost: 600, t3Hp: 500, t3Range: 16.0, t3Dmg: 130, t3Reload: 0.8,
+    maxLv: 15,
+    // 성장률 — 화력은 기하급수(강화가 보상이어야 하니까), 사거리는 산술(너무 길면 판이 죽는다)
+    dmgGrow: 1.35,      // Lv.10 ≈ 208, Lv.15 ≈ 933 (옛 t3은 130이었다)
+    hpGrow: 1.18,       // Lv.15 ≈ 838 (옛 t3은 500)
+    rangeStep: 0.62,    // Lv.15 = 16.7 (옛 t3은 16.0) — 사거리는 거의 안 늘린다
+    reloadStep: 0.045, reloadMin: 0.35,
+    costGrow: 1.5,      // 시도 1회 비용. Lv.14→15 시도가 3894 — **잉여 치즈를 태우는 구멍**(D100)
+    // 확률 보정 — 곡선 자체는 ENH 표에 있고, 여기서 전체를 밀고 당긴다
+    luck: 1.0,          // 성공률 배수
+    risk: 1.0,          // 파괴율 배수 (0으로 두면 파괴 없음 = 옛 방식)
+    // 즉시 구매 (D145) — 기대비용의 110%를 내면 확정으로 산다
+    buyMaxLv: 7, buyPremium: 1.10,
+    protectParts: 3,    // 프로텍트 1회 = 부품 3개. 실패해도 **안 부서진다**
+    // 공방 등급이 여는 상한 — 공방을 계속 올릴 이유를 강화가 이어받는다
+    gate1: 5, gate2: 10, gate3: 15,
   },
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
@@ -332,7 +348,9 @@ const P = {
     // 고양이가 나타나는 바깥 띠를 붉게 칠한다 (D138). 거기엔 건물을 못 짓는다
     dangerZone: 1,
   },
-  build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0, towerUp2Time: 3.0, towerUp3Time: 4.0,
+  // towerUp2Time·towerUp3Time은 D145에서 지웠다 — 경비탑 강화는 채널링이 없어(D88)
+  // 3등급 시절에도 이미 아무도 안 읽던 값이었다.
+  build: { depotTime: 3.0, workshopTime: 3.5, towerTime: 4.0,
            inset: 0.3, refundRatio: 0.5,
            // 경비탑 원격 착공 사거리(m). **0 = 무제한** (D128).
            // 벽은 여기 안 걸린다 — 벽은 늘 직접 가서 짓는다
@@ -597,14 +615,121 @@ const GUARD_TYPES = {
 
 // 경비탑 3단계 (D82) — 값은 전부 P.tower에서 읽는다. cost는 tier1=배치값,
 // tier2/3=그 등급으로 올리는 업그레이드값이다. 칸수는 항상 2x2 — 등급은 제자리에서 오른다.
-const TOWER_TIERS = {
-  1: { cost: () => P.tower.t1Cost, hp: () => P.tower.t1Hp, range: () => P.tower.t1Range,
-       dmg: () => P.tower.t1Dmg, reload: () => P.tower.t1Reload, time: () => 0 },
-  2: { cost: () => P.tower.t2Cost, hp: () => P.tower.t2Hp, range: () => P.tower.t2Range,
-       dmg: () => P.tower.t2Dmg, reload: () => P.tower.t2Reload, time: () => P.build.towerUp2Time },
-  3: { cost: () => P.tower.t3Cost, hp: () => P.tower.t3Hp, range: () => P.tower.t3Range,
-       dmg: () => P.tower.t3Dmg, reload: () => P.tower.t3Reload, time: () => P.build.towerUp3Time },
+// ---- 경비탑 능력치 = Lv에서 나오는 공식 (D145) ----
+// 옛 t1/t2/t3 세 줄을 15줄로 늘리는 대신 **성장률**로 낸다. 슬라이더 5개가 15단 전부를 민다.
+// TOWER_TIERS[n]의 모양(cost/hp/range/dmg/reload/time 전부 함수)은 그대로 뒀다 —
+// 이미 이 표를 읽는 곳이 10군데가 넘는데, 모양이 바뀌면 전부 손대야 한다.
+const TOWER_MAXLV = 15;
+const TOWER_TIERS = {};
+for (let n = 1; n <= TOWER_MAXLV; n++) {
+  const k = n - 1;
+  TOWER_TIERS[n] = {
+    // cost(n) = "Lv.n으로 올리는 시도 1회의 값". Lv.1은 배치값이다 (옛 의미 그대로)
+    cost:   () => Math.round(P.tower.t1Cost * Math.pow(P.tower.costGrow, k)),
+    hp:     () => Math.round(P.tower.t1Hp * Math.pow(P.tower.hpGrow, k)),
+    range:  () => P.tower.t1Range + P.tower.rangeStep * k,
+    dmg:    () => Math.round(P.tower.t1Dmg * Math.pow(P.tower.dmgGrow, k)),
+    reload: () => Math.max(P.tower.reloadMin, P.tower.t1Reload - P.tower.reloadStep * k),
+    // 경비탑 강화는 **한 번에 펑**이라 채널링 시간이 없다 (D88). 0을 유지한다.
+    time:   () => 0,
+  };
+}
+
+// ---- 강화 확률표 (D145) ----
+// 인덱스 = **목표 레벨**. s = 성공, d = 파괴(절대 확률). 나머지(1-s-d)는 "그대로 유지".
+// 설계: **실패는 일찍부터, 파괴는 나중부터**.
+//   Lv.5까지는 파괴가 없다 — 시스템을 배우는 구간이고, 여기서 부수면 아무도 안 한다.
+//   Lv.6부터 파괴가 붙고 레벨을 따라 가팔라진다 ("낮으면 적고 높을수록 높게").
+// 무보호로 1→15를 뚫을 확률 ≈ 0.16% (약 610개에 하나). 프로텍트(부품)가 그 벽을 여는 열쇠다.
+const ENH = {
+  2:  { s: 1.00, d: 0.00 },  3:  { s: 0.95, d: 0.00 },  4:  { s: 0.90, d: 0.00 },
+  5:  { s: 0.85, d: 0.00 },  6:  { s: 0.80, d: 0.02 },  7:  { s: 0.75, d: 0.04 },
+  8:  { s: 0.70, d: 0.07 },  9:  { s: 0.60, d: 0.11 },  10: { s: 0.50, d: 0.16 },
+  11: { s: 0.40, d: 0.22 },  12: { s: 0.30, d: 0.29 },  13: { s: 0.20, d: 0.37 },
+  14: { s: 0.12, d: 0.46 },  15: { s: 0.08, d: 0.55 },
 };
+
+// 보정을 먹인 실제 확률. s+d가 1을 넘지 않게 파괴 쪽을 깎는다 —
+// 슬라이더를 극단으로 밀어도 "성공도 파괴도 아닌" 칸이 음수가 되면 안 된다.
+function enhOdds(lv) {
+  const e = ENH[lv];
+  if (!e) return null;
+  const s = Math.max(0, Math.min(1, e.s * P.tower.luck));
+  const d = Math.max(0, Math.min(1 - s, e.d * P.tower.risk));
+  return { s, d, f: 1 - s - d };
+}
+
+// 공방 등급이 여는 경비탑 상한 (D145) — 공방을 끝까지 올릴 이유를 강화가 이어받는다
+const towerCapFor = (owner) => {
+  const w = maxWorkshopTier(owner);
+  return w >= 3 ? P.tower.gate3 : w >= 2 ? P.tower.gate2 : P.tower.gate1;
+};
+
+// ---- 즉시 구매값 = 기대비용 × 프리미엄 (D145) ----
+// "확률에 걸까, 확정을 살까"가 매번 진짜 결정이 되려면 두 값이 **연동**돼야 한다.
+// 손으로 적으면 확률을 만질 때마다 어긋난다 — 그래서 기대비용을 **풀어서** 낸다.
+//
+// 파괴되면 Lv.1 새 탑부터 다시다. 그래서 모든 단계가 T1에 얽힌 연립방정식이 된다:
+//   T_k = c_k + s·T_{k+1} + f·T_k + d·(B + T_1)
+// T_k = a_k + b_k·T_1 로 두고 위에서부터 내려오면 한 번에 풀린다.
+// from(기본 1)에서 target까지 가는 기대비용. **파괴는 Lv.1로 되돌린다**는 걸 그대로 푼다.
+function expectedCostFrom(from, target) {
+  const B = TOWER_TIERS[1].cost();
+  if (target <= from) return 0;
+  const a = new Array(target + 1).fill(0);
+  const b = new Array(target + 1).fill(0);
+  for (let k = target; k > 1; k--) {
+    const o = enhOdds(k);
+    if (!o) return Infinity;
+    const denom = 1 - o.f;
+    if (denom <= 1e-9) return Infinity;   // 성공도 파괴도 안 나면 영원히 못 간다
+    a[k - 1] = (TOWER_TIERS[k].cost() + o.s * a[k] + o.d * B) / denom;
+    b[k - 1] = (o.s * b[k] + o.d) / denom;
+  }
+  if (b[1] >= 1 - 1e-9) return Infinity;
+  const T1 = a[1] / (1 - b[1]);           // Lv.1에서 target까지
+  return a[from] + b[from] * T1;
+}
+// Lv.1 탑을 새로 세워 target까지 가는 기대비용 (배치값 포함)
+const expectedCostTo = (target) =>
+  (target <= 1 ? TOWER_TIERS[1].cost() : TOWER_TIERS[1].cost() + expectedCostFrom(1, target));
+
+// ---- 즉시 구매값 (D145) ----
+// 지금 lv인 탑을 target까지 **확정으로** 올리는 값 = 그 구간 기대비용 × 웃돈.
+// 웃돈이 있어야 "운에 걸면 더 싸다"가 성립한다 — 확정이 더 싸면 아무도 안 굴린다.
+const buyPriceFrom = (from, target) =>
+  Math.round(expectedCostFrom(from, target) * P.tower.buyPremium);
+const buyPrice = (lv) => Math.round(expectedCostTo(lv) * P.tower.buyPremium);
+
+// 이 탑을 지금 확정 구매로 어디까지 올릴 수 있나 (없으면 null).
+// 상한 셋이 겹친다: 구매 상한 · 공방이 연 상한 · 최대 단계.
+function buyTarget(b, p = player) {
+  if (b.kind !== 'tower') return null;
+  const lv = b.tier || 1;
+  const tgt = Math.min(P.tower.buyMaxLv, towerCapFor(b.owner), P.tower.maxLv);
+  if (tgt <= lv) return null;
+  const raw = buyPriceFrom(lv, tgt);
+  if (!isFinite(raw)) return null;
+  return { lv: tgt, cost: cheeseCost(raw) };
+}
+
+// V — 확정 구매 (D145). F와 **같은 대상**을 본다.
+// 키를 나눈 이유: 도박과 확정은 결과가 완전히 다른 행동이라 같은 키에 섞으면
+// 손가락이 기억하는 것과 화면에서 벌어지는 일이 어긋난다.
+function tryBuyTier(p = player) {
+  if (p.upgradeJob || p.buildJob) return;
+  const a = fAction(p);
+  if (!a || a.kind !== 'upgrade' || a.b.kind !== 'tower') {
+    flashFor(p, '확정 구매할 경비탑이 없습니다', '#e05050'); return;
+  }
+  const b = a.b, t = buyTarget(b, p);
+  if (!t) { flashFor(p, `확정 구매 상한(Lv.${Math.min(P.tower.buyMaxLv, towerCapFor(b.owner))})에 도달했습니다`, '#e05050'); return; }
+  if (p.cheese < t.cost) { flashFor(p, `치즈 ${t.cost} 필요 (지금 ${Math.floor(p.cheese)})`, '#e05050'); return; }
+  p.cheese -= t.cost;
+  retierBuilding(b, t.lv);
+  spawnBuildFx(b.cx, b.cz);
+  flashFor(p, `확정 구매 — 경비탑 Lv.${t.lv} (치즈 ${t.cost})`, '#c9a0ff');
+}
 // -1 = 아무것도 안 들고 있음 (기본값).
 // 숫자키로 들고, ESC로 내려놓는다 — 손에 뭔가 들려 있는 상태가 "예외"여야
 // 좌클릭이 실수로 벽을 흘리지 않는다.
@@ -2161,6 +2286,7 @@ for (const p of players) {
   p.upgradeJob = null;     // { b, t, dur, cost, parts } — 제자리 업그레이드 채널링 (D82)
   p.parts = 0;             // 부품 (D92-1e). 치즈와 같은 이유로 각자 살림이다 (D43)
   p.partsBought = 0;       // 치즈로 산 부품 수 — 살수록 값이 오른다 (D107)
+  p.protectOn = false;     // 🛡 프로텍트 (D145). 켜 두면 강화 파괴를 부품으로 막는다
   // 이동 입력 — **월드 좌표 단위벡터**다 (D92-1f). 카메라 기준 축이 아니라서
   // 두 사람이 서로 다른 카메라 모드를 써도 시뮬은 영향을 안 받는다
   p.in = { mx: 0, mz: 0 };
@@ -2941,7 +3067,14 @@ function makeBuildingMesh(kind, owner) {
 //   1. 등급 핍 — 건물 위에 떠 있는 막대 1/2/3개. 어느 각도에서도 개수를 셀 수 있다
 //   2. 지붕 색 — Lv.1 어두움 / Lv.2 밝음 / Lv.3 금색 + 발광
 //   3. 기하 — 층이 하나씩 쌓인다 (경비탑은 포탑이 커지고, 공방은 굴뚝이 자란다)
-const TIER_COLOR = [0x6a7386, 0x74c7f0, 0xffcc55];   // Lv.1 / 2 / 3
+const TIER_COLOR = [0x6a7386, 0x74c7f0, 0xffcc55];   // 공방 Lv.1 / 2 / 3
+// ---- 경비탑 15단 표시 (D145) ----
+// 핍 15개는 **셀 수 없다**. 5개씩 세 띠로 나눈다 —
+//   띠(색) = 한눈에 "대략 어느 급이냐", 핍 개수 = 그 안에서 몇 단이냐.
+// 위에서 보면 색이 먼저 읽히고, 가까이 가면 개수가 읽힌다. 두 번에 나눠 읽게 하는 게 요령이다.
+const BAND_COLOR = [0x8fa0b8, 0x74c7f0, 0xffcc55];   // Lv.1~5 / 6~10 / 11~15
+const towerBand = (lv) => Math.min(2, Math.floor((lv - 1) / 5));   // 0 · 1 · 2
+const towerPips = (lv) => lv - towerBand(lv) * 5;                  // 1~5
 // 핍은 **정육면체**다 — 위에서 봐도(탑다운) 옆에서 봐도(3인칭) 개수가 세진다.
 // 세로 막대로 만들었더니 탑다운에서 점으로 보이고, 타워는 포탑 돔에 묻혔다.
 const pipGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
@@ -2949,8 +3082,15 @@ const tierGeo = new THREE.BoxGeometry(1.0, 0.34, 1.0);
 
 function applyBuildingTierVisual(b) {
   shadowDirty();
-  const tier = Math.max(1, Math.min(3, b.tier || 1));
-  const col = TIER_COLOR[tier - 1];
+  const isTower = b.kind === 'tower';
+  const lv = Math.max(1, Math.min(isTower ? TOWER_MAXLV : 3, b.tier || 1));
+  // 공방은 예전 그대로 3단. 경비탑만 띠로 나눈다.
+  const band = isTower ? towerBand(lv) : lv - 1;
+  const col = isTower ? BAND_COLOR[band] : TIER_COLOR[band];
+  const tier = isTower ? towerPips(lv) : lv;      // 핍 개수 (경비탑은 띠 안의 자리)
+  // 층·포탑 크기는 **띠 안의 자리**가 아니라 실제 레벨을 따라간다 —
+  // 안 그러면 Lv.5와 Lv.10의 포탑이 똑같아진다
+  const grow = isTower ? (lv - 1) / (TOWER_MAXLV - 1) : (lv - 1) / 2;
 
   // --- 1. 등급 핍 (건물 위에 뜬 막대 N개) ---
   if (b.pips) { b.mesh.remove(b.pips); b.pips.traverse((o) => o.material?.dispose?.()); }
@@ -2973,15 +3113,16 @@ function applyBuildingTierVisual(b) {
   roof.material.color.setHex(col);
   if (!roof.material.emissive) roof.material.emissive = new THREE.Color(col);
   else roof.material.emissive.setHex(col);
-  roof.material.emissiveIntensity = tier === 3 ? 0.5 : tier === 2 ? 0.22 : 0;
+  // 띠가 올라갈수록 지붕이 스스로 빛난다 — 최고 띠(Lv.11+)는 멀리서도 눈에 띈다
+  roof.material.emissiveIntensity = band === 2 ? 0.5 : band === 1 ? 0.22 : 0;
 
   // --- 3. 기하: 등급마다 한 층 (Lv.1은 없음) ---
   if (b.tiers) { b.mesh.remove(b.tiers); b.tiers.traverse((o) => o.material?.dispose?.()); }
   // 굴뚝은 등급만큼 자란다 — D82 주석이 약속했던 것 (D135에서 실제로 구현)
   if (b.kind === 'workshop' && b.mesh.userData.stack) {
     const st = b.mesh.userData.stack;
-    st.scale.y = 1 + (tier - 1) * 0.55;
-    st.position.y = 1.85 + (tier - 1) * 0.28;
+    st.scale.y = 1 + (lv - 1) * 0.55;
+    st.position.y = 1.85 + (lv - 1) * 0.28;
   }
   const stack = new THREE.Group();
   const stackMat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.65, metalness: 0.25 });
@@ -2995,14 +3136,16 @@ function applyBuildingTierVisual(b) {
   b.mesh.add(stack);
   b.tiers = stack;
 
-  // 경비탑 포탑은 등급만큼 커지고 밝아진다
-  if (b.kind === 'tower' && b.mesh.userData.head) {
+  // 경비탑 포탑은 **실제 레벨**을 따라 자란다 (D145).
+  // 15단을 전부 크기로 표현하면 Lv.15가 건물을 삼키므로 총 성장폭은 옛 3등급과 같게 두고,
+  // 그 폭을 15칸으로 잘게 나눈다 — 한 단 올릴 때마다 조금씩 커지는 게 보인다.
+  if (isTower && b.mesh.userData.head) {
     const head = b.mesh.userData.head;
-    head.scale.setScalar(1 + (tier - 1) * 0.3);
-    head.position.y = 2.42 + (tier - 1) * 0.3;
+    head.scale.setScalar(1 + grow * 0.75);
+    head.position.y = 2.42 + grow * 0.75;
     const horn = head.children[1];
-    horn.material.emissiveIntensity = 0.5 + (tier - 1) * 0.6;
-    horn.material.color.setHex(tier >= 3 ? 0xffd9a0 : 0xe6e0ff);
+    horn.material.emissiveIntensity = 0.5 + grow * 1.6;
+    horn.material.color.setHex(band === 2 ? 0xffd9a0 : 0xe6e0ff);
   }
 }
 
@@ -3604,14 +3747,23 @@ function nearestUpgradable(x, z, range) {
   let best = null, bestD = range;
   for (const b of buildings) {
     if (b.kind !== 'workshop' && b.kind !== 'tower') continue;
-    if ((b.tier || 1) >= 3) continue;
+    if (atMaxTier(b)) continue;
     const d = Math.hypot(b.cx - x, b.cz - z);
     if (d < bestD) { bestD = d; best = b; }
   }
   return best;
 }
 
-const towerUpgradeLocked = (b) => b.kind === 'tower' && maxWorkshopTier(b.owner) < (b.tier || 1) + 1;
+// 건물별 최대 등급 (D145) — 공방은 여전히 3단, 경비탑만 15단이다.
+// 공방까지 15단으로 늘리지 않은 이유: 공방은 **기술 결정**이라 단계가 적어야 읽힌다.
+const maxTierOf = (b) => (b.kind === 'tower' ? P.tower.maxLv : 3);
+const atMaxTier = (b) => (b.tier || 1) >= maxTierOf(b);
+
+// 경비탑을 지금 못 올리는 게 **공방 등급 때문인가** (D145).
+// 옛 규칙은 "Lv.n 탑에는 Lv.n 공방"이라 3단에서 끝났다.
+// 이제 공방 한 단계가 탑 다섯 단계를 연다 — 공방을 끝까지 올릴 이유를 강화가 이어받는다.
+const towerUpgradeLocked = (b) =>
+  b.kind === 'tower' && (b.tier || 1) >= towerCapFor(b.owner);
 
 // ---- F 키 하나로 두 가지 (D90) ----
 // **수리가 업그레이드보다 우선이다** — 금 간 벽은 시간이 급하고 업그레이드는 안 급하다.
@@ -3625,6 +3777,32 @@ function nearestCracked(x, z, range) {
     if (d < bestD) { bestD = d; best = ob; }
   }
   return best;
+}
+
+// ---- 강화 안내 문구 (D145) ----
+// **확률을 반드시 미리 보여준다.** 안 보이면 도박이 아니라 사고다 —
+// 30% 자리에서 실패한 것과 90% 자리에서 실패한 것은 같은 실패지만 전혀 다른 사건이고,
+// 그걸 구분해 주는 건 누르기 **전에** 본 숫자뿐이다.
+// 파괴 확률이 0이 아니면 그것도 같이 띄운다. 프로텍트가 켜져 있으면 방패를 붙인다.
+function enhLabel(b, s, p) {
+  if (b.kind !== 'tower') {
+    return `${BLDG_INFO[b.kind].label} Lv.${(b.tier || 1) + 1} — 치즈 ${s.cost}` +
+           (s.parts > 0 ? ` · 부품 ${s.parts}` : '');
+  }
+  const next = (b.tier || 1) + 1;
+  const o = enhOdds(next);
+  if (!o) return '경비탑 — 최고 등급';
+  const pct = (v) => Math.round(v * 100);
+  let t = `경비탑 Lv.${next} — 치즈 ${s.cost} · 성공 ${pct(o.s)}%`;
+  if (o.d > 0.005) {
+    t += p.protectOn && p.parts >= P.tower.protectParts
+      ? ` · 파괴 ${pct(o.d)}% 🛡막음`
+      : ` · 💥파괴 ${pct(o.d)}%`;
+  }
+  // 확정 구매를 **같은 줄에** 붙인다. "굴릴까 살까"가 결정이 되려면 두 값이 같이 보여야 한다
+  const buy = buyTarget(b, p);
+  if (buy) t += `   |   [V] 확정 Lv.${buy.lv} — 치즈 ${buy.cost}`;
+  return t;
 }
 
 // 지금 F가 무엇을 할지 (없으면 null). 빌보드와 F키가 같은 함수를 본다
@@ -3641,8 +3819,7 @@ function fAction(p = player) {
   if (!b) return null;
   const s = upgradeSpec(b);
   return { kind: 'upgrade', b, x: b.cx, z: b.cz,
-           label: `${BLDG_INFO[b.kind].label} Lv.${(b.tier || 1) + 1} — 치즈 ${s.cost}` +
-                  (s.parts > 0 ? ` · 부품 ${s.parts}` : ''),
+           label: enhLabel(b, s, p),
            why: upgradeBlockedWhy(b, p) };
 }
 
@@ -3671,17 +3848,81 @@ function upgradeSpec(b) {
       : { cost: cheeseCost(P.workshop.tier3Cost), parts: P.workshop.tier3Parts, time: P.workshop.tier3Time };
   }
   const next = TOWER_TIERS[tier + 1];
+  // 최고 등급이면 다음 칸이 없다 — 호출부(정렬·빌보드)가 먼저 걸러 주지만 여기서도 막는다
+  if (!next) return { cost: Infinity, parts: 0, time: 0 };
   return { cost: cheeseCost(next.cost()), parts: 0, time: next.time() };
 }
 
 // 지금 이 건물을 못 올리는 이유 (없으면 null). 빌보드 문구와 F키가 같은 함수를 본다 —
 // 화면에 보이는 이유와 실제 거부 사유가 어긋나지 않게.
 function upgradeBlockedWhy(b, p = player) {
-  if (towerUpgradeLocked(b)) return `🔒 공방 Lv.${(b.tier || 1) + 1} 필요`;
+  if (atMaxTier(b)) return '최고 등급';
+  if (towerUpgradeLocked(b)) {
+    // 지금 막힌 상한이 다음 공방 등급에서 열리는지 말해 준다 — "왜 막혔나"가 바로 읽히게
+    const need = (b.tier || 1) >= P.tower.gate2 ? 3 : 2;
+    return `🔒 공방 Lv.${need} 필요 (지금 상한 Lv.${towerCapFor(b.owner)})`;
+  }
   const s = upgradeSpec(b);
   if (p.cheese < s.cost) return `치즈 ${s.cost} 필요 (지금 ${Math.floor(p.cheese)})`;
   if (s.parts > 0 && p.parts < s.parts) return `부품 ${s.parts}개 필요 (지금 ${p.parts})`;
   return null;
+}
+
+// ---- 등급 변경 = 체력도 같이 바뀐다 (D145) ----
+// ⚠ 여태 **안 되고 있었다**. buildHp()가 늘 TOWER_TIERS[1].hp()를 쓰고 maxHp는
+//    등급이 올라도 그대로였다 — t2Hp:110·t3Hp:500은 한 번도 적용된 적 없는 죽은 값이었다.
+//    3등급일 땐 눈에 안 띄었지만 15단에서는 Lv.15 탑이 70 체력으로 서 있게 된다.
+// 지금 체력은 **비율로** 옮긴다. 반쯤 부서진 탑을 강화했다고 꽉 채워 주면
+// 강화가 곧 수리가 되어 버린다 (벽 수리비 D90이 무의미해진다).
+function retierBuilding(b, lv) {
+  const frac = b.maxHp > 0 ? Math.max(0, b.hp) / b.maxHp : 1;
+  b.tier = lv;
+  if (b.kind === 'tower') {
+    b.maxHp = TOWER_TIERS[lv].hp();
+    b.hp = Math.max(1, b.maxHp * frac);
+  }
+  applyBuildingTierVisual(b);
+}
+
+// ---- 확률형 강화 (D145) ----
+// 세 갈래다: **성공**(올라간다) / **유지**(그대로, 돈만 나간다) / **파괴**(탑이 사라진다).
+// 비용은 **결과와 무관하게** 나간다 — 그게 도박의 값이다.
+//
+// ⚠ 무작위는 **호스트에서만** 굴린다. 이 함수는 applyCommand 아래에서만 불리므로
+//    (F키·일괄 둘 다) 클라는 절대 여기 못 온다. 결과는 스냅샷의 b.tier로 내려간다.
+//    클라가 스스로 굴리면 화면마다 다른 등급이 뜬다 — 고무줄이 아니라 **모순**이다.
+//
+// 프로텍트: 부품 P.tower.protectParts개. **실제로 막았을 때만** 소모한다.
+// 걸어 두고 안 터지면 안 낸다 — 그래야 "항상 켜 두는" 게 벌이 아니라 보험이 된다.
+function attemptEnhance(p, b) {
+  const lv = b.tier || 1;
+  const next = lv + 1;
+  const o = enhOdds(next);
+  if (!o) return 'max';
+  const cost = cheeseCost(TOWER_TIERS[next].cost());
+  p.cheese -= cost;
+
+  const r = Math.random();
+  if (r < o.s) {
+    retierBuilding(b, next);
+    spawnBuildFx(b.cx, b.cz);
+    flashFor(p, `강화 성공 — 경비탑 Lv.${next}!`, next >= 11 ? '#ffcc55' : '#8fd6ff');
+    return 'up';
+  }
+  if (r < o.s + o.d) {
+    // 파괴 판정이 떴다 — 프로텍트가 걸려 있고 부품이 있으면 여기서 막는다
+    const need = P.tower.protectParts;
+    if (p.protectOn && p.parts >= need) {
+      p.parts -= need;
+      flashFor(p, `🛡 프로텍트가 막았다 (부품 -${need}, 남은 ${p.parts})`, '#7ee0c0');
+      return 'saved';
+    }
+    destroyBuilding(b, false);
+    flashFor(p, `💥 강화 실패 — 경비탑이 부서졌다 (Lv.${lv})`, '#ff6b6b');
+    return 'boom';
+  }
+  flashFor(p, `강화 실패 — Lv.${lv} 그대로 (치즈 -${cost})`, '#ffb347');
+  return 'stay';
 }
 
 // F키 — 수리가 우선, 없으면 업그레이드 (D90). 빌보드와 같은 fAction()을 본다
@@ -3698,19 +3939,13 @@ function tryUpgradeBuilding(p = player) {
     return;
   }
   const b = a.b;
+  // 경비탑 강화는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
+  // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
+  // 그 자리에 묶이면 쓸 수가 없다. 공방 업그레이드는 채널링을 유지한다(기술 결정이니까).
+  if (b.kind === 'tower') { attemptEnhance(p, b); return; }
   const { cost, parts: needParts, time } = upgradeSpec(b);
   p.cheese -= cost;
   p.parts -= needParts;
-  // 경비탑 업그레이드는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
-  // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
-  // 그 자리에 묶이면 쓸 수가 없다. 공방 업그레이드는 채널링을 유지한다(기술 결정이니까).
-  if (b.kind === 'tower') {
-    b.tier = (b.tier || 1) + 1;
-    applyBuildingTierVisual(b);
-    spawnBuildFx(b.cx, b.cz);
-    flashMsg(`${BLDG_INFO[b.kind].label} Lv.${b.tier}!`, '#8fd6ff');
-    return;
-  }
   p.upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
   flashMsg(`${BLDG_INFO[b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
 }
@@ -3722,29 +3957,42 @@ function tryUpgradeBuilding(p = player) {
 //    (D92: 명령에는 격자 좌표와 엔티티 id만 담는다).
 function upgradeBuildings(p, ids) {
   const list = (ids || []).map(bldgById)
-    .filter((b) => b && b.owner === p.owner && (b.tier || 1) < 3);
+    .filter((b) => b && b.owner === p.owner && !atMaxTier(b));
   if (!list.length) { flashFor(p, '올릴 수 있는 건물이 없습니다', '#e05050'); return; }
   // 싼 것부터 올린다 — 돈이 모자랄 때 비싼 하나에 다 쓰고 끝나면 손해가 크다
   list.sort((a, b) => upgradeSpec(a).cost - upgradeSpec(b).cost);
-  let done = 0, blocked = null;
+  let done = 0, blocked = null, up = 0, stay = 0, boom = 0, saved = 0;
   for (const b of list) {
     const why = upgradeBlockedWhy(b, p);
     if (why) { blocked = blocked || why; continue; }
-    const { cost, parts: needParts, time } = upgradeSpec(b);
     if (b.kind === 'tower') {
-      p.cheese -= cost; p.parts -= needParts;
-      b.tier = (b.tier || 1) + 1;
-      applyBuildingTierVisual(b);
-      spawnBuildFx(b.cx, b.cz);
+      // 하나하나가 독립 시행이다 — 다섯 개를 걸면 다섯 번 굴린다.
+      // 여러 개가 한꺼번에 터질 수 있다는 뜻이고, 그게 일괄 강화의 값이자 위험이다.
+      const r = attemptEnhance(p, b);
+      if (r === 'up') up++;
+      else if (r === 'boom') boom++;
+      else if (r === 'saved') saved++;
+      else stay++;
       done++;
-    } else if (!p.upgradeJob) {          // 공방은 한 번에 하나
+      continue;
+    }
+    const { cost, parts: needParts, time } = upgradeSpec(b);
+    if (!p.upgradeJob) {                 // 공방은 한 번에 하나
       p.cheese -= cost; p.parts -= needParts;
       p.upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
       done++;
     }
   }
-  if (done) flashFor(p, `${done}개 업그레이드`, '#8fd6ff');
-  else if (blocked) flashFor(p, blocked, '#e05050');
+  // 개별 결과는 이미 attemptEnhance가 하나씩 띄웠다. 여러 개면 그게 겹쳐서 안 읽히므로
+  // **총합 한 줄**로 덮어 준다 — 마지막에 뜬 게 전체 결과처럼 보이는 게 제일 나쁘다.
+  if (up + stay + boom + saved > 1) {
+    const parts = [`↑${up}`, `−${stay}`];
+    if (saved) parts.push(`🛡${saved}`);
+    if (boom) parts.push(`💥${boom}`);
+    flashFor(p, `일괄 강화 ${parts.join(' ')}`, boom ? '#ff6b6b' : up ? '#8fd6ff' : '#ffb347');
+  } else if (done && !up && !stay && !boom && !saved) {
+    flashFor(p, `${done}개 업그레이드`, '#8fd6ff');
+  } else if (!done && blocked) flashFor(p, blocked, '#e05050');
 }
 
 function cancelUpgrade(refund = true, p = player) {
@@ -3857,7 +4105,7 @@ const myBuildings = (p = localPlayer()) => buildings.filter((b) => b.owner === p
 const bldgById = (id) => buildings.find((b) => b.id === id) || null;
 // 올릴 수 있는 것만 — 이미 3등급이거나 남의 것이면 셀 이유가 없다
 const selUpgradable = () =>
-  [...selectedBldgs].filter((b) => buildings.includes(b) && (b.tier || 1) < 3
+  [...selectedBldgs].filter((b) => buildings.includes(b) && !atMaxTier(b)
     && (b.kind === 'tower' || b.kind === 'workshop'));
 
 // 내가 명령할 수 있는 유닛 = **내 소유자 태그가 붙은 것**뿐이다 (D92-2단계).
@@ -6189,6 +6437,13 @@ window.addEventListener('keydown', (e) => {
     if (picked.length) issueCommand({ t: 'bupg', ids: picked.map((b) => b.id) });
     else issueCommand({ t: 'f' });
   }
+  // R — 🛡 프로텍트 켜고 끄기 (D145).
+  // **모드 토글**로 둔 이유: 강화는 연타하는 동작이라(15단까지 수십 번) 누를 때마다
+  // 보호 여부를 고르게 하면 그 결정이 곧 손가락 실수가 된다. 한 번 켜 두고 잊는 게 맞다.
+  // 부품은 **실제로 막았을 때만** 나가므로 켜 둔 채로 두는 게 벌이 아니다.
+  if (e.code === 'KeyR' && alive) issueCommand({ t: 'prot' });
+  // V — 확정 구매 (D145). 운을 안 걸고 웃돈을 내고 산다
+  if (e.code === 'KeyV' && alive) issueCommand({ t: 'buytier' });
   // 0번 = 도발 (D96). 이 게임의 유일한 '공격'이다
   if ((e.code === 'Digit0' || e.code === 'Numpad0') && alive) issueCommand({ t: 'taunt' });
   // 건네주기 — 옆에 붙어야 넘어간다 (D96)
@@ -6930,6 +7185,8 @@ function applyCommand(p, c) {
       break;
     }
     case 'f':      tryUpgradeBuilding(p); break;
+    case 'prot':   toggleProtect(p); break;                 // 🛡 (D145)
+    case 'buytier': tryBuyTier(p); break;                   // 확정 구매 (D145)
     case 'bupg':   upgradeBuildings(p, c.ids); break;   // 선택한 건물 일괄 (D143)
     case 'taunt':  startTaunt(p); break;
     case 'atk':    attackSwipe(p); break;
@@ -6978,6 +7235,9 @@ function issueCommand(c, p = localPlayer()) {
   // 나머지(치즈 소비·건설)는 절대 예측하지 않는다 — 이중 지불 고무줄이 지연보다 나쁘다.
   if (c.t === 'roll') startRoll(p);
   if (c.t === 'taunt') startTaunt(p);   // 눌렀는데 0.1초 뒤에 춤추면 우스꽝스러움이 죽는다
+  // 🛡 토글도 미리 돌린다 (D145) — **자원을 안 쓰는 순수 모드 스위치**라
+  // 이중 지불이 없다. 눌렀는데 표시가 0.1초 뒤에 바뀌면 켠 건지 아닌지를 못 믿는다.
+  if (c.t === 'prot') toggleProtect(p);
   net.send({ k: 'CMD', c });
 }
 
@@ -7475,8 +7735,6 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.build, 'depotTime', 0.5, 12, 0.5).name('창고 건설 시간(초)');
   f.add(P.build, 'workshopTime', 0.5, 12, 0.5).name('공방 건설 시간(초)');
   f.add(P.build, 'towerTime', 0.5, 12, 0.5).name('경비탑 건설 시간(초)');
-  f.add(P.build, 'towerUp2Time', 0.5, 15, 0.5).name('경비탑 Lv.2 업그레이드 시간(초)');
-  f.add(P.build, 'towerUp3Time', 0.5, 15, 0.5).name('경비탑 Lv.3 업그레이드 시간(초)');
   f.add(P.workshop, 'cost', 5, 60, 1).name('공방 비용 (배치)');
   f.add(P.workshop, 'hp', 50, 1500, 10).name('공방 내구도 (새 건물부터)');
   f.add(P.workshop, 'tier2Cost', 10, 400, 5).name('공방 Lv.2 업그레이드 치즈');
@@ -7484,21 +7742,30 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.workshop, 'tier3Cost', 10, 1000, 10).name('공방 Lv.3 업그레이드 치즈');
   f.add(P.workshop, 'tier3Parts', 0, 20, 1).name('공방 Lv.3 업그레이드 부품');
   f.add(P.build, 'inset', 0, 0.6, 0.05).name('건물 충돌 들이기 (대각 틈)');
-  f.add(P.tower, 't1Cost', 5, 120, 5).name('경비탑 Lv.1 비용 (배치)');
-  f.add(P.tower, 't1Hp', 20, 800, 10).name('경비탑 Lv.1 내구도');
-  f.add(P.tower, 't1Range', 2, 24, 0.5).name('경비탑 Lv.1 사거리');
-  f.add(P.tower, 't1Dmg', 2, 120, 1).name('경비탑 Lv.1 투척 피해');
-  f.add(P.tower, 't1Reload', 0.2, 4, 0.1).name('경비탑 Lv.1 투척 간격');
-  f.add(P.tower, 't2Cost', 5, 400, 5).name('경비탑 Lv.2 업그레이드 비용');
-  f.add(P.tower, 't2Hp', 20, 1500, 10).name('경비탑 Lv.2 내구도');
-  f.add(P.tower, 't2Range', 2, 24, 0.5).name('경비탑 Lv.2 사거리');
-  f.add(P.tower, 't2Dmg', 2, 150, 1).name('경비탑 Lv.2 투척 피해');
-  f.add(P.tower, 't2Reload', 0.2, 4, 0.1).name('경비탑 Lv.2 투척 간격');
-  f.add(P.tower, 't3Cost', 50, 3000, 25).name('경비탑 Lv.3 업그레이드 비용');
-  f.add(P.tower, 't3Hp', 50, 3000, 10).name('경비탑 Lv.3 내구도');
-  f.add(P.tower, 't3Range', 2, 30, 0.5).name('경비탑 Lv.3 사거리');
-  f.add(P.tower, 't3Dmg', 2, 300, 1).name('경비탑 Lv.3 투척 피해 (겁나 쎔)');
-  f.add(P.tower, 't3Reload', 0.1, 4, 0.1).name('경비탑 Lv.3 투척 간격');
+  // 15단은 **Lv.1 값 + 성장률**로 낸다 (D145). 슬라이더 열다섯 벌을 놓을 수 없다 —
+  // 하나를 만지면 나머지 열넷과 어긋나서 아무도 조율하지 못한다.
+  f.add(P.tower, 't1Cost', 5, 120, 5).name('Lv.1 비용 (배치)');
+  f.add(P.tower, 't1Hp', 20, 800, 10).name('Lv.1 내구도');
+  f.add(P.tower, 't1Range', 2, 24, 0.5).name('Lv.1 사거리');
+  f.add(P.tower, 't1Dmg', 2, 120, 1).name('Lv.1 투척 피해');
+  f.add(P.tower, 't1Reload', 0.2, 4, 0.1).name('Lv.1 투척 간격');
+  f.add(P.tower, 'maxLv', 3, 15, 1).name('최대 강화 단계');
+  f.add(P.tower, 'dmgGrow', 1.05, 1.8, 0.01).name('↗ 피해 성장률/단');
+  f.add(P.tower, 'hpGrow', 1.0, 1.6, 0.01).name('↗ 내구도 성장률/단');
+  f.add(P.tower, 'rangeStep', 0, 2, 0.02).name('↗ 사거리 증가/단');
+  f.add(P.tower, 'reloadStep', 0, 0.15, 0.005).name('↗ 투척 간격 감소/단');
+  f.add(P.tower, 'reloadMin', 0.15, 1.2, 0.05).name('투척 간격 하한');
+  f.add(P.tower, 'costGrow', 1.1, 2.2, 0.05).name('↗ 강화 비용 성장률/단');
+  // 확률 — 곡선(ENH)은 코드에 있고 여기서는 전체를 밀고 당긴다.
+  // risk를 0으로 두면 **파괴 없는 옛 방식**이 그대로 돌아온다 (되돌릴 손잡이를 남겨 둔다)
+  f.add(P.tower, 'luck', 0.2, 2, 0.05).name('🎲 성공률 배수');
+  f.add(P.tower, 'risk', 0, 2, 0.05).name('💥 파괴율 배수 (0=없음)');
+  f.add(P.tower, 'protectParts', 1, 10, 1).name('🛡 프로텍트 부품값');
+  f.add(P.tower, 'buyMaxLv', 1, 15, 1).name('즉시 구매 상한 Lv');
+  f.add(P.tower, 'buyPremium', 1.0, 2.0, 0.05).name('즉시 구매 웃돈 배수');
+  f.add(P.tower, 'gate1', 1, 15, 1).name('공방 Lv.1이 여는 상한');
+  f.add(P.tower, 'gate2', 1, 15, 1).name('공방 Lv.2가 여는 상한');
+  f.add(P.tower, 'gate3', 1, 15, 1).name('공방 Lv.3이 여는 상한');
   f.add(P.threat, 'hpGain', 0, 400, 10).name('적 체력 증가/레벨');
   f.add(P.threat, 'speedCap', 3, 21, 0.1).name('적 속도 상한');
   f.add(P.tempo, 'moveScale', 0.3, 1.5, 0.05).name('전체 이동 속도 배율');
@@ -7802,7 +8069,7 @@ const HELP_FULL = [
   '── 조작 ──',
   'WASD 이동 · **Space 공격**(정면 근접, 넉백/스플 개조 가능) · Shift 앞구르기(0.28초 **무적**, 기운 34)',
   'C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
-  'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/업그레이드 · Q/Z 건네주기 · 0 도발',
+  'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/강화 · **V 확정 구매** · **R 🛡프로텍트** · Q/Z 건네주기 · 0 도발',
   '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
   '',
@@ -7823,7 +8090,17 @@ const HELP_FULL = [
   '치즈더미에 다가가 E(또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소',
   '더미 위 `1/3` = 붙은 일꾼 / 정원. 꽉 차면(붉게) 다음 더미를 확보해야 한다',
   '공방을 지어야 경비탑·병력이 열린다 (Lv.1 경비탑·근접병 → Lv.2 사수 → Lv.3 정예병)',
-  '근처(4m) 공방·경비탑을 **F로 제자리 업그레이드**. 공방 업그레이드는 치즈+부품이 든다',
+  '근처(4m) 공방·경비탑을 **F로 제자리 강화**. 멀리 있는 탑은 **클릭·드래그로 골라 두고 F**',
+  '공방 업그레이드는 치즈+부품이 들고 채널링이다 (그 자리에 묶인다)',
+  '',
+  '── 경비탑 강화 (Lv.1~15) ──',
+  '**F는 도박이다.** 성공 / 실패(그대로) / 💥파괴 세 갈래 — **치즈는 결과와 무관하게 나간다**',
+  '확률은 누르기 **전에** 발밑 안내문에 뜬다. Lv.6부터 파괴가 붙고 위로 갈수록 가팔라진다',
+  '  Lv.10 성공 50%·파괴 16% · Lv.13 성공 20%·파괴 37% · Lv.15 성공 8%·파괴 55%',
+  '**R = 🛡프로텍트.** 켜 두면 파괴를 부품 3개로 막는다 — **실제로 막았을 때만** 나간다',
+  '**V = 확정 구매.** 운을 안 걸고 웃돈(+10%)을 내고 Lv.7까지 한 번에 산다',
+  '여러 탑을 골라 F를 누르면 **하나하나 따로 굴린다** — 한꺼번에 여러 개가 터질 수 있다',
+  '공방 등급이 상한을 연다: Lv.1→탑 5단 · Lv.2→10단 · Lv.3→15단',
   '공방 옆 **개조 패널은 클릭으로 산다** (숫자키도 그대로 먹는다)',
   '**치즈 창고 옆 = 공격 개조.** 스테이지마다 1점씩(총 10점) 받아 공격력·넉백·스플래시에 나눠 쓴다',
   '  넉백은 **톰에게 안 통한다** — 보스를 밀 수 있으면 벽 없이 영원히 도망칠 수 있다',
@@ -8446,6 +8723,18 @@ const canSellParts = (p) => maxWorkshopTier(p.owner) >= P.upgrade.sellTier;
 
 // 지금까지 산 개수에 따라 다음 한 개의 값 (D107)
 const partsBuyCost = (p) => P.upgrade.buyBase + P.upgrade.buyStep * (p.partsBought || 0);
+
+// 🛡 프로텍트 토글 (D145) — 부품이 없어도 켤 수는 있게 뒀다.
+// "부품 없으면 못 켬"으로 막으면, 부품을 주워 온 뒤 다시 켜야 한다는 걸 잊는다.
+// 대신 켤 때 지금 몇 번 막을 수 있는지 말해 준다.
+function toggleProtect(p = player) {
+  p.protectOn = !p.protectOn;
+  const n = Math.floor(p.parts / P.tower.protectParts);
+  flashFor(p, p.protectOn
+    ? `🛡 프로텍트 ON — 부품 ${P.tower.protectParts}개로 1회 (지금 ${n}회분)`
+    : '🛡 프로텍트 OFF', p.protectOn ? '#7ee0c0' : '#9aa4b2');
+  renderUpgrade();
+}
 
 function buyParts(p = player) {
   if (!nearWorkshop(p)) { flashFor(p, '공방 옆에서만 살 수 있습니다', '#e05050'); return; }
@@ -9736,7 +10025,11 @@ function applyFull(f, msg) {
   for (const b of f.buildings || []) {
     const nb = placeBuildingLocal(b.kind, b.i, b.j, b.owner, b.id);
     nb.hp = b.hp;
-    if (b.tier && b.tier !== nb.tier) { nb.tier = b.tier; applyBuildingTierVisual(nb); }
+    if (b.tier && b.tier !== nb.tier) {
+      nb.tier = b.tier;
+      if (nb.kind === 'tower') nb.maxHp = TOWER_TIERS[nb.tier].hp();
+      applyBuildingTierVisual(nb);
+    }
     if (!b.underBuild) finishBuild(nb);
   }
   markNavDirty();
@@ -9911,6 +10204,12 @@ function sendSnapshot(dt) {
   snapT -= dt;
   if (snapT > 0) return;
   snapT = 1 / Math.max(P.net.rate, 1);
+  net.send(buildSnapshot(), true);   // 무순서 채널 — 늦은 스냅샷이 뒤를 막지 않게 (D94)
+}
+
+// 스냅샷 **생성**을 전송에서 갈라 뒀다 — 하니스가 접속 없이 왕복을 검사할 수 있게.
+// (전송 조건과 내용 생성이 한 함수에 붙어 있으면 내용만 따로 못 본다)
+function buildSnapshot() {
   const msg = {
     k: 'SNAP',
     t: r2(survival), st: stage, sT: r2(stageT), al: alive ? 1 : 0, ki: killCount,
@@ -9944,7 +10243,7 @@ function sendSnapshot(dt) {
     ev: wallEvents,
   };
   wallEvents = [];
-  net.send(msg, true);   // 무순서 채널 — 늦은 스냅샷이 뒤를 막지 않게 (D94)
+  return msg;
 }
 
 // ---- 원격 개체 보간 (D93) ----
@@ -10126,7 +10425,13 @@ function applySnapshot(m) {
   syncList(buildings, m.bl, (a) => placeBuildingLocal(a[1], a[2], a[3], a[4], a[0]),
     (b, a) => {
       b.hp = a[5];
-      if (b.tier !== a[6]) { b.tier = a[6]; applyBuildingTierVisual(b); }
+      if (b.tier !== a[6]) {
+        // ⚠ maxHp도 같이 옮긴다 (D145). 등급만 받으면 참가자 화면의 체력바는
+        //    Lv.1 최대치(70)를 기준으로 그려져서 Lv.12 탑이 늘 꽉 찬 것처럼 보인다.
+        b.tier = a[6];
+        if (b.kind === 'tower') b.maxHp = TOWER_TIERS[b.tier].hp();
+        applyBuildingTierVisual(b);
+      }
       const wasUnder = b.underBuild;
       b.underBuild = !!a[7];
       b.store = a[8];
@@ -10894,7 +11199,7 @@ window.__game = {
   get territory() { return territory; }, get territoryArea() { return territoryArea; },
   sampleLocalInput, updateActor, updateActorVis, updateLocalUI, updatePlayer, startRoll,
   beginMatch, openStart, get started() { return started; }, get paused() { return paused; },
-  applySnapshot, fullSnapshot, applyFull, sendSnapshot, drawMini,
+  applySnapshot, fullSnapshot, applyFull, sendSnapshot, buildSnapshot, drawMini,
   startTaunt, giveTo, humans, others, OWNERS, players, MAX_PLAYERS, nearestMate,
   get playerVis() { return player.vis; },
   get renderT() { return renderT; }, get lastSnapT() { return lastSnapT; },
@@ -10952,6 +11257,9 @@ window.__game = {
   advanceStage, stageDur, hasWorkshop, depotCount, maxWorkshopTier, TOWER_TIERS, spawnBoss,
   effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, partsCap, rollParts, SELF_BUILD,
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
+  attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
+  buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
+  toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
   applyBuildingTierVisual, cheeseCost, slotLockReason, BUILD_SLOTS,
   get removeMode() { return removeMode; }, set removeMode(v) { removeMode = v; },
   get upgradePromptText() { return upgradePrompt.userData.text; },
