@@ -729,6 +729,7 @@ function tryBuyTier(p = player) {
   p.cheese -= t.cost;
   retierBuilding(b, t.lv);
   spawnBuildFx(b.cx, b.cz);
+  if (p.local) sfx('buyTier');
   flashFor(p, `확정 구매 — 경비탑 Lv.${t.lv} (치즈 ${t.cost})`, '#c9a0ff');
 }
 // -1 = 아무것도 안 들고 있음 (기본값).
@@ -3094,6 +3095,92 @@ const towerPips = (lv) => lv - towerBand(lv) * 5;                  // 1~5
 const pipGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
 const tierGeo = new THREE.BoxGeometry(1.0, 0.34, 1.0);
 
+// ---- 고강화 오오라 (D148) ----
+// **8강부터** 붙는다. 그 아래는 아무것도 없다 — 전부 빛나면 아무것도 안 빛나는 것과 같다.
+// 8강은 파괴가 붙기 시작한(6강) 다음 고비이자, 무보호로 84%가 도달하는 자리다.
+// 즉 "여기까지는 대체로 온다, 여기서부터가 이야기다"의 경계다.
+//
+// 세 겹이 **레벨을 따라 하나씩 켜진다** — 화려함 자체가 등급 표시가 되게:
+//   8강~  바닥 고리 (회전)
+//   11강~ 궤도를 도는 구슬 (개수도 는다)
+//   14강~ 위로 솟는 빛기둥
+// 성능: 고강화 탑은 많아야 서넛이고 셰이더가 아니라 메시 회전이라 틱 비용이 없다.
+const AURA_FROM = 8, AURA_ORB_FROM = 11, AURA_BEAM_FROM = 14;
+const auras = [];                                   // { b, group, ring, orbs[], beam, lv }
+const auraRingGeo = new THREE.RingGeometry(1.35, 1.72, 40);
+const auraOrbGeo = new THREE.SphereGeometry(0.16, 10, 8);
+const auraBeamGeo = new THREE.CylinderGeometry(0.26, 0.52, 6.5, 12, 1, true);
+
+function clearAura(b) {
+  const i = auras.findIndex((a) => a.b === b);
+  if (i < 0) return;
+  const a = auras[i];
+  b.mesh.remove(a.group);
+  a.group.traverse((o) => { o.material?.dispose?.(); });
+  auras.splice(i, 1);
+}
+
+function applyAura(b) {
+  clearAura(b);
+  const lv = b.tier || 1;
+  if (b.kind !== 'tower' || lv < AURA_FROM) return;
+  // 8강 회색빛 → 15강 금빛. 등급이 오를수록 색도 뜨거워진다
+  const t = (lv - AURA_FROM) / (TOWER_MAXLV - AURA_FROM);
+  const col = new THREE.Color(0x74c7f0).lerp(new THREE.Color(0xffcc55), t);
+  const group = new THREE.Group();
+
+  const ring = new THREE.Mesh(auraRingGeo, new THREE.MeshBasicMaterial({
+    color: col, transparent: true, opacity: 0.34 + t * 0.30,
+    depthWrite: false, side: THREE.DoubleSide,
+  }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  group.add(ring);
+
+  const orbs = [];
+  if (lv >= AURA_ORB_FROM) {
+    const n = 3 + (lv - AURA_ORB_FROM);            // 11강 3개 → 15강 7개
+    for (let k = 0; k < n; k++) {
+      const o = new THREE.Mesh(auraOrbGeo, new THREE.MeshBasicMaterial({
+        color: col, transparent: true, opacity: 0.9, depthWrite: false }));
+      o.userData.phase = (k / n) * Math.PI * 2;
+      group.add(o);
+      orbs.push(o);
+    }
+  }
+
+  let beam = null;
+  if (lv >= AURA_BEAM_FROM) {
+    beam = new THREE.Mesh(auraBeamGeo, new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }));
+    beam.position.y = 3.4;
+    group.add(beam);
+  }
+
+  b.mesh.add(group);
+  auras.push({ b, group, ring, orbs, beam, lv, t });
+}
+
+// 회전·맥동. 시계는 survival을 쓴다 — 일시정지하면 오오라도 멈춘다
+function updateAuras() {
+  const now = survival;
+  for (let i = auras.length - 1; i >= 0; i--) {
+    const a = auras[i];
+    if (!buildings.includes(a.b)) { clearAura(a.b); continue; }
+    const sp = 0.7 + a.t * 1.1;
+    a.ring.rotation.z = now * sp;
+    a.ring.scale.setScalar(1 + Math.sin(now * 2.2) * 0.045);
+    for (const o of a.orbs) {
+      const ang = now * sp * 1.4 + o.userData.phase;
+      o.position.set(Math.cos(ang) * 1.55, 1.5 + Math.sin(ang * 2 + now) * 0.45, Math.sin(ang) * 1.55);
+    }
+    if (a.beam) {
+      a.beam.rotation.y = now * 0.8;
+      a.beam.material.opacity = 0.12 + Math.abs(Math.sin(now * 1.6)) * 0.12;
+    }
+  }
+}
+
 function applyBuildingTierVisual(b) {
   shadowDirty();
   const isTower = b.kind === 'tower';
@@ -3150,6 +3237,7 @@ function applyBuildingTierVisual(b) {
   b.mesh.add(stack);
   b.tiers = stack;
 
+  applyAura(b);                       // 8강 이상이면 오오라도 다시 만든다 (D148)
   // 경비탑 포탑은 **실제 레벨**을 따라 자란다 (D145).
   // 15단을 전부 크기로 표현하면 Lv.15가 건물을 삼키므로 총 성장폭은 옛 3등급과 같게 두고,
   // 그 폭을 15칸으로 잘게 나눈다 — 한 단 올릴 때마다 조금씩 커지는 게 보인다.
@@ -3243,6 +3331,7 @@ function placeBuildingLocal(kind, i, j, owner, id) {
 
 function destroyBuilding(b, byEnemy) {
   shadowDirty();
+  clearAura(b);              // 오오라를 안 지우면 메시가 씬에 남는다 (D148)
   selectedBldgs.delete(b);   // 부서진 건물이 선택에 남아 있으면 안 된다 (D143)
   if (b.ring) { scene.remove(b.ring); b.ring.material.dispose(); b.ring = null; }
   for (const key of b.cells) {
@@ -3819,23 +3908,44 @@ function enhLabel(b, s, p) {
   return t;
 }
 
-// 지금 F가 무엇을 할지 (없으면 null). 빌보드와 F키가 같은 함수를 본다
-function fAction(p = player) {
+// ---- F와 U를 갈랐다 (D148) ----
+// 예전엔 F 하나가 둘 다 했고, **빌보드와 키가 서로 다른 것을 봤다**:
+//   빌보드는 `fAction`(발밑 4m)을, F키는 `selUpgradable()`(멀리 골라 둔 것)을 봤다.
+//   그래서 탑을 골라 둔 채 다른 건물 앞에 서면 **화면에 뜬 것과 반응하는 것이 달랐다.**
+// 이제 F = 벽 수리, U = 건물 강화/업그레이드. 겹치는 자리가 없어서 어긋날 수가 없다.
+
+// F — 금 간 벽 수리 (D90)
+function repairAction(p = player) {
   const crack = nearestCracked(p.x, p.z, P.wall.range + CS);
-  if (crack) {
-    const cost = P.wall.repairCost;
-    return { kind: 'repair', ob: crack, cost,
-             x: cellToWorld(crack.i, crack.j).x, z: cellToWorld(crack.i, crack.j).z,
-             label: `벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
-             why: p.cheese < cost ? `치즈 ${cost} 필요` : null };
+  if (!crack) return null;
+  const cost = P.wall.repairCost;
+  return { kind: 'repair', ob: crack, cost,
+           x: cellToWorld(crack.i, crack.j).x, z: cellToWorld(crack.i, crack.j).z,
+           label: `[F] 벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
+           why: p.cheese < cost ? `치즈 ${cost} 필요` : null };
+}
+
+// U — 강화/업그레이드. **골라 둔 게 있으면 그게 대상이다** (발밑은 안 본다).
+// 이 우선순위를 빌보드도 **같은 함수로** 읽으므로, 이제 화면과 키가 어긋날 수 없다.
+function upgradeAction(p = player) {
+  const picked = p.local !== false ? selUpgradable() : [];
+  if (picked.length) {
+    const cost = picked.reduce((a, b) => a + upgradeSpec(b).cost, 0);
+    return { kind: 'batch', list: picked, x: picked[0].cx, z: picked[0].cz,
+             label: `[U] 골라 둔 ${picked.length}개 강화 — 치즈 ${cost}`,
+             why: p.cheese < upgradeSpec(picked[0]).cost ? `치즈가 모자랍니다` : null };
   }
   const b = nearestUpgradable(p.x, p.z, 4.0);
   if (!b) return null;
   const s = upgradeSpec(b);
   return { kind: 'upgrade', b, x: b.cx, z: b.cz,
-           label: enhLabel(b, s, p),
+           label: '[U] ' + enhLabel(b, s, p),
            why: upgradeBlockedWhy(b, p) };
 }
+
+// 빌보드가 띄울 것 — **수리가 우선이다** (금 간 벽은 급하고 강화는 안 급하다, D90).
+// 다만 이제 둘은 다른 키라서, 수리를 띄우는 동안에도 U는 자기 대상을 그대로 갖고 있다.
+const fAction = (p = player) => repairAction(p) || upgradeAction(p);
 
 function updateUpgradePrompt() {
   const me = localPlayer();
@@ -3920,6 +4030,8 @@ function attemptEnhance(p, b) {
   if (r < o.s) {
     retierBuilding(b, next);
     spawnBuildFx(b.cx, b.cz);
+    // 소리는 **내 것만** 울린다 (D122) — 남의 강화가 내 화면에서 소리 나면 안 된다
+    if (p.local) sfx(next >= 11 ? 'enhBig' : 'enhUp');
     flashFor(p, `강화 성공 — 경비탑 Lv.${next}!`, next >= 11 ? '#ffcc55' : '#8fd6ff');
     return 'up';
   }
@@ -3928,13 +4040,19 @@ function attemptEnhance(p, b) {
     const need = P.tower.protectParts;
     if (p.protectOn && p.parts >= need) {
       p.parts -= need;
+      if (p.local) sfx('enhSave');
+      spawnShieldFx(b.cx, b.cz);
       flashFor(p, `🛡 프로텍트가 막았다 (부품 -${need}, 남은 ${p.parts})`, '#7ee0c0');
       return 'saved';
     }
+    // 터지는 건 **모두에게** 보이고 들려야 한다 — 방어선에 구멍이 나는 사건이다
+    spawnTowerBoom(b.cx, b.cz, lv);
+    sfx('enhBoom');
     destroyBuilding(b, false);
     flashFor(p, `💥 강화 실패 — 경비탑이 부서졌다 (Lv.${lv})`, '#ff6b6b');
     return 'boom';
   }
+  if (p.local) sfx('enhStay');
   flashFor(p, `강화 실패 — Lv.${lv} 그대로 (치즈 -${cost})`, '#ffb347');
   return 'stay';
 }
@@ -3942,16 +4060,10 @@ function attemptEnhance(p, b) {
 // F키 — 수리가 우선, 없으면 업그레이드 (D90). 빌보드와 같은 fAction()을 본다
 function tryUpgradeBuilding(p = player) {
   if (p.upgradeJob || p.buildJob) return;
-  const a = fAction(p);
-  if (!a) return;
-  if (a.why) { flashMsg(a.why, '#e05050'); return; }
-  if (a.kind === 'repair') {
-    p.cheese -= a.cost;
-    repairWall(a.ob);
-    spawnBuildFx(a.x, a.z);
-    flashMsg('벽을 수리했다', '#6ee07a');
-    return;
-  }
+  const a = upgradeAction(p);
+  if (!a) { flashFor(p, '올릴 건물이 없습니다 (건물 옆에 서거나 골라 두세요)', '#e05050'); return; }
+  if (a.kind === 'batch') { upgradeBuildings(p, a.list.map((x) => x.id)); return; }
+  if (a.why) { flashFor(p, a.why, '#e05050'); return; }
   const b = a.b;
   // 경비탑 강화는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
   // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
@@ -3962,6 +4074,18 @@ function tryUpgradeBuilding(p = player) {
   p.parts -= needParts;
   p.upgradeJob = { b, t: 0, dur: time, cost, parts: needParts };
   flashMsg(`${BLDG_INFO[b.kind].label} 업그레이드 중 — 움직일 수 없다 (ESC 취소)`, '#9fe8a0');
+}
+
+// F — 금 간 벽 수리만 (D148). 예전엔 tryUpgradeBuilding 안에 섞여 있었다.
+function tryRepairWall(p = player) {
+  if (p.upgradeJob || p.buildJob) return;
+  const a = repairAction(p);
+  if (!a) { flashFor(p, '수리할 벽이 없습니다', '#e05050'); return; }
+  if (a.why) { flashFor(p, a.why, '#e05050'); return; }
+  p.cheese -= a.cost;
+  repairWall(a.ob);
+  spawnBuildFx(a.x, a.z);
+  flashFor(p, '벽을 수리했다', '#6ee07a');
 }
 
 // ---- 선택한 건물 일괄 업그레이드 (D143) ----
@@ -6440,13 +6564,14 @@ window.addEventListener('keydown', (e) => {
     else setMenu(true);
   }
   if (e.code === 'KeyE' && alive) issueCommand({ t: 'mine' });
-  // F — 공방·경비탑 제자리 업그레이드·수리. **언제나 이것 하나다** (D126).
-  // 예전엔 준비 국면에서만 F가 '최후의 공세 시작'으로 바뀌었다. 하필 준비 국면이
-  // **업그레이드를 제일 많이 하는 시간**이라, 공방을 올리려다 준비도 못 하고
-  // 공세를 열어 버렸다. 시작은 B로 갈랐다 (아래).
-  // F — 건물을 골라 뒀으면 **그것들을 한 번에** 올린다 (D143).
-  // 아무것도 안 골랐으면 예전처럼 발밑 4m 안의 것 하나 (수리가 우선, D90)
-  if (e.code === 'KeyF' && alive) {
+  // ---- F / U 분리 (D148) ----
+  // F = **벽 수리만.** U = **건물 강화/업그레이드.**
+  // 예전엔 F 하나가 둘 다 했는데, 빌보드는 발밑을 보고 F키는 골라 둔 것을 봐서
+  // **화면에 뜬 것과 반응하는 것이 달랐다.** 키를 가르니 겹치는 자리가 없어졌다.
+  // (준비 국면에도 F는 이것 하나다 — 공세 시작은 B다, D126)
+  if (e.code === 'KeyF' && alive) issueCommand({ t: 'repair' });
+  if (e.code === 'KeyU' && alive) {
+    // 골라 둔 게 있으면 그것들을 한 번에 (D143). 없으면 발밑 4m 안의 하나
     const picked = selUpgradable();
     if (picked.length) issueCommand({ t: 'bupg', ids: picked.map((b) => b.id) });
     else issueCommand({ t: 'f' });
@@ -6473,7 +6598,8 @@ window.addEventListener('keydown', (e) => {
     if (mine.length) selectionMsg();
     else flashMsg('방어병이 없습니다', '#e05050');
   }
-  if (e.code === 'KeyU') { upgOpen = !upgOpen; renderUpgrade(); }
+  // 개조 패널은 K로 옮겼다 (D148) — U를 건물 강화에 내줬다
+  if (e.code === 'KeyK') { upgOpen = !upgOpen; renderUpgrade(); }
   if (e.code === 'KeyH') { helpOpen = !helpOpen; renderHelp(); }
   if (e.code === 'KeyG') setGui(!guiOpen);            // 튜닝 패널 (D91)
   if (e.code === 'F9') { netDevOn = !netDevOn; netDevEl.classList.toggle('on', netDevOn); renderNetDev(); }
@@ -6819,6 +6945,8 @@ let ghostCell = { i: 0, j: 0, valid: false };
 const fx = [];
 const ringGeo = new THREE.RingGeometry(0.45, 0.62, 28);
 const dustGeo = new THREE.BoxGeometry(1, 1, 1);
+// 폭발 불덩이·방패막 (D148) — 면이 적은 구. 한 번에 몇 개 안 뜨므로 이 정도면 충분하다
+const boomGeo = new THREE.SphereGeometry(1, 14, 10);
 
 function spawnBuildFx(x, z) {
   // 바닥 충격파 링
@@ -6855,6 +6983,66 @@ function spawnBuildFx(x, z) {
   }
 }
 
+// ---- 강화 파괴 폭발 (D148) ----
+// 'boom'(자폭묘)보다 **크고 붉다.** 방어선에 구멍이 나는 사건이라 그만한 무게가 필요하고,
+// 무엇보다 "적이 부쉈다"와 **다르게 보여야** 한다 — 이건 내가 건 도박의 결과다.
+// 등급이 높을수록 크게 터진다. 13강이 사라지는 것과 6강이 사라지는 건 다른 사건이다.
+function spawnTowerBoom(x, z, lv = 1) {
+  const scale = 1 + Math.min(lv, 15) / 15;      // 1.0 ~ 2.0
+  // 1) 팽창하는 불덩이
+  const ball = new THREE.Mesh(
+    boomGeo,
+    new THREE.MeshBasicMaterial({ color: 0xffb35a, transparent: true, opacity: 0.95, depthWrite: false })
+  );
+  ball.position.set(x, 1.2, z);
+  ball.renderOrder = 997;
+  scene.add(ball);
+  fx.push({ mesh: ball, t: 0, dur: 0.34, kind: 'flash', s0: 0.5 * scale, s1: 3.4 * scale });
+  // 2) 바닥 충격파 — 두 겹으로 겹쳐 두께를 만든다
+  for (const [col, dur, mul] of [[0xff6a3a, 0.5, 1.0], [0xffe3a0, 0.34, 0.62]]) {
+    const ring = new THREE.Mesh(
+      ringGeo,
+      new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95,
+                                    depthTest: false, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, 0.06, z);
+    ring.renderOrder = 998;
+    scene.add(ring);
+    fx.push({ mesh: ring, t: 0, dur, kind: 'ring', gain: 3.4 * scale * mul });
+  }
+  // 3) 잔해 — 등급만큼 많이 날린다
+  const n = Math.round(14 + lv * 1.4);
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2 + Math.random() * 0.5;
+    const sp = (2.8 + Math.random() * 4.2) * scale;
+    const m = new THREE.Mesh(
+      dustGeo,
+      new THREE.MeshBasicMaterial({
+        color: k % 3 === 0 ? 0xffca6a : 0x6b5f8f, transparent: true, opacity: 0.95 })
+    );
+    m.scale.setScalar((0.1 + Math.random() * 0.16) * scale);
+    m.position.set(x, 0.6 + Math.random() * 1.4, z);
+    scene.add(m);
+    fx.push({ mesh: m, t: 0, dur: 0.6 + Math.random() * 0.35, kind: 'dust',
+              vx: Math.cos(a) * sp, vy: 3.4 + Math.random() * 3.6, vz: Math.sin(a) * sp,
+              spin: (Math.random() - 0.5) * 18 });
+  }
+}
+
+// 🛡가 막았을 때 — 청록 방패막이 한 번 부풀었다 꺼진다 (D148)
+function spawnShieldFx(x, z) {
+  const dome = new THREE.Mesh(
+    boomGeo,
+    new THREE.MeshBasicMaterial({ color: 0x7ee0c0, transparent: true, opacity: 0.55,
+                                  depthWrite: false, side: THREE.DoubleSide })
+  );
+  dome.position.set(x, 1.1, z);
+  dome.renderOrder = 997;
+  scene.add(dome);
+  fx.push({ mesh: dome, t: 0, dur: 0.42, kind: 'flash', s0: 1.4, s1: 2.6 });
+}
+
 function updateFx(dt) {
   for (let k = fx.length - 1; k >= 0; k--) {
     const f = fx[k];
@@ -6867,8 +7055,11 @@ function updateFx(dt) {
       continue;
     }
     if (f.kind === 'ring') {
-      f.mesh.scale.setScalar(0.5 + p * 2.6);
+      f.mesh.scale.setScalar(0.5 + p * (f.gain || 2.6));
       f.mesh.material.opacity = 0.95 * (1 - p) ** 1.5;
+    } else if (f.kind === 'flash') {
+      f.mesh.scale.setScalar(f.s0 + (f.s1 - f.s0) * p);
+      f.mesh.material.opacity = 0.95 * (1 - p) ** 1.6;
     } else {
       f.vy -= 14 * dt;
       f.mesh.position.x += f.vx * dt;
@@ -7199,6 +7390,7 @@ function applyCommand(p, c) {
       break;
     }
     case 'f':      tryUpgradeBuilding(p); break;
+    case 'repair': tryRepairWall(p); break;                 // 벽 수리 (D148)
     case 'prot':   toggleProtect(p); break;                 // 🛡 (D145)
     case 'buytier': tryBuyTier(p); break;                   // 확정 구매 (D145)
     case 'bupg':   upgradeBuildings(p, c.ids); break;   // 선택한 건물 일괄 (D143)
@@ -8086,8 +8278,9 @@ const HELP_FULL = [
   '── 조작 ──',
   'WASD 이동 · **Space 공격**(정면 근접, 넉백/스플 개조 가능) · Shift 앞구르기(0.28초 **무적**, 기운 34)',
   'C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
-  'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · F 수리/강화 · **V 확정 구매** · **R 🛡프로텍트** · Q/Z 건네주기 · 0 도발',
-  '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · U 개조 · H 이 도움말',
+  'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · **F 벽 수리** · **U 건물 강화**',
+  '**V 확정 구매** · **R 🛡프로텍트** · Q/Z 건네주기 · 0 도발 · **K 개조 패널**',
+  '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
   '',
   '── 짓기 ──',
@@ -8107,16 +8300,18 @@ const HELP_FULL = [
   '치즈더미에 다가가 E(또는 더미 우클릭) → 자동 왕복 채굴. 직접 움직이면 즉시 취소',
   '더미 위 `1/3` = 붙은 일꾼 / 정원. 꽉 차면(붉게) 다음 더미를 확보해야 한다',
   '공방을 지어야 경비탑·병력이 열린다 (Lv.1 경비탑·근접병 → Lv.2 사수 → Lv.3 정예병)',
-  '근처(4m) 공방·경비탑을 **F로 제자리 강화**. 멀리 있는 탑은 **클릭·드래그로 골라 두고 F**',
+  '근처(4m) 공방·경비탑을 **U로 제자리 강화**. 멀리 있는 탑은 **클릭·드래그로 골라 두고 U**',
+  '골라 둔 게 있으면 화면 아래에 요약 줄이 뜬다 — 몇 개·몇 강·얼마인지. ESC로 해제',
   '공방 업그레이드는 치즈+부품이 들고 채널링이다 (그 자리에 묶인다)',
   '',
   '── 경비탑 강화 (Lv.1~15) ──',
-  '**F는 도박이다.** 성공 / 실패(그대로) / 💥파괴 세 갈래 — **치즈는 결과와 무관하게 나간다**',
+  '**U는 도박이다.** 성공 / 실패(그대로) / 💥파괴 세 갈래 — **치즈는 결과와 무관하게 나간다**',
   '확률은 누르기 **전에** 발밑 안내문에 뜬다. Lv.6부터 파괴가 붙고 위로 갈수록 가팔라진다',
   '  Lv.10 성공 50%·파괴 16% · Lv.13 성공 20%·파괴 37% · Lv.15 성공 8%·파괴 55%',
   '**R = 🛡프로텍트.** 켜 두면 파괴를 부품 3개로 막는다 — **실제로 막았을 때만** 나간다',
   '**V = 확정 구매.** 운을 안 걸고 웃돈(+10%)을 내고 Lv.7까지 한 번에 산다',
-  '여러 탑을 골라 F를 누르면 **하나하나 따로 굴린다** — 한꺼번에 여러 개가 터질 수 있다',
+  '여러 탑을 골라 U를 누르면 **하나하나 따로 굴린다** — 한꺼번에 여러 개가 터질 수 있다',
+  '**8강부터 오오라**가 뜬다 — 11강에 구슬이, 14강에 빛기둥이 더해진다',
   '공방 등급이 상한을 연다: Lv.1→탑 5단 · Lv.2→10단 · Lv.3→15단',
   '공방 옆 **개조 패널은 클릭으로 산다** (숫자키도 그대로 먹는다)',
   '**치즈 창고 옆 = 공격 개조.** 스테이지마다 1점씩(총 10점) 받아 공격력·넉백·스플래시에 나눠 쓴다',
@@ -8874,6 +9069,33 @@ atkEl.addEventListener('click', (e) => {
 });
 
 const hotbarEl = document.getElementById('hotbar');
+// ---- 골라 둔 건물 요약 (D148) ----
+// 선택은 화면에 계속 남는데(이동해도 안 풀린다 — 쫓기는 게임이라 풀리면 못 쓴다)
+// **표시가 없어서** 뭘 골라 뒀는지 모른 채 U를 누르는 일이 생겼다.
+// 스타의 하단 패널이 하는 일을 한 줄로 줄인 것: **무엇을 · 몇 개 · 얼마에 · 무슨 키로.**
+const selbarEl = document.getElementById('selbar');
+function updateSelbar() {
+  const me = localPlayer();
+  const picked = alive ? selUpgradable() : [];
+  const all = alive ? [...selectedBldgs].filter((b) => buildings.includes(b)) : [];
+  if (!all.length) { selbarEl.classList.add('hidden'); return; }
+  selbarEl.classList.remove('hidden');
+  if (!picked.length) {
+    selbarEl.innerHTML = `건물 <b>${all.length}개</b> 골라 둠 — 더 올릴 게 없다 · <span class="k">ESC</span> 해제`;
+    return;
+  }
+  const cost = picked.reduce((a, b) => a + upgradeSpec(b).cost, 0);
+  const lv = picked.map((b) => b.tier || 1);
+  const range = Math.min(...lv) === Math.max(...lv)
+    ? `Lv.${lv[0]}` : `Lv.${Math.min(...lv)}~${Math.max(...lv)}`;
+  const poor = me.cheese < cost;
+  selbarEl.innerHTML =
+    `<b>${picked.length}개</b> 골라 둠 (${range}) · <span class="k">U</span> 일괄 강화 — ` +
+    `치즈 <span class="${poor ? 'no' : ''}">${cost}</span>` +
+    (poor ? ` (지금 ${Math.floor(me.cheese)})` : '') +
+    ` · <span class="k">ESC</span> 해제`;
+}
+
 function updateHotbar() {
   hotbarEl.innerHTML = BUILD_SLOTS.map((sl, k) => {
     const lock = slotLockReason(sl);
@@ -9169,6 +9391,36 @@ function sfx(kind) {
                   beep({ freq: 120, to: 38, type: 'sawtooth', dur: 0.38, vol: 0.45 }); break;
     case 'caught':beep({ freq: 220, to: 60, type: 'sawtooth', dur: 0.5, vol: 0.55 }); break;
     case 'swing': noise({ dur: 0.07, vol: 0.16, lo: 1500 }); break;                          // 햄스터 휘두르기 (D129)
+    // ---- 강화 (D148) ----
+    // 세 결과가 **귀만으로 구별**돼야 한다. 눈은 적을 보고 있지 화면 구석의 글자를 안 본다.
+    // 성공 = 올라가는 3음(아르페지오) · 유지 = 짧고 둔한 한 음 · 파괴 = 무너지는 저음 + 파열음
+    case 'enhUp':
+      beep({ freq: 523, type: 'sine', dur: 0.10, vol: 0.34 });
+      beep({ freq: 659, type: 'sine', dur: 0.10, vol: 0.34, delay: 0.075 });
+      beep({ freq: 880, type: 'sine', dur: 0.20, vol: 0.40, delay: 0.15 });
+      break;
+    case 'enhBig':   // 11강 이상 — 한 음 더 얹어 "이번 건 다르다"를 만든다
+      beep({ freq: 523, type: 'sine', dur: 0.10, vol: 0.36 });
+      beep({ freq: 784, type: 'sine', dur: 0.10, vol: 0.36, delay: 0.075 });
+      beep({ freq: 1046, type: 'sine', dur: 0.10, vol: 0.40, delay: 0.15 });
+      beep({ freq: 1568, type: 'triangle', dur: 0.34, vol: 0.34, delay: 0.24 });
+      break;
+    case 'enhStay':  // 그대로 — 실패지만 잃은 건 돈뿐이다. 짧고 밋밋하게
+      beep({ freq: 300, to: 240, type: 'triangle', dur: 0.13, vol: 0.28 });
+      break;
+    case 'enhBoom':  // 파괴 — 'boom'보다 낮고 길다. 이건 **내 탓**이라 소리도 무거워야 한다
+      noise({ dur: 0.55, vol: 0.75, lo: 300 });
+      beep({ freq: 190, to: 32, type: 'sawtooth', dur: 0.52, vol: 0.5 });
+      beep({ freq: 95, to: 26, type: 'square', dur: 0.6, vol: 0.34, delay: 0.05 });
+      break;
+    case 'enhSave':  // 🛡가 막았다 — 금속성 '팅'. 안도가 들려야 부품값이 아깝지 않다
+      beep({ freq: 1320, to: 1100, type: 'triangle', dur: 0.20, vol: 0.34 });
+      beep({ freq: 1980, to: 1700, type: 'sine', dur: 0.26, vol: 0.20, delay: 0.02 });
+      break;
+    case 'buyTier':  // 확정 구매 — 돈 쓰는 소리. 도박음과 확실히 달라야 한다
+      beep({ freq: 660, type: 'square', dur: 0.07, vol: 0.24 });
+      beep({ freq: 990, type: 'square', dur: 0.14, vol: 0.26, delay: 0.06 });
+      break;
     default: break;
   }
 }
@@ -10864,11 +11116,11 @@ function tickClient(dt) {
   updateWallPops(dt);
   refreshTerritory();
   paintTerritory();
-  updateFx(dt);
+  updateFx(dt); updateAuras();
   updateCamera(dt);
   noteFrame();
   hudT -= dt;
-  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); renderNet(); renderNetDev(); }
+  if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); updateSelbar(); renderNet(); renderNetDev(); }
 }
 
 // 시뮬이 아니라 **그리기만** 하는 부분 — 클라에서 적·유닛·건물의 모델을 제자리에 놓는다.
@@ -10926,7 +11178,7 @@ function tickEditor(dt) {
   // 누른 채로 끌면 이어서 놓인다 (게임의 벽 설치와 같은 손놀림).
   // 걸어 다니는 동안에도 놓이므로 마우스를 고정한 채 몸으로 줄을 그을 수 있다
   if (edGhost.ok && (edDragging || keys.has('Space'))) edPaint(edGhost.i, edGhost.j);
-  updateFx(dt);
+  updateFx(dt); updateAuras();
   updateCamera(dt);
   noteFrame();
 }
@@ -11051,7 +11303,7 @@ function tick(dt) {
       for (const q of share) q.cheese += myTerritoryArea(q) * P.res.terrIncome * dt;
     }
   }
-  pf('연출'); updateFx(dt);
+  pf('연출'); updateFx(dt); updateAuras();
   pf('카메라'); updateCamera(dt);
   if (camShake > 0) {
     const c = activeCam();
@@ -11062,7 +11314,7 @@ function tick(dt) {
   hudT -= dt;
   if (hudT <= 0) {
     hudT = 0.1;
-    pf('HUD'); updateHUD(); updateHotbar(); renderNet(); renderNetDev();
+    pf('HUD'); updateHUD(); updateHotbar(); updateSelbar(); renderNet(); renderNetDev();
   }
   pf('스냅샷'); sendSnapshot(dt);
   sendSettings(dt);
@@ -11275,6 +11527,8 @@ window.__game = {
   effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, partsCap, rollParts, SELF_BUILD,
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
+  auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx,
+  upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
   applyBuildingTierVisual, cheeseCost, slotLockReason, BUILD_SLOTS,

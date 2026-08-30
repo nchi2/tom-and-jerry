@@ -214,6 +214,21 @@
     }
     #overlay-cont:hover { filter: brightness(1.12); }
     #overlay-cont.hidden { display: none; }
+    /* 골라 둔 건물 요약 (D148) — 선택은 화면에 남는데 표시가 없어서
+       "내가 뭘 골라 뒀는지" 모른 채 U를 누르는 일이 생겼다. 핫바 바로 위에 한 줄. */
+    #selbar {
+      position: fixed; bottom: 152px; left: 50%; transform: translateX(-50%);
+      z-index: 12; pointer-events: none;
+      font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+      padding: 6px 14px; border-radius: 8px;
+      background: rgba(18, 22, 32, 0.88); border: 1px solid #3d6ea8;
+      color: #cfe4ff; white-space: nowrap;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+    }
+    #selbar.hidden { display: none; }
+    #selbar b { color: #8fd6ff; }
+    #selbar .k { color: #ffd24a; }
+    #selbar .no { color: #ff9a8f; }
     #hotbar {
       position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
       z-index: 12; display: flex; gap: 6px; pointer-events: none;
@@ -505,6 +520,7 @@
   <div id="chat"><div id="chatlog"></div><div id="chatbar"><span class="cprompt">말하기</span><input id="chatin" maxlength="90" autocomplete="off" /><span class="cquick">1~4 빠른말 · Enter 보내기 · Esc 취소</span></div></div>
   <div id="flash"></div>
   <div id="selbox"></div>
+  <div id="selbar" class="hidden"></div>
   <div id="hotbar"></div>
   <div id="upgrade"></div>
   <div id="atkup"></div>
