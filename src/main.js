@@ -3791,10 +3791,11 @@ function makeKeyPrompt(keyLabel, text, accent) {
 }
 
 // 문구가 실제로 바뀔 때만 다시 그린다 — 매 프레임 캔버스를 새로 그리면 비싸다
-function setKeyPrompt(spr, text, accent) {
+function setKeyPrompt(spr, text, accent, key) {
   const u = spr.userData;
-  if (u.text === text && u.accent === accent) return;
-  u.text = text; u.accent = accent;
+  if (key !== undefined) u.key = key;   // 칩의 키 글자도 상황에 따라 바뀐다 (D153)
+  if (u.text === text && u.accent === accent && (key === undefined || u.drawnKey === u.key)) return;
+  u.text = text; u.accent = accent; u.drawnKey = u.key;
   drawKeyPrompt(u.cv, u.key, text, accent);
   u.tex.dispose();
   u.tex = new THREE.CanvasTexture(u.cv);
@@ -3942,7 +3943,7 @@ function repairAction(p = player) {
   const cost = P.wall.repairCost;
   return { kind: 'repair', ob: crack, cost,
            x: cellToWorld(crack.i, crack.j).x, z: cellToWorld(crack.i, crack.j).z,
-           label: `[F] 벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
+           label: `벽 수리 (금 ${crack.cracks}/${P.wall.crackMax}) — 치즈 ${cost}`,
            why: p.cheese < cost ? `치즈 ${cost} 필요` : null };
 }
 
@@ -3953,14 +3954,14 @@ function upgradeAction(p = player) {
   if (picked.length) {
     const cost = picked.reduce((a, b) => a + upgradeSpec(b).cost, 0);
     return { kind: 'batch', list: picked, x: picked[0].cx, z: picked[0].cz,
-             label: `[U] 골라 둔 ${picked.length}개 강화 — 치즈 ${cost}`,
+             label: `골라 둔 ${picked.length}개 강화 — 치즈 ${cost}`,
              why: p.cheese < upgradeSpec(picked[0]).cost ? `치즈가 모자랍니다` : null };
   }
   const b = nearestUpgradable(p.x, p.z, 4.0);
   if (!b) return null;
   const s = upgradeSpec(b);
   return { kind: 'upgrade', b, x: b.cx, z: b.cz,
-           label: '[U] ' + enhLabel(b, s, p),
+           label: enhLabel(b, s, p),
            why: upgradeBlockedWhy(b, p) };
 }
 
@@ -3976,7 +3977,11 @@ function updateUpgradePrompt() {
   if (!a) return;
   // 못 하면 그 이유를, 할 수 있으면 값을 그대로 보여준다 (D84).
   // 눌러보고 나서야 아는 게 아니라 서 있는 동안 이미 보이게.
-  setKeyPrompt(upgradePrompt, a.why || a.label, a.why ? '#ff6b6b' : (a.kind === 'repair' ? '#ffb347' : '#8fd6ff'));
+  // 칩의 큰 키 글자가 곧 안내다 (D153) — F/U를 갈라 놓고 칩이 계속 F면 그게 오도다.
+  // 정현: "포탑 업그레이드는 U인데 여전히 F를 유도함. U는 작게 적혀 있고."
+  setKeyPrompt(upgradePrompt, a.why || a.label,
+               a.why ? '#ff6b6b' : (a.kind === 'repair' ? '#ffb347' : '#8fd6ff'),
+               a.kind === 'repair' ? 'F' : 'U');
   const y = (a.kind === 'repair' ? 2.4 : 2.9) + Math.sin(performance.now() * 0.0045) * 0.09;
   upgradePrompt.position.set(a.x, y, a.z);
 }
@@ -5370,7 +5375,10 @@ function planEnemyPath(enemy) {
     // 잡히고, hitWallAlways(D133)가 **처음 만나는 벽에서** 터뜨린다 — 결과적으로
     // 각자 자기 스폰 방향의 벽면을 때린다. 벽 파손이 사방에서 일어나는 건 이 조합이다.
     // 건물이 하나도 없으면 아래 일반 추격으로 떨어진다 (그냥 무는 자폭묘).
-    if (enemy.siege && buildings.length) {
+    // 누가 벽 밖에 나와 있으면 공성을 접고 그쪽을 쫓는다 (D153).
+    // "숨으면 공성, 나오면 추격" — 숨는 것에는 벽이 갉히는 값이 붙고,
+    // 나오는 것에는 쫓기는 값이 붙는다. 어느 쪽도 공짜가 아니게 된다.
+    if (enemy.siege && buildings.length && !anyExposed) {
       if (!(enemy.raidTarget && buildings.includes(enemy.raidTarget))) {
         let bBest = null, bD = Infinity;
         for (const b of buildings) {
@@ -5381,6 +5389,12 @@ function planEnemyPath(enemy) {
       }
       enemy.raidUntil = survival + 3600;    // 사실상 무기한 — 부서지면 위에서 다시 고른다
       raiding = true;
+    } else if (enemy.siege && anyExposed && enemy.raidTarget) {
+      // ⚠ 노출로 공성을 접을 때 목표를 **명시적으로 버려야** 한다 (D153 실측).
+      //    위에서 심은 raidUntil(+3600)을 그대로 두면 아래 일반 어그로 유지 분기가
+      //    낡은 건물 목표를 계속 물고 있어 — "나왔는데도 벽만 두드린다"가 재현됐다.
+      enemy.raidTarget = null;
+      enemy.raidUntil = 0;
     }
     // 어그로: 쫓는 중에도 시야에 건물이 들어오면 한눈판다
     if (raiding) {
@@ -5389,7 +5403,10 @@ function planEnemyPath(enemy) {
       raiding = true;
     } else {
       enemy.raidTarget = null;
-      if (Math.random() < P.enemy.aggroChance) {
+      // 일반 어그로(지나가다 건물에 한눈)도 노출 중에는 접는다 (D153) —
+      // 눈앞에 잡을 수 있는 햄스터가 있는데 벽을 두드리는 게 "너무 쉬움"의 원인이었다.
+      // 좌절 습격(noHitT, D85)은 그대로다: 그건 못 잡아서 가는 것이니까.
+      if (!anyExposed && Math.random() < P.enemy.aggroChance) {
         let bBest = null, bD = P.enemy.aggroRange;
         for (const b of buildings) {
           const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
@@ -6057,6 +6074,30 @@ function updateBomberTrickle(dt) {
   //    "사방에서 온다"(D110)가 자폭묘에서만 조용히 죽는다. 전용 증가 카운터를 쓴다.
   enemies.push(makeEnemy('bomber', bomberSeq++));
   refreshReach();
+}
+
+// ---- 벽 밖 판정 (D153) ----
+// 정현: "플레이어가 벽 밖에 있는 판정일 땐 플레이어 우선."
+// "밖"의 근거는 은신처 판별(D54)과 **같은 격자**(enemyReach)다 — 적 몸 중심이
+// 올 수 있는 칸에 서 있으면 노출이다. 판정 둘이 서로 다른 답을 내면 안 된다.
+// enemyReach가 아직 없으면(첫 프레임) 노출로 친다 — 공성보다 추격이 안전한 기본값.
+const isExposedHuman = (h) =>
+  !enemyReach || !!enemyReach[worldToNav(h.x, h.z)];
+let anyExposed = true;      // 프레임당 한 번 계산해 캐시 (적마다 다시 재지 않는다)
+let wasExposed = true;
+function updateExposure() {
+  anyExposed = humans().some((h) => h.active && alive && !h.stunned && isExposedHuman(h));
+  // 숨어 있다 **나온 순간** 온 무리를 깨운다 (D153-2). 이게 없으면 재길찾기 주기
+  // (repath × 실패 백오프 최대 6배)가 그대로 "이제야 봤냐"가 된다 —
+  // 실측으로 최대 십수 초씩 옛 목표를 물고 있었다. 예산(pathPerFrame)은 그대로라
+  // 같은 프레임에 다 몰리지 않게 0~0.3초로 흩뿌린다.
+  if (anyExposed && !wasExposed) {
+    for (const e of enemies) {
+      e.pathFail = 0;
+      if (e.repathT > 0.3) e.repathT = Math.random() * 0.3;
+    }
+  }
+  wasExposed = anyExposed;
 }
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
@@ -11320,6 +11361,7 @@ function tick(dt) {
       // 이번 프레임의 길찾기 예산. 못 받은 적은 다음 프레임에 다시 시도한다
       // (repathT가 음수로 남아 있으므로 오래 기다린 쪽이 먼저 받는다)
       pathLeft = P.enemy.pathPerFrame > 0 ? P.enemy.pathPerFrame : 1e9;
+      updateExposure();      // 벽 밖 판정 — 적 AI보다 먼저, 프레임당 한 번 (D153)
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
@@ -11647,7 +11689,8 @@ window.__game = {
   get cheeseBitCount() { return cheeseBits.length; },
   get harvestPulse() { return player.harvestPulse; },
   setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
-  threatLevel, enemySpeedOf, enemyDpsOf, enemyActive, spawnDelayNow,
+  threatLevel, enemySpeedOf, enemyDpsOf, enemyActive, spawnDelayNow, isExposedHuman,
+  get anyExposed() { return anyExposed; },
   get survival() { return survival; },
   step(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) tick(dt);
