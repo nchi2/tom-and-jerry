@@ -423,6 +423,9 @@ const P = {
   //  count = 마릿수 · hp = 체력 · delay = 첫 등장까지 시간 · stage = 스테이지 길이
   diff: { level: 'normal' },
   // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
+  // ---- 테스트 도구 (D165) ----
+  // 게임 규칙이 아니라 **개발 편의**다. 값은 저장되지 않고 새 판에서 1로 돌아간다.
+  debug: { timeScale: 1 },
   look: { gaitAmp: 1.0, auraAmp: 1.0,   // 오오라 전체 강도 (D155). 0이면 오오라 없음   // 적 걸음 반동 크기 (D149). 0 = 예전처럼 미끄러진다
     floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
     wallTex: 1,       // 벽돌 벽
@@ -7297,6 +7300,17 @@ window.addEventListener('keydown', (e) => {
       break;
     }
   }
+  // ---- 배속 (D165) — , 느리게 / . 빠르게 / Shift+. 최대 ----
+  // WASD·숫자에서 멀고 다른 데 안 쓰는 키다. 화면 우상단에 배속이 뜬다.
+  if (e.code === 'Comma' || e.code === 'Period') {
+    const steps = [1, 2, 3, 5, 8];
+    const cur = steps.indexOf(P.debug.timeScale);
+    let idx = cur < 0 ? 0 : cur;
+    if (e.code === 'Period') idx = e.shiftKey ? steps.length - 1 : Math.min(idx + 1, steps.length - 1);
+    else idx = Math.max(idx - 1, 0);
+    P.debug.timeScale = steps[idx];
+    flashMsg(`배속 ×${P.debug.timeScale}`, P.debug.timeScale > 1 ? '#ffd24a' : '#9aa4b2');
+  }
   if (e.code === 'KeyP') paused = !paused;
   // R 즉시 재시작은 뺐다 (D121) — 쫓기다 R을 눌러 판이 통째로 날아가는 사고가 난다.
   // 다시하기는 ESC 메뉴에서만.
@@ -8452,6 +8466,25 @@ const gui = new GUI({ title: '튜닝' });
 // ---- 자주 만지는 것 ----
 // 실제로 플레이하며 반복해서 요청됐던 값들만 위로 꺼냈다.
 // 나머지는 전부 아래 '고급' 안에 접혀 있다 — 열어야 보인다.
+// ---- 테스트 도구 (D165) ----
+// 한 판이 30~40분이라 **끝까지 가 보는 것만으로도** 개발이 느려진다.
+// 배속으로 대기를 압축하고, 점프로 특정 국면을 바로 만든다. 맨 위에 둔다 — 제일 자주 쓴다.
+{
+  const f = gui.addFolder('⚡ 테스트 (개발용)');
+  f.add(P.debug, 'timeScale', 1, 8, 1).name('배속 ( , / . 키 )').listen();
+  // ⚠ TEST는 이 아래에서 선언된다 (TDZ). 여기서 Object.keys(TEST)를 하면 죽는다 —
+  //   실제로 죽었고 게임이 아예 안 떴다 (함정 1: 빌드는 통과한다).
+  //   **이름을 여기 적고 호출만 미룬다** — 버튼을 누르는 시점엔 TEST가 이미 있다.
+  //   TEST에 항목을 추가하면 이 목록에도 넣어야 한다 (아래 검사가 잡아 준다).
+  const TEST_KEYS = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
+    '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
+    '적 전멸', '톰 소환'];
+  const proxy = {};
+  for (const k of TEST_KEYS) proxy[k] = () => TEST[k]();
+  for (const k of TEST_KEYS) f.add(proxy, k).name(k);
+  f.open();
+}
+
 {
   const f = gui.addFolder('★ 자주 만지는 것');
   f.add({ 다시시작: () => restart() }, '다시시작').name('다시시작 (R)');
@@ -8993,6 +9026,7 @@ const HELP_FULL = [
   'C 카메라 · P 일시정지 · ESC 메뉴(다시 시작도 여기)',
   'T 채팅 (1~4 빠른말) · M 미니맵 · E 채굴 · **F 벽 수리** · **U 건물 강화**',
   '**V 확정 구매** · **R 🛡프로텍트** · Q/Z 건네주기 · 0 도발 · **K 개조 패널**',
+  '**, / . 배속** (테스트용, Shift+.=×8) · G 튜닝 패널의 ⚡테스트 폴더에 점프 버튼',
   '1~8 들기 / 같은 숫자 다시 = 내려놓기 · **X 철거 모드**(벽·내 건물 모두, 건물은 절반 환급) · H 이 도움말',
   'G 튜닝 패널 켜기/끄기 · ` (백쿼트) 좌상단 개발 정보 끄기',
   '',
@@ -9367,6 +9401,10 @@ function setMap(idx) {
 }
 
 function restart() {
+  // 배속은 판을 넘기지 않는다 (D165) — 8배인 채로 새 판이 시작되면 사고다.
+  // ⚠ 처음엔 beginMatch 쪽 정리 블록에 넣었는데 restart()가 그 경로를 안 타서
+  //   실측에서 "재시작 후 ×8"이 그대로 나왔다. 새 판이 **반드시** 지나는 자리는 여기다.
+  P.debug.timeScale = 1;
   for (const f of [...fx]) { scene.remove(f.mesh); f.mesh.material.dispose(); }
   fx.length = 0;
   popping.length = 0;
@@ -9845,6 +9883,45 @@ function updateHotbar() {
   }).join('') +
   `<div class="slot rm${removeMode ? ' sel' : ''}"><b>X</b>철거<br>${P.wall.removeCost}🧀</div>` +
   `<div class="slot hand${buildSlot < 0 && !removeMode ? ' sel' : ''}"><b>ESC</b>${buildSlot < 0 && !removeMode ? '빈손' : '내려놓기'}<br>—</div>`;
+}
+
+// ---- 테스트 점프 (D165) ----
+// 배속만으로는 **특정 국면**에 못 간다. 30분짜리 판에서 "최후의 공세만 보고 싶다"
+// 같은 게 대부분이라, 그 상태를 바로 만들어 주는 손잡이를 따로 둔다.
+// ⚠ 전부 호스트 경로를 그대로 탄다 — 치트용 뒷문을 새로 파지 않는다.
+//    (스폰·스테이지는 netAuthoring 가드 안에서만 도는 게 D92의 규칙이다)
+const TEST = {
+  '치즈 +50,000': () => { localPlayer().cheese += 50000; flashMsg('치즈 +50,000', '#ffd24a'); },
+  '부품 +100': () => { localPlayer().parts += 100; flashMsg('부품 +100', '#7ee0c0'); },
+  '스테이지 +1': () => { advanceStage(); },
+  '스테이지 → 10': () => { for (let k = stage; k < STAGES.length; k++) advanceStage(); },
+  '최후의 공세 준비로': () => { if (finalPhase === 'none') beginFinalPrep(); },
+  '공세 지금 시작': () => { if (finalPhase === 'prep') startFinalAssault(); },
+  '내 탑 전부 +1강 (확정)': () => {
+    const me = localPlayer();
+    let n = 0;
+    for (const b of buildings)
+      if (TOWERISH[b.kind] && b.owner === me.owner && !atMaxTier(b)) { retierBuilding(b, (b.tier || 1) + 1); n++; }
+    flashMsg(`${n}개 강화 (확정)`, '#8fd6ff');
+  },
+  '내 탑 전부 15강': () => {
+    const me = localPlayer();
+    let n = 0;
+    for (const b of buildings)
+      if (TOWERISH[b.kind] && b.owner === me.owner) { retierBuilding(b, P.tower.maxLv); n++; }
+    flashMsg(`${n}개 최고 등급`, '#ffcc55');
+  },
+  '적 전멸': () => { for (const e of [...enemies]) damageEnemy(e, 1e9, localPlayer()); },
+  '톰 소환': () => { spawnBoss(); },
+};
+// GUI가 이름 목록을 따로 들고 있으므로(TDZ 회피) **어긋나면 여기서 알린다**.
+// 조용히 빠지면 버튼 하나가 죽은 채로 남는다.
+if (typeof console !== 'undefined') {
+  const want = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
+    '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
+    '적 전멸', '톰 소환'];
+  const miss = Object.keys(TEST).filter((k) => !want.includes(k));
+  if (miss.length) console.warn('[D165] 테스트 버튼 목록에 빠진 항목:', miss);
 }
 
 function flashMsg(text, color = '#6ee07a') {
@@ -11826,7 +11903,9 @@ function finalBanner() {
 
 function updateBossBar() {
   const list = enemies.filter((e) => e.type === 'boss');
-  const banner = captiveBanner() + spawnCountdownBanner() + finalBanner();
+  const speed = (P.debug.timeScale || 1) > 1
+    ? timerRow('⚡ 배속 (테스트)', `×${P.debug.timeScale}`, ', 로 되돌리기', 'calm') : '';
+  const banner = speed + captiveBanner() + spawnCountdownBanner() + finalBanner();
   if (!list.length && !banner) { bossBarEl.style.display = 'none'; return; }
   bossBarEl.style.display = 'block';
   if (!list.length) { bossBarEl.innerHTML = banner; return; }
@@ -12279,9 +12358,14 @@ let prevT = performance.now();
 let visible = !document.hidden;
 
 function stepBy(elapsedMs, draw) {
-  // 한 번에 몰아서 따라잡되 상한을 둔다 (오래 숨어 있었으면 그만큼은 버린다 —
-  // 다 따라잡으려다 프레임을 통째로 잡아먹는 죽음의 나선을 피한다)
-  let left = Math.min(elapsedMs / 1000, 0.5);
+  // ---- 배속 (D165) ----
+  // 정현: "한 판당 30~40분씩 걸리니 테스트 피로도가 크다."
+  // **dt를 키우지 않는다.** 1/60 고정 스텝은 그대로 두고 **횟수만** 늘린다 —
+  // dt를 곱하면 빠른 적이 벽을 뚫고(터널링) 길찾기 예산도 프레임당 한 번이라
+  // 배속이 곧 "AI가 멍청해짐"이 된다. 아래 while이 이미 쪼개고 있어서 상한만 열면 된다.
+  // 상한(0.5초)도 배속만큼 늘려야 실제로 빨라진다.
+  const ts = Math.max(1, Math.min(P.debug.timeScale || 1, 8));
+  let left = Math.min(elapsedMs / 1000 * ts, 0.5 * ts);
   while (left > 0) {
     const dt = Math.min(left, 1 / 60);
     tick(dt);
@@ -12477,7 +12561,7 @@ window.__game = {
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
   towerStyle, spawnSplashFx, lobProjectile, projectiles, projGeo, projGeoBullet, projGeoShard, towerLevelColor, auraColor, auraSides, auraLayers,
   TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
-  beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot,
+  beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot, stepBy, TEST,
   loadHof, saveHof, openHof, renderHof, commitHofName, hofQualifies,
   get hofPending() { return hofPending; }, set hofPending(v) { hofPending = v; },
   get tut() { return tut; }, get tutGuide() { return tutGuide; },
