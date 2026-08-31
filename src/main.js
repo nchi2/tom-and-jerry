@@ -3285,7 +3285,10 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
       return '고양이가 나타나는 자리입니다 (붉은 띠)';
     if (obstacles.has(cellKey(ci, cj))) return '자리가 막혀 있습니다 (2x2 공터 필요)';
     if (nodeAt(ci, cj)) return '광맥 위에는 지을 수 없습니다';
-    if (!asOrder && distCellToPoint(ci, cj, p.x, p.z) < P.player.radius + 0.02) return '내가 서 있는 자리입니다';
+    // "내가 서 있는 자리입니다" 검사는 지웠다 (D152). 정현: "빠져나오면 되니까."
+    // 벽은 이미 발밑에 지어진다 — 건물이라고 다를 이유가 없었다.
+    // 실측한 물리: 중심이 상자 안이면 원-AABB 밀어내기가 0벡터라 **서 있는 동안은
+    // 그대로**고, 걸으면 자유롭게 빠져나온다(1초 6.75m 실측). 나온 뒤에는 다시 못 들어간다.
     for (const e of enemies)
       if (distCellToPoint(ci, cj, e.x, e.z) < enemyR(e) + 0.02) return '적이 서 있는 자리입니다';
   }
