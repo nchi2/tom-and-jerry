@@ -354,7 +354,7 @@ const P = {
   //  count = 마릿수 · hp = 체력 · delay = 첫 등장까지 시간 · stage = 스테이지 길이
   diff: { level: 'normal' },
   // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
-  look: { gaitAmp: 1.0,   // 적 걸음 반동 크기 (D149). 0 = 예전처럼 미끄러진다
+  look: { gaitAmp: 1.0, auraAmp: 1.0,   // 오오라 전체 강도 (D155). 0이면 오오라 없음   // 적 걸음 반동 크기 (D149). 0 = 예전처럼 미끄러진다
     floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
     wallTex: 1,       // 벽돌 벽
     // 대비. 처음엔 0.12/0.18로 뒀는데 **바닥이 어두워서(0x2b3040) 안 보였다**.
@@ -3116,7 +3116,17 @@ const TIER_COLOR = [0x6a7386, 0x74c7f0, 0xffcc55];   // 공방 Lv.1 / 2 / 3
 // 핍 15개는 **셀 수 없다**. 5개씩 세 띠로 나눈다 —
 //   띠(색) = 한눈에 "대략 어느 급이냐", 핍 개수 = 그 안에서 몇 단이냐.
 // 위에서 보면 색이 먼저 읽히고, 가까이 가면 개수가 읽힌다. 두 번에 나눠 읽게 하는 게 요령이다.
-const BAND_COLOR = [0x8fa0b8, 0x74c7f0, 0xffcc55];   // Lv.1~5 / 6~10 / 11~15
+const BAND_COLOR = [0x8fa0b8, 0x74c7f0, 0xffcc55];   // Lv.1~5 / 6~10 / 11~15 (띠 기준색)
+// 띠 안에서 다음 띠 쪽으로 60%까지만 흐른다 (D155) — 100% 흐르면 띠 경계가 뭉개져
+// "무슨 급인가"를 잃는다. 15강만 백열로 확실히 빼서 최고 등급을 못 헷갈리게 한다.
+const BAND_COLOR_NEXT = [0x74c7f0, 0xffcc55, 0xfff4d8];
+function towerLevelColor(lv) {
+  const b = towerBand(lv);
+  const within = (lv - 1 - b * 5) / 4;                       // 띠 안에서의 위치 0~1
+  const c = new THREE.Color(BAND_COLOR[b])
+    .lerp(new THREE.Color(BAND_COLOR_NEXT[b]), Math.min(1, within) * 0.6);
+  return c.getHex();
+}
 const towerBand = (lv) => Math.min(2, Math.floor((lv - 1) / 5));   // 0 · 1 · 2
 const towerPips = (lv) => lv - towerBand(lv) * 5;                  // 1~5
 // 핍은 **정육면체**다 — 위에서 봐도(탑다운) 옆에서 봐도(3인칭) 개수가 세진다.
@@ -3135,10 +3145,49 @@ const tierGeo = new THREE.BoxGeometry(1.0, 0.34, 1.0);
 //   14강~ 위로 솟는 빛기둥
 // 성능: 고강화 탑은 많아야 서넛이고 셰이더가 아니라 메시 회전이라 틱 비용이 없다.
 const AURA_FROM = 8, AURA_ORB_FROM = 11, AURA_BEAM_FROM = 14;
-const auras = [];                                   // { b, group, ring, orbs[], beam, lv }
-const auraRingGeo = new THREE.RingGeometry(1.35, 1.72, 40);
+const auras = [];
 const auraOrbGeo = new THREE.SphereGeometry(0.16, 10, 8);
 const auraBeamGeo = new THREE.CylinderGeometry(0.26, 0.52, 6.5, 12, 1, true);
+const auraCrownGeo = new THREE.TorusGeometry(0.62, 0.075, 6, 5);   // 15강 전용 (D155)
+
+// ---- 레벨별 오오라 (D155) ----
+// 정현: "레벨별로 조금씩 바뀌어야 한다. 고레벨로 갈수록 오오라가 세지는 느낌."
+//
+// 제약이 설계를 정한다: 기본 카메라(쿼터뷰 20m)에서 탑은 30~50픽셀이다.
+// 그 거리에서 읽히는 건 **색 · 개수 · 움직임** 셋뿐 — 형태 디테일은 안 보인다.
+// 그래서 세 축을 **서로 다른 이유로** 자라게 했다. 한 축만 키우면 금방 한계가 온다:
+//   색  = 온도 (청록 → 금 → 백열)
+//   변  = 개수 (삼각 → 구각. 탑다운에서 세어진다 — 핍과 같은 원리, 훨씬 크게)
+//   겹  = 밀도 (1 → 3겹, 바깥은 역회전)
+// 밝기만 올리는 건 일부러 피했다. 흰색에 닿는 순간 더 올릴 데가 없다.
+
+// 8강 청록 → 12강 금 → 15강 백열. 두 구간으로 나눠 보간해야
+// "뜨거워지다 결국 하얗게 탄다"가 된다 (한 번에 하면 중간이 탁한 노랑이 된다)
+const AURA_C0 = new THREE.Color(0x74c7f0);   // 8강  청록
+const AURA_C1 = new THREE.Color(0xffcc55);   // 12강 금색
+const AURA_C2 = new THREE.Color(0xfff4d8);   // 15강 백열
+function auraColor(lv) {
+  const t = clamp((lv - AURA_FROM) / Math.max(TOWER_MAXLV - AURA_FROM, 1), 0, 1);
+  return t <= 0.57
+    ? AURA_C0.clone().lerp(AURA_C1, t / 0.57)
+    : AURA_C1.clone().lerp(AURA_C2, (t - 0.57) / 0.43);
+}
+
+// 변 개수 = 레벨을 센다. 8강 3각 → 15강 9각 (두 레벨에 한 변씩)
+const auraSides = (lv) => 3 + Math.floor((lv - AURA_FROM) * 0.86);
+// 겹 = 밀도. 8~10강 1겹 · 11~13강 2겹 · 14~15강 3겹
+const auraLayers = (lv) => (lv >= 14 ? 3 : lv >= AURA_ORB_FROM ? 2 : 1);
+
+// 다각형 링 — RingGeometry의 세그먼트를 변 개수로 줄이면 정다각형이 된다.
+// **기하를 레벨마다 새로 만들지 않고 캐시한다** — 탑이 강화될 때마다 만들면
+// 15단을 오르는 동안 기하 수십 개가 쓰레기로 나간다
+const auraRingCache = new Map();
+function auraRingGeoFor(sides, inner, outer) {
+  const key = sides + ':' + inner.toFixed(2);
+  let g = auraRingCache.get(key);
+  if (!g) { g = new THREE.RingGeometry(inner, outer, Math.max(3, sides)); auraRingCache.set(key, g); }
+  return g;
+}
 
 function clearAura(b) {
   const i = auras.findIndex((a) => a.b === b);
@@ -3152,19 +3201,32 @@ function clearAura(b) {
 function applyAura(b) {
   clearAura(b);
   const lv = b.tier || 1;
-  if (b.kind !== 'tower' || lv < AURA_FROM) return;
-  // 8강 회색빛 → 15강 금빛. 등급이 오를수록 색도 뜨거워진다
+  if (b.kind !== 'tower' || lv < AURA_FROM || P.look.auraAmp <= 0) return;
   const t = (lv - AURA_FROM) / (TOWER_MAXLV - AURA_FROM);
-  const col = new THREE.Color(0x74c7f0).lerp(new THREE.Color(0xffcc55), t);
+  const col = auraColor(lv);
+  const amp = P.look.auraAmp;
   const group = new THREE.Group();
 
-  const ring = new THREE.Mesh(auraRingGeo, new THREE.MeshBasicMaterial({
-    color: col, transparent: true, opacity: 0.34 + t * 0.30,
-    depthWrite: false, side: THREE.DoubleSide,
-  }));
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.06;
-  group.add(ring);
+  // ---- 바닥 문양: 다각형 링을 겹으로 (D155) ----
+  // 겹마다 크기가 다르고 **바깥 겹은 반대로 돈다** — 마주 도는 두 겹은
+  // 밝기를 안 올려도 "세 보인다". 밀도가 강도를 대신한다.
+  const sides = auraSides(lv), layers = auraLayers(lv);
+  const rings = [];
+  for (let k = 0; k < layers; k++) {
+    const scale = 1 + k * 0.42;
+    const geo = auraRingGeoFor(sides + k, 1.35 * scale, 1.72 * scale);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: (0.34 + t * 0.30) * amp / (1 + k * 0.7),
+      depthWrite: false, side: THREE.DoubleSide,
+    }));
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.06 + k * 0.01;      // 겹끼리 z-fighting 방지
+    m.userData.dir = k % 2 === 0 ? 1 : -1;
+    m.userData.k = k;
+    group.add(m);
+    rings.push(m);
+  }
+  const ring = rings[0];
 
   const orbs = [];
   if (lv >= AURA_ORB_FROM) {
@@ -3181,13 +3243,25 @@ function applyAura(b) {
   let beam = null;
   if (lv >= AURA_BEAM_FROM) {
     beam = new THREE.Mesh(auraBeamGeo, new THREE.MeshBasicMaterial({
-      color: col, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }));
+      color: col, transparent: true, opacity: 0.16 * amp, depthWrite: false, side: THREE.DoubleSide }));
     beam.position.y = 3.4;
     group.add(beam);
   }
 
+  // ---- 15강 전용 왕관 (D155) ----
+  // 최고 등급에는 **하나쯤 특별한 게** 있어야 한다. 0.16%(약 610개에 하나)로 나오는
+  // 물건이라, 남과 같은 방식으로 조금 더 밝은 것으로는 그 값을 못 갚는다.
+  let crown = null;
+  if (lv >= TOWER_MAXLV) {
+    crown = new THREE.Mesh(auraCrownGeo, new THREE.MeshBasicMaterial({
+      color: AURA_C2, transparent: true, opacity: 0.95 * amp, depthWrite: false }));
+    crown.rotation.x = Math.PI / 2;
+    crown.position.y = 4.5;
+    group.add(crown);
+  }
+
   b.mesh.add(group);
-  auras.push({ b, group, ring, orbs, beam, lv, t });
+  auras.push({ b, group, ring, rings, orbs, beam, crown, lv, t });
 }
 
 // 회전·맥동. 시계는 survival을 쓴다 — 일시정지하면 오오라도 멈춘다
@@ -3197,15 +3271,26 @@ function updateAuras() {
     const a = auras[i];
     if (!buildings.includes(a.b)) { clearAura(a.b); continue; }
     const sp = 0.7 + a.t * 1.1;
-    a.ring.rotation.z = now * sp;
-    a.ring.scale.setScalar(1 + Math.sin(now * 2.2) * 0.045);
+    // 겹마다 다른 속도로, **번갈아 반대 방향**으로 돈다 (D155).
+    // 맥동은 레벨을 따라 빨라지고 깊어진다 — 움직임은 정지 화면에선 안 보이지만
+    // 실제 플레이에서는 색보다 먼저 눈에 띈다.
+    const pulse = 1 + Math.sin(now * (2.2 + a.t * 2.6)) * (0.045 + a.t * 0.05);
+    for (const r of (a.rings || [a.ring])) {
+      const k = r.userData.k || 0;
+      r.rotation.z = now * sp * r.userData.dir * (1 + k * 0.35);
+      r.scale.setScalar(pulse);
+    }
     for (const o of a.orbs) {
       const ang = now * sp * 1.4 + o.userData.phase;
       o.position.set(Math.cos(ang) * 1.55, 1.5 + Math.sin(ang * 2 + now) * 0.45, Math.sin(ang) * 1.55);
     }
     if (a.beam) {
       a.beam.rotation.y = now * 0.8;
-      a.beam.material.opacity = 0.12 + Math.abs(Math.sin(now * 1.6)) * 0.12;
+      a.beam.material.opacity = (0.12 + Math.abs(Math.sin(now * 1.6)) * 0.12) * P.look.auraAmp;
+    }
+    if (a.crown) {                       // 15강 왕관 — 천천히 돌며 위아래로 뜬다
+      a.crown.rotation.z = now * 0.9;
+      a.crown.position.y = 4.5 + Math.sin(now * 1.4) * 0.16;
     }
   }
 }
@@ -3216,7 +3301,11 @@ function applyBuildingTierVisual(b) {
   const lv = Math.max(1, Math.min(isTower ? TOWER_MAXLV : 3, b.tier || 1));
   // 공방은 예전 그대로 3단. 경비탑만 띠로 나눈다.
   const band = isTower ? towerBand(lv) : lv - 1;
-  const col = isTower ? BAND_COLOR[band] : TIER_COLOR[band];
+  // 핍·지붕 색도 **레벨을 따라 흐른다** (D155). 예전엔 띠 색 3개로 고정이라
+  // 화면에서 가장 잘 보이는 두 요소가 Lv.11과 Lv.15에서 똑같았다 —
+  // "레벨이 올라도 안 바뀐다"는 느낌의 주범이었다.
+  // 띠 안에서만 이동하므로 "무슨 급인가"는 그대로 읽힌다.
+  const col = isTower ? towerLevelColor(lv) : TIER_COLOR[band];
   const tier = isTower ? towerPips(lv) : lv;      // 핍 개수 (경비탑은 띠 안의 자리)
   // 층·포탑 크기는 **띠 안의 자리**가 아니라 실제 레벨을 따라간다 —
   // 안 그러면 Lv.5와 Lv.10의 포탑이 똑같아진다
@@ -7967,6 +8056,8 @@ const gui = new GUI({ title: '튜닝' });
   // 출몰 띠 (D147) — 표시와 건설 금지가 같은 값을 본다. 껐다 켜면 바로 다시 그린다
   f.add(P.look, 'dangerZone', 0, 1, 1).name('★ 고양이 출몰 띠 표시').onChange(rebuildDangerRing);
   f.add(P.look, 'gaitAmp', 0, 2, 0.05).name('★ 적 걸음 반동 (0=미끄러짐)');
+  f.add(P.look, 'auraAmp', 0, 2, 0.05).name('★ 오오라 강도 (0=끔)')
+    .onChange(() => { for (const b of buildings) if (b.kind === 'tower') applyAura(b); });
   f.add(P.bomber, 'siegeRatio', 0, 1, 0.05).name('★ 자폭묘 공성 비율 (D150)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
@@ -11774,7 +11865,7 @@ window.__game = {
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
-  towerStyle, spawnSplashFx, lobProjectile, projectiles,
+  towerStyle, spawnSplashFx, lobProjectile, projectiles, towerLevelColor, auraColor, auraSides, auraLayers,
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
