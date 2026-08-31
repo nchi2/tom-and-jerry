@@ -9985,6 +9985,24 @@ const TD_MODELS = [
 ];
 const TD_DIR = 'models/td/';
 
+// Mini Forest (D167) — Kenney **Mini 시리즈**. TD 킷과 다른 계열이다:
+// 중세 석조·흙빛 대신 **깔끔한 플랫**이라 우리 톤에 훨씬 가깝다.
+// 정현이 지형지물로 쓰려고 받았고, 그렇다면 이게 **타워 톤의 기준**이 된다 —
+// 지형이 이 스타일이면 타워도 여기에 맞춰야지 TD 킷을 섞으면 둘 다 어긋난다.
+const MINI_MODELS = [
+  'bridge', 'building-platform', 'building-roof', 'building-structure', 'character-archer',
+  'fence', 'flag', 'ladder', 'patch-dirt', 'patch-grass', 'plant', 'platform', 'rocks-high',
+  'rocks-low', 'rocks-ramp', 'stones', 'target', 'tent', 'tree', 'tree-high', 'weapon-arrow',
+  'weapon-bow'
+];
+const MINI_DIR = 'models/mini/';
+
+// 쇼룸이 다루는 팩 목록. 새 팩은 여기에만 추가하면 된다
+const ASSET_PACKS = [
+  { key: 'mini', label: 'Mini Forest', dir: MINI_DIR, list: MINI_MODELS },
+  { key: 'td', label: 'Tower Defense Kit', dir: TD_DIR, list: TD_MODELS },
+];
+
 // 모델 크기 배수 — Kenney 타일은 1유닛 기준이고 우리 셀은 1.5m다.
 // 게임 안에서 어떻게 보일지 판단하려면 **우리 스케일로** 놓고 봐야 한다 (경비탑은 2x2 = 3m).
 let showroom = null;   // { group, families: Map<이름, {x,z}> }
@@ -10038,21 +10056,43 @@ async function enterShowroom() {
   scene.add(group);
   showroom = { group };
 
+  // 팩을 이어 붙인다 (D167). "우리 톤에 맞는가"는 혼자 보면 알 수 없고 옆에 놓고 봐야 안다.
+  // ⚠ 접두어로 무조건 쪼개면 안 된다 — Mini(22개)는 접두어가 거의 다 달라서
+  //    한 줄에 하나씩 흩어졌다. **작은 팩은 통째로**, 큰 팩만 계열로 쪼갠다.
   const byFam = new Map();
-  for (const n of TD_MODELS) {
-    const fam = n.split('-')[0];
-    if (!byFam.has(fam)) byFam.set(fam, []);
-    byFam.get(fam).push(n);
+  const SPLIT_AT = 40;
+  for (const pack of ASSET_PACKS) {
+    if (pack.list.length <= SPLIT_AT) {
+      byFam.set(pack.label, pack.list.map((n) => ({ name: n, dir: pack.dir })));
+      continue;
+    }
+    for (const n of pack.list) {
+      const fam = pack.key + ' · ' + n.split('-')[0];
+      if (!byFam.has(fam)) byFam.set(fam, []);
+      byFam.get(fam).push({ name: n, dir: pack.dir });
+    }
   }
   showroom.families = new Map();
   // ---- 배치 (D166) ----
   // ⚠ **맵 안에 들어와야 한다.** 처음엔 0에서 아래로 쭉 폈더니 절반이 맵 밖(검은 바닥)에
   //    나가서 걸어갈 수가 없었다. 줄 수를 미리 세어 **세로 중앙**에 맞추고,
   //    가로도 0을 중심으로 편다. 모델 배수(2.5)를 감안해 간격을 넓혔다.
-  const GAP = 4.0, ROWGAP = 5.0, PERROW = 16;
-  let rows = 0;
-  for (const list of byFam.values()) rows += Math.ceil(list.length / PERROW) + 1;
-  const z0 = -Math.min(rows * ROWGAP, (CELLS * CS) - 16) / 2;   // 맵을 안 넘게
+  // ⚠ 팩이 늘면 세로가 맵을 넘는다 (실측: 두 팩 182개에서 z 75 > 반폭 63).
+  //    줄당 개수를 **필요한 만큼 늘려** 눌러 담는다 — 가로는 맵이 훨씬 여유롭다.
+  // ⚠ 세로와 가로가 **동시에** 맵 안이어야 한다. 줄당 개수만 늘렸더니 이번엔
+  //    가로가 넘쳤다(x −67 > 반폭 63). 간격까지 같이 줄여 둘 다 맞을 때까지 조인다.
+  const ROWGAP = 5.0;
+  const lim = (CELLS * CS) / 2 - 8;      // 상하좌우 공통 여유
+  let PERROW = 16, GAP = 4.0, rows = 0;
+  for (let tries = 0; tries < 24; tries++) {
+    rows = 0;
+    for (const list of byFam.values()) rows += Math.ceil(list.length / PERROW) + 1;
+    const halfZ = (rows * ROWGAP) / 2, halfX = ((PERROW - 1) * GAP) / 2 + GAP * 1.5;
+    if (halfZ <= lim && halfX <= lim) break;
+    if (halfZ > lim) PERROW += 2;        // 세로가 넘으면 줄당 개수를 늘리고
+    if (halfX > lim) GAP *= 0.92;        // 가로가 넘으면 간격을 좁힌다
+  }
+  const z0 = -(rows * ROWGAP) / 2;
   const x0 = -((PERROW - 1) * GAP) / 2;
   let row = 0, loaded = 0, failed = 0;
   const loader = new GLTFLoader();
@@ -10062,12 +10102,12 @@ async function enterShowroom() {
     group.add(head);
     showroom.families.set(fam, { x: x0, z: z0 + row * ROWGAP - 5 });   // 순간이동 지점
     for (let k = 0; k < list.length; k++) {
-      const name = list[k];
+      const { name, dir } = list[k];
       const x = x0 + (k % PERROW) * GAP;
       const z = z0 + (row + Math.floor(k / PERROW)) * ROWGAP;
       try {
         const gltf = await new Promise((res, rej) =>
-          loader.load(TD_DIR + name + '.glb', res, undefined, rej));
+          loader.load(dir + name + '.glb', res, undefined, rej));
         const m = gltf.scene;
         m.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
         m.position.set(x, 0, z);
@@ -10082,9 +10122,10 @@ async function enterShowroom() {
     row += Math.ceil(list.length / PERROW) + 1;
   }
   // 제일 보고 싶은 건 타워다 — 거기서 시작한다
-  gotoFamily('tower');
+  gotoFamily([...showroom.families.keys()][0]);
   buildShowroomFolder();
-  flashMsg(`쇼룸 ${loaded}/${TD_MODELS.length}개${failed ? ' (실패 ' + failed + ')' : ''}` +
+  const totalN = ASSET_PACKS.reduce((a, p2) => a + p2.list.length, 0);
+  flashMsg(`쇼룸 ${loaded}/${totalN}개${failed ? ' (실패 ' + failed + ')' : ''}` +
            ' — WASD로 둘러보기 · G 패널에서 계열 이동 · 나가려면 ESC → 다시 시작', '#8fd6ff');
 }
 
