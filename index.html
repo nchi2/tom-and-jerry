@@ -214,6 +214,30 @@
     }
     #overlay-cont:hover { filter: brightness(1.12); }
     #overlay-cont.hidden { display: none; }
+    /* 명예의 전당 (D163) */
+    #hof {
+      margin-top: 18px; min-width: 340px; max-width: 460px;
+      background: rgba(12, 16, 24, 0.72); border: 1px solid #3d4a5f;
+      border-radius: 10px; padding: 12px 16px 14px;
+      font-family: "SF Mono", Menlo, monospace; font-size: 13px; text-align: left;
+    }
+    #hof.hidden { display: none; }
+    #hof .hof-t { color: #ffd24a; font-size: 14px; margin-bottom: 8px; letter-spacing: 0.04em; }
+    #hof ol { margin: 0; padding-left: 22px; color: #cfd6e4; }
+    #hof li { padding: 2px 0; }
+    #hof li.me { color: #8fd6ff; font-weight: 700; }
+    #hof li .r { color: #8b93a5; }
+    #hof-new { margin-top: 10px; display: flex; gap: 6px; }
+    #hof-new.hidden { display: none; }
+    #hof-name {
+      flex: 1; background: #0d1219; border: 1px solid #3d6ea8; border-radius: 6px;
+      color: #e6ecf5; padding: 6px 9px; font-family: inherit; font-size: 13px;
+    }
+    #hof-save {
+      background: #2b4a72; border: 1px solid #4d7fb8; border-radius: 6px;
+      color: #e6ecf5; padding: 6px 12px; cursor: pointer; font-family: inherit;
+    }
+    #hof-save:hover { filter: brightness(1.15); }
     /* 골라 둔 건물 요약 (D148) — 선택은 화면에 남는데 표시가 없어서
        "내가 뭘 골라 뒀는지" 모른 채 U를 누르는 일이 생겼다. 핫바 바로 위에 한 줄. */
     #selbar {
@@ -630,6 +654,15 @@
     <h1>잡혔다!</h1>
     <p id="overlay-sub">ESC → 다시 시작</p>
     <button id="overlay-cont" class="hidden">계속하기 [Enter]</button>
+    <!-- 명예의 전당 (D163) — 무한 모드 기록. 이름을 새겨야 기록이 내 것이 된다 -->
+    <div id="hof" class="hidden">
+      <div class="hof-t">🏆 명예의 전당</div>
+      <ol id="hof-list"></ol>
+      <div id="hof-new" class="hidden">
+        <input id="hof-name" maxlength="12" placeholder="이름을 새기세요" autocomplete="off">
+        <button id="hof-save">등록</button>
+      </div>
+    </div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

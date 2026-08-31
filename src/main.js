@@ -204,6 +204,8 @@ const P = {
           // 강타 사거리·각 +30% (D156, 정현 요청) — 톰이 벽 앞에서 "닿을 듯 안 닿는" 그림이
           // 자주 났다. 범위를 넓히면 톰이 벽을 실제로 부수는 장면이 늘어난다
           smashRangeMul: 1.3,
+          // 부하 소환 (D162) — 0이면 끔
+          summonEvery: 14, summonCount: 3,
           smashCooldown: 8.0, smashWindup: 0.9,
           // 강타 **몇 번**에 벽이 무너지는가 (D99). 한 방이면 벽을 세우는 행위가
           // 보스 앞에서 무의미해진다 — 한 번 맞고 금이 간 벽은 아직 막고 있으므로
@@ -6376,6 +6378,17 @@ function commitRecord() {
 }
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
+// 판이 끝났을 때 — 무한 모드 기록만 명예의 전당에 올린다 (기본 공세는 이기면 그만이다)
+function openHof() {
+  hofPending = null;
+  if (endlessRound) {
+    const rec = { round: endlessRound, t: endlessT };
+    if (hofQualifies(rec)) hofPending = rec;
+  }
+  renderHof();
+  if (hofPending) setTimeout(() => hofNameEl.focus(), 60);
+}
+
 // 끝난 판의 한 줄 요약. 호스트와 참가자가 **같은 함수**를 쓴다 —
 // 예전엔 세 군데에서 따로 만들어서 무한 라운드 같은 걸 붙이면 하나가 빠졌다.
 function resultLine(won) {
@@ -6386,6 +6399,78 @@ function resultLine(won) {
   if (best) bits.push(`최고 ${best.round}라운드 ${mmss(best.t)}`);
   return `${bits.join(' · ')} — ESC → 다시 시작`;
 }
+
+// ============================================================
+// 명예의 전당 (D163)
+//  정현: "나중에 명예의 전당을 해서 닉네임 새겨서 랭킹할 수 있게 하자."
+//
+//  기록은 이미 있었지만(D124 loadBest) **최고 하나를 숫자로** 보여줄 뿐이라
+//  "지난번의 나"와 겨룰 수가 없었다. 목록이 되어야 겨루는 대상이 생긴다.
+//  이름을 직접 새기게 하는 것이 핵심이다 — 남이 볼 일이 없어도, 이름을 적는 순간
+//  그 줄이 **내 것**이 된다. 그게 없으면 그냥 지나간 숫자다.
+//
+//  ⚠ localStorage라 이 브라우저 안에서만 남는다. 시크릿 창·저장 차단이면 조용히 넘어간다 —
+//    기록이 안 남을 뿐 게임은 그대로 돌아야 한다 (D124가 정한 규칙).
+// ============================================================
+const HOF_KEY = 'tj.hof';
+const HOF_MAX = 8;
+const hofEl = document.getElementById('hof');
+const hofListEl = document.getElementById('hof-list');
+const hofNewEl = document.getElementById('hof-new');
+const hofNameEl = document.getElementById('hof-name');
+const hofSaveEl = document.getElementById('hof-save');
+let hofPending = null;   // { round, t } — 아직 이름을 안 새긴 이번 판 기록
+
+function loadHof() {
+  try {
+    const a = JSON.parse(localStorage.getItem(HOF_KEY));
+    return Array.isArray(a) ? a : [];
+  } catch { return []; }
+}
+function saveHof(list) {
+  try { localStorage.setItem(HOF_KEY, JSON.stringify(list.slice(0, HOF_MAX))); }
+  catch { /* 시크릿 창 등 */ }
+}
+// 라운드 먼저, 같으면 버틴 시간 (D124의 기록 비교와 같은 순서)
+const hofCmp = (a, b) => (b.round - a.round) || (b.t - a.t);
+
+// 이번 기록이 목록에 들 만한가
+function hofQualifies(rec) {
+  if (!rec || !rec.round) return false;
+  const list = loadHof();
+  if (list.length < HOF_MAX) return true;
+  return hofCmp(rec, list[list.length - 1]) < 0;
+}
+
+function renderHof(highlight = -1) {
+  const list = loadHof();
+  if (!list.length && !hofPending) { hofEl.classList.add('hidden'); return; }
+  hofEl.classList.remove('hidden');
+  hofListEl.innerHTML = list.map((r, k) =>
+    `<li class="${k === highlight ? 'me' : ''}">${r.name || '이름없음'} ` +
+    `<span class="r">— ${r.round}라운드 · ${mmss(r.t)}</span></li>`).join('')
+    || '<li class="r">아직 기록이 없습니다</li>';
+  hofNewEl.classList.toggle('hidden', !hofPending);
+}
+
+function commitHofName() {
+  if (!hofPending) return;
+  const name = (hofNameEl.value || '').trim().slice(0, 12) || '이름없음';
+  const list = loadHof();
+  const rec = { name, round: hofPending.round, t: hofPending.t };
+  list.push(rec);
+  list.sort(hofCmp);
+  saveHof(list);
+  hofPending = null;
+  hofNameEl.value = '';
+  renderHof(loadHof().findIndex((r) => r === rec || (r.name === name && r.round === rec.round && r.t === rec.t)));
+}
+hofSaveEl.onclick = commitHofName;
+hofNameEl.addEventListener('keydown', (e) => {
+  // 여기서 막아야 이름에 'w'를 치는 동안 햄스터가 걸어가지 않는다 (D120이 채팅에서 겪은 것)
+  e.stopPropagation();
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') { commitHofName(); e.preventDefault(); }
+});
 
 const contBtn = document.getElementById('overlay-cont');
 function setOverlayContinue(on) {
@@ -6401,6 +6486,7 @@ contBtn.onclick = () => issueCommand({ t: 'endless' });
 function winGame(title, canContinue = false) {
   victory = true;
   finalPhase = 'won';
+  openHof();
   clearEnemies();   // 이겼는데 화면에서 계속 쫓기면 이긴 것 같지 않다
   overlayEl.querySelector('h1').textContent = title;
   document.getElementById('overlay-sub').textContent = resultLine(true);
@@ -6836,6 +6922,40 @@ function updateEnemy(enemy, dt) {
   // 이 전투 한정으로만 벽의 무적성(D30)에 예외를 둔다. 일반 공격(hitTarget)과 독립적이라
   // 위 if/else-if 체인 밖에 둔다 — 보스도 평소엔 그냥 물어뜯는다.
   if (enemy.type === 'boss') {
+    // ---- 부하 소환 (D162) ----
+    // 정현: "보스인 톰은 스킬이 있으면 좋겠어. 주변에 적을 소환한다든지."
+    // 톰은 지금까지 **큰 순찰묘**일 뿐이었다 — 체력만 많고 하는 일이 같다.
+    // 소환은 톰을 "무시하고 벽만 지키면 되는 존재"에서 **먼저 처리해야 하는 존재**로 바꾼다:
+    // 놔두면 잡졸이 계속 불어나므로, 방어선을 지키면서도 톰을 향해 화력을 돌려야 한다.
+    // ⚠ 스폰이라 **호스트만** (D92-6단계). 클라가 만들면 id가 충돌한다.
+    if (netAuthoring() && P.boss.summonEvery > 0) {
+      enemy.summonCd = (enemy.summonCd || P.boss.summonEvery) - dt;
+      if (enemy.summonCd <= 0) {
+        enemy.summonCd = P.boss.summonEvery;
+        const n = Math.round(P.boss.summonCount);
+        let born = 0;
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * Math.PI * 2 + Math.random() * 0.6;
+          const r = enemyR(enemy) + 1.6 + Math.random() * 1.4;
+          const x = clamp(enemy.x + Math.cos(a) * r, -HALF + 1, HALF - 1);
+          const z = clamp(enemy.z + Math.sin(a) * r, -HALF + 1, HALF - 1);
+          // 벽 안에 낳으면 갇힌다 — 설 수 있는 자리인지 보고 넣는다
+          const ty = Math.random() < 0.5 ? 'runner' : 'chaser';
+          const e2 = makeEnemy(ty, enemies.length);
+          if (!canPass(clearAll, worldToNav(x, z), enemyR(e2))) { scene.remove(e2.vis.group); disposeBar(e2.bar); continue; }
+          e2.x = x; e2.z = z;
+          if (enemy.vis.darkOn) darkenEnemy(e2);
+          enemies.push(e2);
+          spawnBuildFx(x, z);
+          born++;
+        }
+        if (born) {
+          sfx('summon');
+          flashMsg(`톰이 부하를 불렀다! (+${born})`, '#ff6b6b');
+          refreshReach();
+        }
+      }
+    }
     enemy.smashCd = Math.max((enemy.smashCd || 0) - dt, 0);
     let smashWall = null;
     if (enemy.smashCd <= 0) {
@@ -8498,6 +8618,8 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.boss, 'smashHits', 1, 5, 1).name('벽 강타 몇 번에 부서지나');
   f.add(P.boss, 'smashRadius', 0.5, 5, 0.1).name('벽 강타 반경(m)');
   f.add(P.boss, 'smashRangeMul', 0.5, 2.5, 0.05).name('★ 강타 범위 배수 (D156)');
+  f.add(P.boss, 'summonEvery', 0, 40, 1).name('★ 부하 소환 주기(초, 0=끔)');
+  f.add(P.boss, 'summonCount', 0, 8, 1).name('★ 한 번에 소환할 수');
   f.add(P.boss, 'smashArc', -1, 1, 0.05).name('강타 앞쪽 판정 (-1=사방)');
   f.add(P.boss, 'smashMax', 1, 12, 1).name('강타 최대 벽 장수');
   f.add(P.threat, 'stageScale', 0.5, 3, 0.1).name('★ 스테이지 길이 배율');
@@ -9342,6 +9464,7 @@ function gameOver() {
   alive = false;
   ghost.visible = false;
   commitRecord();   // 무한 모드에서 죽었으면 여기까지가 기록이다 (D124)
+  openHof();        // 죽어서 끝난 판도 이름을 새길 자격이 있다 (D163)
   overlayEl.querySelector('h1').textContent = '모두 잡혔다!';
   document.getElementById('overlay-sub').textContent = resultLine(false);
   setOverlayContinue(false);
@@ -9914,6 +10037,11 @@ function sfx(kind) {
     case 'tower': beep({ freq: 760, to: 380, type: 'sine', dur: 0.09, vol: 0.28 }); break;   // 포탑 투척
     // 금색 띠(11강~)의 연사음 (D154) — 던지는 소리가 아니라 **총성**이다.
     // 짧고 날카롭게. minGap에 걸려 연사가 한 발로 들리지 않게 dur도 짧다
+    // 톰의 소환 (D162) — 낮게 울리는 부름. 강타(타격)와 확실히 다른 음색
+    case 'summon':
+      beep({ freq: 180, to: 420, type: 'sawtooth', dur: 0.42, vol: 0.34 });
+      beep({ freq: 90, to: 210, type: 'square', dur: 0.5, vol: 0.26, delay: 0.05 });
+      break;
     // 톰의 강타 — **쿵.** (D156) 저역이 길게 깔리고 위에 파열음이 얹힌다.
     // 자폭묘 'boom'보다 낮고 무겁게: 폭발이 아니라 **내리치는** 소리여야 한다
     case 'smash':
@@ -10068,6 +10196,7 @@ function openEditor() {
   // 화면 밖 칸은 편집할 방법이 아예 없었다. 시뮬은 tickEditor가 대신 막는다.
   paused = false;
   tut = null; renderTut(); clearTutGuide();
+  hofPending = null; hofEl.classList.add('hidden');   // 새 판에서는 전당을 접는다 (D163)
   editor = { brush: 0, erase: false, map: loadMapLocal() || blankMap() };
   customMap = editor.map;
   rebuildWorld(mapIndex);     // 지금 맵을 화면에 반영
@@ -11283,6 +11412,7 @@ function applySnapshot(m) {
       // 불리는데, 무한 라운드와 버틴 시간은 이미 스냅샷으로 와 있다 —
       // 여기서 안 부르면 같이 버틴 사람만 최고 기록이 영영 비어 있다.
       commitRecord();
+      openHof();     // 참가자도 자기 기록을 새긴다 (D124가 commitRecord로 정한 것과 같은 이유)
       document.getElementById('overlay-sub').textContent = resultLine(won);
       // 참가자도 계속하기를 누를 수 있다 — 명령이 호스트로 가서 라운드를 연다 (D124)
       setOverlayContinue(won && finalPhase === 'won');
@@ -12257,6 +12387,8 @@ window.__game = {
   towerStyle, spawnSplashFx, lobProjectile, projectiles, towerLevelColor, auraColor, auraSides, auraLayers,
   TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
   beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot,
+  loadHof, saveHof, openHof, renderHof, commitHofName, hofQualifies,
+  get hofPending() { return hofPending; }, set hofPending(v) { hofPending = v; },
   get tut() { return tut; }, get tutGuide() { return tutGuide; },
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
