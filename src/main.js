@@ -283,6 +283,8 @@ const P = {
   //  t1(배치 시 기본): 약하고 저렴 — 좁은 구간을 값싸게 메우는 용도
   //  t2(업그레이드): 지금까지의 기본값 그대로. t3(업그레이드): 겁나 세고 겁나 비쌈
   // cost는 t2/t3에서는 "배치값"이 아니라 "그 등급으로 올리는 업그레이드값"이다.
+  // 적 걸음 반동 크기 (D149) — 0이면 예전처럼 미끄러진다. "과하지 않게"의 손잡이
+  // (자리는 look이 맞다: 시뮬에 손대지 않는 순수 표현 값이다)
   // ---- 경비탑 15단 강화 (D145) ----
   // 3등급 고정표(t1/t2/t3)를 버리고 **Lv.1부터 Lv.15까지 한 줄기**로 바꿨다.
   // 등급마다 값을 손으로 적으면 15개를 다 조율할 수 없다 — **공식 + 성장률**로 낸다.
@@ -337,7 +339,7 @@ const P = {
   //  count = 마릿수 · hp = 체력 · delay = 첫 등장까지 시간 · stage = 스테이지 길이
   diff: { level: 'normal' },
   // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
-  look: {
+  look: { gaitAmp: 1.0,   // 적 걸음 반동 크기 (D149). 0 = 예전처럼 미끄러진다
     floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
     wallTex: 1,       // 벽돌 벽
     // 대비. 처음엔 0.12/0.18로 뒀는데 **바닥이 어두워서(0x2b3040) 안 보였다**.
@@ -6468,7 +6470,7 @@ function updateEnemy(enemy, dt) {
   // 예비동작 중이면 몸을 뒤로 뺀다 (D78) — 위치 반영은 여기서 한 번에
   const pull = enemy.windupPull || 0;
   enemy.vis.group.position.set(enemy.x - enemy.dirX * pull * 0.55,
-                               enemy.vis.group.position.y,
+                               0,
                                enemy.z - enemy.dirZ * pull * 0.55);
   if (dl > 0.05) {
     enemy.dirX = dx; enemy.dirZ = dz;
@@ -7776,6 +7778,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.look, 'brickTone', 0, 0.5, 0.01).name('벽돌 대비').onChange(rebakeTextures);
   // 출몰 띠 (D147) — 표시와 건설 금지가 같은 값을 본다. 껐다 켜면 바로 다시 그린다
   f.add(P.look, 'dangerZone', 0, 1, 1).name('★ 고양이 출몰 띠 표시').onChange(rebuildDangerRing);
+  f.add(P.look, 'gaitAmp', 0, 2, 0.05).name('★ 적 걸음 반동 (0=미끄러짐)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
@@ -11123,6 +11126,40 @@ function tickClient(dt) {
   if (hudT <= 0) { hudT = 0.1; updateHUD(); updateHotbar(); updateSelbar(); renderNet(); renderNetDev(); }
 }
 
+// ---- 고양이 걸음 (D149) ----
+// 예전엔 y가 늘 0이라 "지이이—" 미끄러져 왔다. 걸음 위상은 햄스터(animateLegs)와
+// 같은 이유로 **시간이 아니라 이동 거리**로 돌린다 — 시간으로 돌리면 속도가
+// 바뀔 때 발이 땅에서 미끄러진다. 몸통 반동(위아래 + 앞뒤 끄덕임)만 준다:
+// 쿼터뷰 20m에서 다리는 안 보여도 반동은 "뛰고 있다"로 읽힌다 (animateLegs의 교훈).
+//
+// 종별로 보폭·높이가 다르다 — 걸음이 곧 성격이다:
+//   날쌘묘 = 잰걸음으로 통통 / 순찰묘 = 성큼성큼 / 자폭묘 = 뒤뚱뒤뚱 / 톰 = 쿵. 쿵.
+// ⚠ 호스트와 클라 **두 경로가 이 함수 하나를 부른다** (D101: 표시 경로는 둘이다).
+const GAIT = {
+  chaser: { stride: 1.9, hop: 0.11, pitch: 0.06, roll: 0.02 },
+  runner: { stride: 1.2, hop: 0.15, pitch: 0.09, roll: 0.02 },
+  bomber: { stride: 1.0, hop: 0.06, pitch: 0.02, roll: 0.10 },   // 폭탄이라 좌우 뒤뚱이 주다
+  boss:   { stride: 3.2, hop: 0.17, pitch: 0.04, roll: 0.03 },
+};
+function applyEnemyGait(e, dt) {
+  const g = GAIT[e.type] || GAIT.chaser;
+  const mv = Math.hypot(e.x - (e.gaitPX ?? e.x), e.z - (e.gaitPZ ?? e.z));
+  e.gaitPX = e.x; e.gaitPZ = e.z;
+  const speed = mv / Math.max(dt, 1e-4);
+  // 제 속도로 달릴 때 1, 벽 앞에서 미적거리면 0 — 제자리 통통은 우스꽝스럽다
+  const amp = Math.min(speed / Math.max(enemySpeedOf(e) * 0.6, 0.1), 1) * (P.look.gaitAmp ?? 1);
+  if (amp < 0.05) {
+    e.gaitPhase = 0;
+    e.vis.group.rotation.x = 0; e.vis.group.rotation.z = 0;
+    return;
+  }
+  e.gaitPhase = (e.gaitPhase || 0) + (mv / g.stride) * Math.PI * 2;
+  const ph = e.gaitPhase;
+  e.vis.group.position.y += Math.abs(Math.sin(ph)) * g.hop * amp;   // 한 걸음에 한 번 뜬다
+  e.vis.group.rotation.x = Math.sin(ph * 2) * g.pitch * amp;        // 코가 까딱 (착지 리듬)
+  e.vis.group.rotation.z = Math.sin(ph) * g.roll * amp;             // 좌우 뒤뚱 (자폭묘가 주로)
+}
+
 // 시뮬이 아니라 **그리기만** 하는 부분 — 클라에서 적·유닛·건물의 모델을 제자리에 놓는다.
 // 호스트에서는 각 update* 함수가 이 일을 겸하고 있어서 따로 부르지 않는다.
 function presentWorld(dt) {
@@ -11131,6 +11168,7 @@ function presentWorld(dt) {
     const pull = e.windupPull || 0;
     e.vis.group.position.set(e.x - e.dirX * pull * 0.55, 0, e.z - e.dirZ * pull * 0.55);
     e.vis.group.rotation.y = Math.atan2(e.dirX, e.dirZ) + Math.PI;
+    applyEnemyGait(e, dt);        // 걸음 반동 (D149) — 참가자 화면에서도 같은 함수 (D101)
     e.vis.setEmissive(e.isAttacking ? 0xff2222 : 0x000000, e.isAttacking ? 0.4 : 0);
     setBar(e.bar, e.hp / enemyMaxHp(e), e.x, barY(e.vis), e.z, e.hp < enemyMaxHp(e) - 0.5);
   }
@@ -11247,7 +11285,14 @@ function tick(dt) {
       pf('기타');
       // 톰끼리 밀어내기는 뺐다 (D123) — 같은 방향으로 오던 둘이 서로 밀려 갈라지면서
       // **한 마리씩 각개격파**당했다. 둘이 뭉쳐 오는 게 두 마리인 의미다.
-      for (const e of enemies) e.vis.group.position.set(e.x, 0, e.z);
+      // ⚠ 이 줄이 적 위치의 **마지막 기록자**다 (분리가 x·z를 바꾼 뒤라 다시 놓는다).
+      //    걸음 반동(D149)도 여기서 얹어야 한다 — updateEnemy 안에서 얹으면
+      //    이 줄이 y를 도로 0으로 덮는다. 실제로 그렇게 넣었다가 y최대 0이 나왔다.
+      for (const e of enemies) {
+        const pull = e.windupPull || 0;
+        e.vis.group.position.set(e.x - e.dirX * pull * 0.55, 0, e.z - e.dirZ * pull * 0.55);
+        applyEnemyGait(e, dt);
+      }
       // 접촉 즉사는 없다 — updateEnemy 안의 공격 로직이 체력을 깎는다
     } else {
       // 등장 대기: 스폰 지점에서 반투명하게 예고
@@ -11527,7 +11572,7 @@ window.__game = {
   effTowerDmg, effGuardDmg, effPickupInterval, effPickupMax, partsCap, rollParts, SELF_BUILD,
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
-  auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx,
+  auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
@@ -11559,7 +11604,8 @@ window.__game = {
   get cheeseBitCount() { return cheeseBits.length; },
   get harvestPulse() { return player.harvestPulse; },
   setMouse(x, y) { mouseNDC.set(x, y); mouseValid = true; },
-  threatLevel, enemySpeedOf, enemyDpsOf,
+  threatLevel, enemySpeedOf, enemyDpsOf, enemyActive, spawnDelayNow,
+  get survival() { return survival; },
   step(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) tick(dt);
     faceBars();
