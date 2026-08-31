@@ -245,6 +245,17 @@
       background: rgba(30, 48, 36, 0.9);
     }
     #hotbar .slot.dim { opacity: 0.55; }
+    /* 튜토리얼이 "이걸 누르세요"라고 가리키는 슬롯 (D161).
+       글로만 "숫자 2"라고 적으면 초심자는 그 2가 화면 어디인지 못 찾는다.
+       천천히 점멸시켜 눈이 저절로 가게 한다 — 빠르면 재촉으로 읽힌다. */
+    #hotbar .slot.point {
+      animation: tutPulse 1.4s ease-in-out infinite;
+      border-color: #ffd24a;
+    }
+    @keyframes tutPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255, 210, 74, 0.0); border-color: #6b7280; }
+      50%      { box-shadow: 0 0 0 4px rgba(255, 210, 74, 0.55); border-color: #ffd24a; }
+    }
     #hotbar .slot.hand { border-style: dashed; min-width: 62px; }
     /* 기술이 안 열려서 아직 못 쓰는 슬롯 (D88) */
     #hotbar .slot.locked {
@@ -560,7 +571,7 @@
           <button data-d="hard">어려움</button>
         </div>
         <div class="diffdesc" id="s-diffdesc"></div>
-        <button id="s-tut">연습 (처음이라면 여기)<span class="k">치즈를 벽으로 감싸는 것부터 병사 고용까지 8단계</span></button>
+        <button id="s-tut">연습 (처음이라면 여기)<span class="k">치즈를 벽으로 감싸는 것부터 경비탑 강화까지 8단계 · 바닥 안내선이 나옵니다</span></button>
         <button id="s-solo">1인 플레이<span class="k">진짜 혼자다. 잡히면 5분 안에 내 땅으로 돌아와야 지은 게 산다</span></button>
         <button id="s-two">2인 협동<span class="k">붙는 순간 시작. 적 1.8배. 잡혀도 구해 주면 기지가 산다</span></button>
         <button id="s-four">3~4인 협동<span class="k">최대 넷. 다 모이면 방장이 시작한다 — 적은 인원수만큼 는다</span></button>

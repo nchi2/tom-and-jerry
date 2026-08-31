@@ -9205,7 +9205,7 @@ function restart() {
   endlessRound = 0; endlessT = 0;
   finalQueue = []; finalWaveNo = 0; finalWaveT = 0;
   setOverlayContinue(false);
-  if (tut) { tut = null; renderTut(); }   // 재시작하면 연습판을 벗어난다 (D111)
+  if (tut) { tut = null; renderTut(); clearTutGuide(); }   // 재시작하면 연습판을 벗어난다 (D111)
   growthSpawned = 0;
   // 두 햄스터를 같은 초기 상태로 (D92-1c)
   for (const p of players) {
@@ -9603,24 +9603,33 @@ function updateSelbar() {
     ` · <span class="k">ESC</span> 해제`;
 }
 
+// 튜토리얼이 지금 가리키는 핫바 슬롯 (D161) — 없으면 -1
+const tutPointSlot = () => {
+  if (!tut) return -1;
+  const st = TUT_STEPS[tut.step];
+  return st && st.slot !== undefined ? st.slot : -1;
+};
+
 function updateHotbar() {
+  const point = tutPointSlot();
   hotbarEl.innerHTML = BUILD_SLOTS.map((sl, k) => {
+    const pt = k === point ? ' point' : '';
     const lock = slotLockReason(sl);
     // 잠긴 슬롯은 값 대신 **왜 못 쓰는지**를 보여준다 (D88) —
     // 비활성이라는 사실만 보여주면 뭘 해야 열리는지 알 수 없다
-    if (lock) return `<div class="slot locked"><b>${k + 1}</b>${sl.label}<br><span class="why">${lock}</span></div>`;
+    if (lock) return `<div class="slot locked${pt}"><b>${k + 1}</b>${sl.label}<br><span class="why">${lock}</span></div>`;
     // 🛡 프로텍트는 치즈가 아니라 **부품**을 쓰고, 켜짐/꺼짐이 곧 상태다 (D159)
     if (isToggleSlot(sl)) {
       const me = localPlayer();
       const on = !!me.protectOn;
       const n = Math.floor(me.parts / Math.max(1, P.tower.protectParts));
-      return `<div class="slot${on ? ' sel' : ' dim'}"><b>${k + 1} / R</b>${sl.label}` +
+      return `<div class="slot${on ? ' sel' : ' dim'}${pt}"><b>${k + 1} / R</b>${sl.label}` +
         `<br><span class="role">${on ? '켜짐 — 파괴를 막는다' : '꺼짐'}</span>` +
         `<br>부품 ${P.tower.protectParts} (${n}회분)</div>`;
     }
     const cost = sl.cost();
     const afford = localPlayer().cheese >= cost;
-    const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
+    const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim') + pt;
     const costTxt = cost > 0 ? `${cost}🧀` : '무료';
     const how = isUnitSlot(sl) ? ' ⏎' : '';
     return `<div class="${cls}"><b>${k + 1}${how}</b>${sl.label}` +
@@ -10058,7 +10067,7 @@ function openEditor() {
   // 카메라는 그 햄스터를 따라다니므로 **스폰 언저리에 붙박였다** —
   // 화면 밖 칸은 편집할 방법이 아예 없었다. 시뮬은 tickEditor가 대신 막는다.
   paused = false;
-  tut = null; renderTut();
+  tut = null; renderTut(); clearTutGuide();
   editor = { brush: 0, erase: false, map: loadMapLocal() || blankMap() };
   customMap = editor.map;
   rebuildWorld(mapIndex);     // 지금 맵을 화면에 반영
@@ -10200,7 +10209,11 @@ const myWallCount = () => {
 
 const TUT_STEPS = [
   { t: '벽으로 치즈 더미를 감싸세요',
-    hint: '숫자 1 → 치즈 더미 둘레를 벽으로 막습니다. 고양이가 못 들어오면 성공',
+    hint: '숫자 1 → **바닥의 노란 점선**을 따라 벽을 놓으세요. 고양이가 못 들어오면 성공',
+    // 바닥에 실제로 그려 준다 (D161) — 정현: "초심자 입장에서 벽을 어떻게 지어야
+    // 할지 모르겠다. 넉넉하게 지어야 한다는 의미에서 가이드라인을 표시하자."
+    guide: () => tutWallGuide(),
+    slot: 0,                       // 벽 슬롯도 같이 깜빡인다 (D161)
     now: () => (tutEnclosedPile() ? '완료' : `벽 ${myWallCount()}장 — 아직 뚫려 있습니다`),
     // 첫 단계에는 **고양이가 없다** (D113). 쫓기면서 감싸는 건 초보자가 할 수 있는 일이 아니다.
     ok: () => tutEnclosedPile(),
@@ -10213,15 +10226,24 @@ const TUT_STEPS = [
   { t: '치즈 창고를 지으세요',
     hint: '숫자 2 → 좌클릭. 캔 치즈를 여기에 부려야 잔고가 됩니다',
     now: () => (depotCount() ? '완료' : '아직 없음'),
+    slot: 1,                       // 핫바 2번을 깜빡인다 (D161)
     ok: () => depotCount() >= 1 },
   { t: 'E로 치즈를 캐고, 일꾼을 고용하세요',
-    hint: '치즈 더미 옆에서 E · 가득 차면 창고로 · 숫자 3 → Enter로 일꾼 고용',
+    hint: '치즈 더미 옆에서 E · 가득 차면 창고로 · **숫자 3을 누른 뒤 Enter**로 일꾼 고용',
+    slot: 2,
     now: () => `캐기 ${tutStats.dropped ? '✔' : '…'} · 일꾼 ${workers.filter((w) => w.owner === 'p').length}`,
     ok: () => tutStats.dropped >= 1 && workers.some((w) => w.owner === 'p') },
   { t: '공방을 지으세요',
-    hint: '숫자 4 → 좌클릭. 공방이 있어야 경비탑과 병사가 열립니다',
-    now: () => (hasWorkshop() ? '완료' : '아직 없음'),
-    ok: () => hasWorkshop() },
+    hint: '숫자 4 → 좌클릭. **다 지어질 때까지 기다리세요** — 공방이 있어야 탑이 열립니다',
+    now: () => {
+      const w = buildings.find((b) => b.kind === 'workshop' && b.owner === 'p');
+      if (!w) return '아직 없음';
+      return w.underBuild ? '짓는 중…' : '완료';
+    },
+    slot: 3,
+    // **완성돼야** 넘어간다 (D161). 정현: "짓는 도중에 다음 단계가 나와버림."
+    // hasWorkshop()은 착공만 봐서, 다음 단계(경비탑)가 아직 잠긴 채로 떴다.
+    ok: () => buildings.some((b) => b.kind === 'workshop' && b.owner === 'p' && !b.underBuild) },
   { t: '금이 간 벽을 수리하세요',
     hint: '금 간 벽 옆으로 가서 F',
     now: () => (tutStats.repaired ? '완료' : '금 간 벽으로 가세요'),
@@ -10235,13 +10257,23 @@ const TUT_STEPS = [
     },
     ok: () => tutStats.repaired >= 1 },
   { t: '경비탑을 세우세요',
-    hint: '숫자 5 → 좌클릭. 알아서 지어지고 알아서 쏩니다',
+    hint: '숫자 5 → **바닥의 파란 원 안**에 좌클릭. 알아서 지어지고 알아서 쏩니다',
     now: () => `경비탑 ${buildings.filter((b) => b.kind === 'tower' && b.owner === 'p').length}`,
+    slot: 4,
+    guide: () => tutTowerGuide(),   // 어디에 지어야 하는지 바닥에 표시 (D161)
+    // ⚠ 감속탑·수리탑이 6·7번으로 들어오면서(D160) 경비탑은 그대로 5번(index 4)이다
     ok: () => buildings.some((b) => b.kind === 'tower' && b.owner === 'p') },
-  { t: '병사를 고용하세요',
-    hint: '숫자 6 → Enter (근접병). 병사는 싸우기만 합니다 — 치즈는 일꾼이 캡니다',
-    now: () => `병사 ${guardsOf('p').length}`,
-    ok: () => guardsOf('p').length >= 1 },
+  // 병사 단계를 **강화 단계로 바꿨다** (D161). 방어병은 기획에서 뺐고(D146·D160),
+  // 지금 이 게임의 중심은 강화다 — 튜토리얼이 그걸 한 번도 안 가르치고 있었다.
+  { t: '경비탑을 강화하세요',
+    hint: '탑 옆에서 **U** (또는 멀리 있는 탑을 클릭해 골라 두고 U). ' +
+          '성공 / 그대로 / 💥파괴 — 확률은 누르기 전에 발밑에 뜹니다',
+    now: () => {
+      const t = buildings.filter((b) => TOWERISH[b.kind] && b.owner === 'p');
+      const best = t.reduce((m, b) => Math.max(m, b.tier || 1), 0);
+      return best >= 2 ? '완료' : `가장 높은 탑 Lv.${best || 0} — U를 눌러 보세요`;
+    },
+    ok: () => buildings.some((b) => TOWERISH[b.kind] && b.owner === 'p' && (b.tier || 1) >= 2) },
   { t: '연습 끝 — 이제 진짜로 버텨 보세요',
     hint: 'ESC 메뉴에서 다시 시작할 수 있습니다',
     now: () => '수고했습니다',
@@ -10319,6 +10351,96 @@ function showTutBig() {
   tut.bigT = P.tutorial.bigTime;
 }
 
+// ---- 튜토리얼 바닥 가이드 (D161) ----
+// 정현: "초심자 입장에서 벽을 어떻게 지어야 할지 모르겠음. **넉넉하게** 지어야 한다는
+// 의미에서 바닥에 가이드라인을 표시하자."
+//
+// 글로 "감싸세요"라고 적는 것과 **어디에** 놓아야 하는지 보여 주는 것은 다른 일이다.
+// 첫 판에서 막히는 이유는 규칙을 몰라서가 아니라 **크기 감각이 없어서**다 —
+// 너무 붙여 지어서 광맥과 창고가 들어갈 자리가 안 남는다.
+const tutGuide = { group: null, key: '' };
+const guideDotGeo = new THREE.CircleGeometry(0.26, 10);
+
+function clearTutGuide() {
+  if (!tutGuide.group) return;
+  scene.remove(tutGuide.group);
+  tutGuide.group.traverse((o) => o.material?.dispose?.());
+  tutGuide.group = null; tutGuide.key = '';
+}
+
+// 점을 찍어 선을 만든다 (칸 중심에 하나씩)
+function makeGuideDots(cells, color, y = 0.05) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide });
+  for (const [i, j] of cells) {
+    const m = new THREE.Mesh(guideDotGeo, mat);
+    const w = cellToWorld(i, j);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(w.x + CS / 2, y, w.z + CS / 2);
+    m.renderOrder = 999;
+    g.add(m);
+  }
+  scene.add(g);
+  return g;
+}
+
+// 1단계 — 가장 가까운 광맥을 **넉넉하게** 두르는 사각 테두리.
+// 반지름을 광맥에서 3칸으로 잡는다: 안쪽에 창고(2x2)와 일꾼이 들어갈 자리가 남는다.
+function tutWallGuide() {
+  const me = localPlayer();
+  if (!nodes.length) return null;
+  let best = null, bd = Infinity;
+  for (const n of nodes) {
+    const w = cellToWorld(n.i, n.j);
+    const d = Math.hypot(w.x - me.x, w.z - me.z);
+    if (d < bd) { bd = d; best = n; }
+  }
+  if (!best) return null;
+  const R = 3, cells = [];
+  for (let di = -R; di <= R; di++) for (let dj = -R; dj <= R; dj++) {
+    if (Math.max(Math.abs(di), Math.abs(dj)) !== R) continue;   // 테두리만
+    const i = best.i + di, j = best.j + dj;
+    if (i < 0 || j < 0 || i >= CELLS || j >= CELLS) continue;
+    if (obAtCell(i, j)) continue;        // 이미 막힌 칸(내가 세운 벽 포함)은 안 그린다
+    cells.push([i, j]);
+  }
+  return { key: `wall:${best.i},${best.j}:${cells.length}`, cells, color: 0xffd24a };
+}
+
+// 6단계 — 경비탑은 **광맥과 벽 사이**에 세우는 게 좋다: 사거리 안에 길목이 들어온다.
+// 광맥에서 2칸 고리 중 2x2가 실제로 들어가는 자리만 표시한다.
+function tutTowerGuide() {
+  const me = localPlayer();
+  if (!nodes.length) return null;
+  let best = null, bd = Infinity;
+  for (const n of nodes) {
+    const w = cellToWorld(n.i, n.j);
+    const d = Math.hypot(w.x - me.x, w.z - me.z);
+    if (d < bd) { bd = d; best = n; }
+  }
+  if (!best) return null;
+  const cells = [];
+  for (let di = -2; di <= 2; di++) for (let dj = -2; dj <= 2; dj++) {
+    if (Math.max(Math.abs(di), Math.abs(dj)) !== 2) continue;
+    const i = best.i + di, j = best.j + dj;
+    // 실제로 지을 수 있는 자리만 — 못 짓는 곳을 가리키면 안내가 아니라 함정이다
+    if (buildingPlacement(i, j, 'tower', true, me)) continue;
+    cells.push([i, j]);
+  }
+  return { key: `tower:${best.i},${best.j}:${cells.length}`, cells, color: 0x8fd6ff };
+}
+
+function updateTutGuide() {
+  const st = tut ? TUT_STEPS[tut.step] : null;
+  const spec = st && st.guide ? st.guide() : null;
+  if (!spec || !spec.cells.length) { clearTutGuide(); return; }
+  if (tutGuide.key === spec.key) return;    // 안 바뀌었으면 다시 안 만든다
+  clearTutGuide();
+  tutGuide.group = makeGuideDots(spec.cells, spec.color);
+  tutGuide.key = spec.key;
+}
+
 function updateTutorial(dt) {
   if (!tut) return;
   if (tut.bigT > 0) {
@@ -10336,6 +10458,7 @@ function updateTutorial(dt) {
     showTutBig();
   }
   renderTut();
+  updateTutGuide();
 }
 
 function renderTut() {
@@ -12133,6 +12256,8 @@ window.__game = {
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
   towerStyle, spawnSplashFx, lobProjectile, projectiles, towerLevelColor, auraColor, auraSides, auraLayers,
   TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
+  beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot,
+  get tut() { return tut; }, get tutGuide() { return tutGuide; },
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
