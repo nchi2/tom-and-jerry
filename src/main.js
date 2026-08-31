@@ -165,15 +165,24 @@ const P = {
   // hp가 높다 — 처치하려면 탑/방어병에 실제로 투자해야 한다.
   // reward = 처치 시 주는 치즈.
   // dmg = 플레이어/동료에게 한 방에 주는 피해
-  chaser: { radius: 0.95, speed: 7.5, bldgDps: 24, hp: 1300, reward: 6, dmg: 34 },
-  runner: { radius: 0.63, speed: 10.2, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
+  // 처치 보상 ×10 (D156). 정현: "치즈 수급을 편하게 해서 강화하기 편하게."
+  // D100이 적은 "후반에 자원이 남는다"와 반대 방향이지만, 강화(D145)가
+  // 그 잉여를 태우는 구멍으로 들어왔으므로 이제 **수급이 곧 강화 횟수**다.
+  chaser: { radius: 0.95, speed: 7.5, bldgDps: 24, hp: 1300, reward: 60, dmg: 34 },
+  runner: { radius: 0.63, speed: 10.2, bldgDps: 16, hp: 750, reward: 40, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
   bomber: {
     // 공성 비율 (D150) — 이 비율의 자폭묘는 햄스터를 **아예 안 보고** 가장 가까운
     // 건물로 직진한다. 스폰이 이미 사방이므로(D110) 목표만 갈라 주면 타격도 사방이 된다.
     // 벽 파손이 "내가 없는 곳"에서 일어나야 수리탑(예정)의 배치 결정이 성립한다.
-    siegeRatio: 0.6, radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
+    // 속도 3.9 → 5.4 (D157). 정현: "적들 사이에 밀려서 안 터지는 경우가 있다."
+    // 실측 결과 **밀리는 게 아니었다** — noSeparate가 이미 자폭묘를 분리에서 빼 놔서
+    // 순찰묘 8마리를 사이에 두고도 그대로 통과한다(0.67초에 1.88m 전진).
+    // 진짜 원인은 순찰묘(7.5)의 절반인 속도였다. 먼저 도착한 무리 뒤로 처지는 게
+    // "밀렸다"로 보인 것. 여전히 가장 느리게 두되(피할 시간은 남긴다, D12) 격차를 줄인다.
+    siegeHold: 0.45,    // 노출돼도 이 비율은 기지를 계속 친다 (D157)
+    siegeRatio: 0.6, radius: 1.15, speed: 5.4, bldgDps: 40, hp: 1000, reward: 100, dmg: 45,
             blastRadius: 2.55, fuse: 0.9,
             // 상시 보충 (D121) — 이 주기마다 한 마리씩, maxLive까지
             every: 22, maxLive: 3, fromStage: 5,
@@ -187,6 +196,9 @@ const P = {
   // 돌아오는 게 없었다. 이 보상은 곧바로 **준비 국면**(D108)으로 이어지므로,
   // "밑천이 생긴 직후에 안전하게 쓸 시간이 온다"가 저절로 성립한다.
   boss: { radius: 1.75, speed: 3.2, bldgDps: 60, hp: 12000, reward: 10000, dmg: 55,
+          // 강타 사거리·각 +30% (D156, 정현 요청) — 톰이 벽 앞에서 "닿을 듯 안 닿는" 그림이
+          // 자주 났다. 범위를 넓히면 톰이 벽을 실제로 부수는 장면이 늘어난다
+          smashRangeMul: 1.3,
           smashCooldown: 8.0, smashWindup: 0.9,
           // 강타 **몇 번**에 벽이 무너지는가 (D99). 한 방이면 벽을 세우는 행위가
           // 보스 앞에서 무의미해진다 — 한 번 맞고 금이 간 벽은 아직 막고 있으므로
@@ -297,7 +309,10 @@ const P = {
     t1Cost: 20, t1Hp: 70, t1Range: 8.0, t1Dmg: 14, t1Reload: 1.1,
     maxLv: 15,
     // 성장률 — 화력은 기하급수(강화가 보상이어야 하니까), 사거리는 산술(너무 길면 판이 죽는다)
-    dmgGrow: 1.35,      // Lv.10 ≈ 208, Lv.15 ≈ 933 (옛 t3은 130이었다)
+    // 1.35 → 1.42 (D156). 정현: "겨우겨우 성공했을 때 희열이 느껴지게 성능이 확 좋아지게."
+    // 파괴율을 내린 만큼 **보상 쪽을 올려** 도박의 값을 유지한다 —
+    // 안전해지기만 하면 굴릴 이유가 없어진다. Lv.15 ≈ 933 → 2,090
+    dmgGrow: 1.42,
     hpGrow: 1.18,       // Lv.15 ≈ 838 (옛 t3은 500)
     rangeStep: 0.62,    // Lv.15 = 16.7 (옛 t3은 16.0) — 사거리는 거의 안 늘린다
     reloadStep: 0.045, reloadMin: 0.35,
@@ -665,12 +680,17 @@ for (let n = 1; n <= TOWER_MAXLV; n++) {
 //   Lv.5까지는 파괴가 없다 — 시스템을 배우는 구간이고, 여기서 부수면 아무도 안 한다.
 //   Lv.6부터 파괴가 붙고 레벨을 따라 가팔라진다 ("낮으면 적고 높을수록 높게").
 // 무보호로 1→15를 뚫을 확률 ≈ 0.16% (약 610개에 하나). 프로텍트(부품)가 그 벽을 여는 열쇠다.
+// D156 실플레이 조정: 정현이 "7~8에서 두 번 실패, 9→10은 세 번 만에 성공하고
+// 두 개가 터졌다"고 보고했다. 표대로면 정상 범위지만 **체감이 너무 가혹**하다.
+// 성공률은 조금만 올리고(+3~7%p), **파괴율을 크게 내렸다**(-25~40%).
+// 이유: 실패는 "한 번 더"로 이어지지만 파괴는 거기서 이야기가 끊긴다.
+// 도박의 긴장은 파괴가 아니라 **불확실성**에서 오므로, 파괴를 깎아도 재미는 안 죽는다.
 const ENH = {
-  2:  { s: 1.00, d: 0.00 },  3:  { s: 0.95, d: 0.00 },  4:  { s: 0.90, d: 0.00 },
-  5:  { s: 0.85, d: 0.00 },  6:  { s: 0.80, d: 0.02 },  7:  { s: 0.75, d: 0.04 },
-  8:  { s: 0.70, d: 0.07 },  9:  { s: 0.60, d: 0.11 },  10: { s: 0.50, d: 0.16 },
-  11: { s: 0.40, d: 0.22 },  12: { s: 0.30, d: 0.29 },  13: { s: 0.20, d: 0.37 },
-  14: { s: 0.12, d: 0.46 },  15: { s: 0.08, d: 0.55 },
+  2:  { s: 1.00, d: 0.00 },  3:  { s: 0.97, d: 0.00 },  4:  { s: 0.93, d: 0.00 },
+  5:  { s: 0.89, d: 0.00 },  6:  { s: 0.85, d: 0.015 }, 7:  { s: 0.80, d: 0.03 },
+  8:  { s: 0.75, d: 0.05 },  9:  { s: 0.66, d: 0.08 },  10: { s: 0.57, d: 0.11 },
+  11: { s: 0.47, d: 0.15 },  12: { s: 0.37, d: 0.19 },  13: { s: 0.27, d: 0.24 },
+  14: { s: 0.18, d: 0.30 },  15: { s: 0.13, d: 0.36 },
 };
 
 // 보정을 먹인 실제 확률. s+d가 1을 넘지 않게 파괴 쪽을 깎는다 —
@@ -2482,6 +2502,10 @@ function makeEnemy(type, n) {
     // 공성조 (D150) — 자폭묘만. 생성 시점에 정해 두면 스폰 경로(스테이지 표·상시 보충·
     // 최후의 공세)가 몇 갈래든 같은 규칙을 탄다. ⚠ 호스트만 makeEnemy를 부른다(D92-6)
     siege: type === 'bomber' && Math.random() < P.bomber.siegeRatio,
+    // 노출돼도 **공성을 계속할지** (D157). 정현: "평소에는 기지도 같이 공격받으면 좋겠는데."
+    // D153은 노출되면 **전원**이 추격으로 돌아서서, 밖에 나가 있는 동안 기지가
+    // 통째로 안전해졌다 — 너무 극단적이었다. 이 비율만큼은 계속 벽을 두드린다.
+    siegeHold: Math.random() < P.bomber.siegeHold,
     probeT: 0,                // 현재 접근각을 유지할 남은 시간
     probes: 0, prowlT: 0, prowlX: 0, prowlZ: 0,
     atkT: 0, windup: 0, lungeT: 0, fuseT: 0, noHitT: 0,
@@ -5548,7 +5572,7 @@ function planEnemyPath(enemy) {
     // 누가 벽 밖에 나와 있으면 공성을 접고 그쪽을 쫓는다 (D153).
     // "숨으면 공성, 나오면 추격" — 숨는 것에는 벽이 갉히는 값이 붙고,
     // 나오는 것에는 쫓기는 값이 붙는다. 어느 쪽도 공짜가 아니게 된다.
-    if (enemy.siege && buildings.length && !anyExposed) {
+    if (enemy.siege && buildings.length && (!anyExposed || enemy.siegeHold)) {
       if (!(enemy.raidTarget && buildings.includes(enemy.raidTarget))) {
         let bBest = null, bD = Infinity;
         for (const b of buildings) {
@@ -5559,7 +5583,7 @@ function planEnemyPath(enemy) {
       }
       enemy.raidUntil = survival + 3600;    // 사실상 무기한 — 부서지면 위에서 다시 고른다
       raiding = true;
-    } else if (enemy.siege && anyExposed && enemy.raidTarget) {
+    } else if (enemy.siege && anyExposed && !enemy.siegeHold && enemy.raidTarget) {
       // ⚠ 노출로 공성을 접을 때 목표를 **명시적으로 버려야** 한다 (D153 실측).
       //    위에서 심은 raidUntil(+3600)을 그대로 두면 아래 일반 어그로 유지 분기가
       //    낡은 건물 목표를 계속 물고 있어 — "나왔는데도 벽만 두드린다"가 재현됐다.
@@ -6646,7 +6670,9 @@ function updateEnemy(enemy, dt) {
         // 내리친 자리 **주변까지** 닿는다 (D107). 다만 범위를 좁히고 **앞쪽만** 친다 (D115) —
         // 2.6일 때는 벽 5장에 두 겹까지 한 번에 갈려서 "한 방에 뚫린다"에 가까웠다.
         // 1.3이면 한 줄에서 **앞의 3장**만 닿는다 (칸 거리 0과 1.5-0.75=0.75만 들어옴).
-        const R = P.boss.smashRadius;
+        sfx('smash');            // 쿵 (D156) — 모두가 듣는다. 벽이 부서지는 사건이다
+        camShake = Math.max(camShake, 0.34);
+        const R = P.boss.smashRadius * (P.boss.smashRangeMul || 1);   // D156
         const hit = cellToWorld(smashWall.i, smashWall.j);
         // 톰이 보는 방향 — 이 반대편(뒤쪽 겹)은 안 친다
         const fx = enemy.dirX || 0, fz = enemy.dirZ || 1;
@@ -8059,6 +8085,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.look, 'auraAmp', 0, 2, 0.05).name('★ 오오라 강도 (0=끔)')
     .onChange(() => { for (const b of buildings) if (b.kind === 'tower') applyAura(b); });
   f.add(P.bomber, 'siegeRatio', 0, 1, 0.05).name('★ 자폭묘 공성 비율 (D150)');
+  f.add(P.bomber, 'siegeHold', 0, 1, 0.05).name('★ 노출돼도 기지 치는 비율 (D157)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
@@ -8279,6 +8306,7 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.boss, 'smashCooldown', 1, 30, 0.5).name('벽 강타 쿨다운(초)');
   f.add(P.boss, 'smashHits', 1, 5, 1).name('벽 강타 몇 번에 부서지나');
   f.add(P.boss, 'smashRadius', 0.5, 5, 0.1).name('벽 강타 반경(m)');
+  f.add(P.boss, 'smashRangeMul', 0.5, 2.5, 0.05).name('★ 강타 범위 배수 (D156)');
   f.add(P.boss, 'smashArc', -1, 1, 0.05).name('강타 앞쪽 판정 (-1=사방)');
   f.add(P.boss, 'smashMax', 1, 12, 1).name('강타 최대 벽 장수');
   f.add(P.threat, 'stageScale', 0.5, 3, 0.1).name('★ 스테이지 길이 배율');
@@ -9677,6 +9705,17 @@ function sfx(kind) {
     case 'tower': beep({ freq: 760, to: 380, type: 'sine', dur: 0.09, vol: 0.28 }); break;   // 포탑 투척
     // 금색 띠(11강~)의 연사음 (D154) — 던지는 소리가 아니라 **총성**이다.
     // 짧고 날카롭게. minGap에 걸려 연사가 한 발로 들리지 않게 dur도 짧다
+    // 톰의 강타 — **쿵.** (D156) 저역이 길게 깔리고 위에 파열음이 얹힌다.
+    // 자폭묘 'boom'보다 낮고 무겁게: 폭발이 아니라 **내리치는** 소리여야 한다
+    case 'smash':
+      noise({ dur: 0.30, vol: 0.85, lo: 220 });
+      beep({ freq: 90, to: 34, type: 'square', dur: 0.45, vol: 0.60 });
+      beep({ freq: 170, to: 60, type: 'sawtooth', dur: 0.28, vol: 0.34, delay: 0.02 });
+      break;
+    // 톰이 강타를 준비한다 — 올라가는 음으로 "온다"를 예고 (D78의 예비동작을 귀로도)
+    case 'smashWind':
+      beep({ freq: 120, to: 300, type: 'sawtooth', dur: 0.55, vol: 0.24 });
+      break;
     case 'towerHi':
       beep({ freq: 1500, to: 620, type: 'square', dur: 0.045, vol: 0.20 });
       noise({ dur: 0.035, vol: 0.12, lo: 2200 });
@@ -9699,8 +9738,12 @@ function sfx(kind) {
       beep({ freq: 1046, type: 'sine', dur: 0.10, vol: 0.40, delay: 0.15 });
       beep({ freq: 1568, type: 'triangle', dur: 0.34, vol: 0.34, delay: 0.24 });
       break;
-    case 'enhStay':  // 그대로 — 실패지만 잃은 건 돈뿐이다. 짧고 밋밋하게
-      beep({ freq: 300, to: 240, type: 'triangle', dur: 0.13, vol: 0.28 });
+    case 'enhStay':
+      // D156: 정현이 "강화 실패도 실패음이 있게"라고 했다 — 있었는데 **너무 밋밋해서
+      // 안 들렸다.** 실패는 성공만큼 또렷해야 한다. 내려가는 두 음 + 둔탁한 타격.
+      beep({ freq: 420, to: 300, type: 'triangle', dur: 0.11, vol: 0.36 });
+      beep({ freq: 240, to: 150, type: 'square', dur: 0.20, vol: 0.30, delay: 0.08 });
+      noise({ dur: 0.10, vol: 0.16, lo: 700 });
       break;
     case 'enhBoom':  // 파괴 — 'boom'보다 낮고 길다. 이건 **내 탓**이라 소리도 무거워야 한다
       noise({ dur: 0.55, vol: 0.75, lo: 300 });
@@ -11430,7 +11473,9 @@ const GAIT = {
   chaser: { stride: 1.9, hop: 0.11, pitch: 0.06, roll: 0.02 },
   runner: { stride: 1.2, hop: 0.15, pitch: 0.09, roll: 0.02 },
   bomber: { stride: 1.0, hop: 0.06, pitch: 0.02, roll: 0.10 },   // 폭탄이라 좌우 뒤뚱이 주다
-  boss:   { stride: 3.2, hop: 0.17, pitch: 0.04, roll: 0.03 },
+  // 톰은 덩치가 순찰묘의 두 배(반지름 1.75 vs 0.95)라 같은 hop이 **절반으로 보인다**.
+  // 정현이 "톰은 여전히 질질 끈다"고 한 게 이것이다 — 값이 아니라 비율 문제였다 (D156)
+  boss:   { stride: 2.4, hop: 0.42, pitch: 0.12, roll: 0.07 },
 };
 function applyEnemyGait(e, dt) {
   const g = GAIT[e.type] || GAIT.chaser;
