@@ -173,6 +173,27 @@ const P = {
   // 처치 보상 ×10 (D156). 정현: "치즈 수급을 편하게 해서 강화하기 편하게."
   // D100이 적은 "후반에 자원이 남는다"와 반대 방향이지만, 강화(D145)가
   // 그 잉여를 태우는 구멍으로 들어왔으므로 이제 **수급이 곧 강화 횟수**다.
+  // ---- 들묘 (D164) — 떼로 오는 잡졸 ----
+  // 정현: "체력이 더 낮고 쉽게 죽는 적을 추가하자. 초반엔 얘네들이 나와서
+  // 낮은 타워로도 잡을 수 있게."
+  // 순찰묘(1300)는 Lv.1 탑으로 **100초**가 걸린다 — 싼 탑이 일하는 게 안 보였고,
+  // 그래서 넓게 까는 대신 하나만 파게 됐다. 220이면 Lv.1 탑 하나가 17초,
+  // 다섯이면 3.4초다. 처음으로 저레벨 다수가 값을 한다.
+  //
+  // ⚠ radius 0.58은 **일부러** 플레이어 대각 관문(0.85m, 통과 상한 0.425)보다 크다.
+  //   더 작게 만들면 벽을 통째로 지나가서 코어 규칙이 무너진다.
+  feral: { radius: 0.58, speed: 8.0, bldgDps: 8, hp: 220, reward: 30, dmg: 14,
+           // ---- 상시 유입 (D164) ----
+           // 실측으로 드러난 진짜 원인: **적이 흐르지 않는다.** 8분간 등장이 35마리뿐이라
+           // 처치 수입 상한이 1,970(분당 246)이었다 — 보상을 ×10 해도 잡을 게 없으면 무의미하다.
+           // 개체수를 유지만 하는 구조(topUpToCurve)로는 "떼로 몰려온다"도 "수급"도 안 된다.
+           // 자폭묘(D121)와 같은 방식으로 흘려보내되 훨씬 잦다.
+           // 실측: 상한 10+4×stage로는 7분에 동시 18마리 — "떼"가 아니었다.
+           // 성능은 남아돈다(그 시점 tick p95 0.20ms, 예산 16.7ms). 앞서 잰
+           // 부하 곡선상 160마리까지 여유가 있으므로 상한을 크게 연다.
+           every: 1.2,          // 이 주기마다 한 마리
+           maxLive: 22,         // 동시 생존 상한 (스테이지마다 +stagePer)
+           stagePer: 9 },       // 10스테이지면 최대 103마리
   chaser: { radius: 0.95, speed: 7.5, bldgDps: 24, hp: 1300, reward: 60, dmg: 34 },
   runner: { radius: 0.63, speed: 10.2, bldgDps: 16, hp: 750, reward: 40, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
@@ -323,7 +344,14 @@ const P = {
     hpGrow: 1.18,       // Lv.15 ≈ 838 (옛 t3은 500)
     rangeStep: 0.62,    // Lv.15 = 16.7 (옛 t3은 16.0) — 사거리는 거의 안 늘린다
     reloadStep: 0.045, reloadMin: 0.35,
-    costGrow: 1.5,      // 시도 1회 비용. Lv.14→15 시도가 3894 — **잉여 치즈를 태우는 구멍**(D100)
+    // 1.5 → **1.32** (D164). 정현: "강화를 자주 하지 못한다. 중반부터는 하나는 15강
+    // 완성하고 2호기를 업그레이드하고 있어야 한다."
+    // 계산해 보니 격차가 **11배**였다: Lv.15 도달에 130,021치즈인데 현실 수입은
+    // 8분에 12,000 남짓. 원인은 이 한 값이다 — 1.5는 14→15 시도 하나가 8,758이 된다.
+    // 1.32로 내린 뒤 다시 재 보니 8분 수입 상한이 20,030(실제로는 그 60~70%)이라
+    // 27,351은 여전히 멀었다. **1.26**이면 그 조합이 15,672 —
+    // 10~12분쯤에 손이 닿는다. 그게 정현이 말한 "중반"이다.
+    costGrow: 1.26,
     // 확률 보정 — 곡선 자체는 ENH 표에 있고, 여기서 전체를 밀고 당긴다
     luck: 1.0,          // 성공률 배수
     risk: 1.0,          // 파괴율 배수 (0으로 두면 파괴 없음 = 옛 방식)
@@ -338,6 +366,7 @@ const P = {
     splashR0: 1.0,      // splashFrom에서의 반경
     splashR1: 3.2,      // maxLv에서의 반경
     splashFrac: 0.55,   // 주변 적이 받는 피해 = 본체 × 이 비율
+    splashTop15: 1.35,  // 15강만 광역을 한 번 더 넓힌다 (D164, 정현: "그보다 더 광범위하게")
     // 연사 (D154) — 금색 띠는 한 번에 여러 발 쏜다. **총 화력은 그대로**고
     // 한 발의 피해를 쪼갠다: 손맛만 바뀌고 밸런스는 안 건드린다
     burstBand3: 3,
@@ -596,17 +625,20 @@ const P = {
 // 각 스테이지는 정해진 시간 동안 지속된다. 시간이 다 되면 다음 스테이지로 넘어가며
 // 표대로 적이 증원되고 광맥이 리필된다. 치즈 잔고는 진행과 무관하다 —
 // 돈을 모으는 속도가 아니라 "버티는 시간"이 진행이다.
+// D164: 들묘(잡졸)를 **1스테이지부터 떼로** 넣었다. 초반이 "잡을 수 있는 적"으로
+// 시작해야 싼 탑 여러 개가 값을 하고, 처치 수입(D156의 ×10)도 그때부터 돈다.
+// 순찰묘·날쌘묘는 그대로 두되 들묘가 물량의 축이 된다.
 const STAGES = [
-  { time: 45, add: {} },                          // 1 — 시작 무리는 enemy.count(순찰묘)
-  { time: 50, add: { chaser: 1 } },               // 2
-  { time: 55, add: { runner: 1 } },               // 3 — 날쌘묘 첫 등장
-  { time: 55, add: { chaser: 1, runner: 1 } },    // 4
-  { time: 60, add: { bomber: 1 } },               // 5 — 자폭묘 첫 등장
-  { time: 60, add: { chaser: 1, runner: 1 } },    // 6
-  { time: 65, add: { bomber: 1 } },               // 7
-  { time: 65, add: { runner: 2 } },               // 8
-  { time: 70, add: { bomber: 1, runner: 1 } },    // 9
-  { time: 75, add: { bomber: 1, chaser: 1 } },    // 10
+  { time: 45, add: { feral: 4 } },                          // 1 — 들묘가 먼저 온다
+  { time: 50, add: { feral: 3, chaser: 1 } },               // 2
+  { time: 55, add: { feral: 3, runner: 1 } },               // 3 — 날쌘묘 첫 등장
+  { time: 55, add: { feral: 4, chaser: 1, runner: 1 } },    // 4
+  { time: 60, add: { feral: 4, bomber: 1 } },               // 5 — 자폭묘 첫 등장
+  { time: 60, add: { feral: 5, chaser: 1, runner: 1 } },    // 6
+  { time: 65, add: { feral: 5, bomber: 1 } },               // 7
+  { time: 65, add: { feral: 6, runner: 2 } },               // 8
+  { time: 70, add: { feral: 6, bomber: 1, runner: 1 } },    // 9
+  { time: 75, add: { feral: 8, bomber: 1, chaser: 1 } },    // 10
 ];
 
 // ---- 건설 핫바 ----
@@ -883,6 +915,7 @@ const effGuardDmg = (type, p = player) => GUARD_TYPES[type].dmg() + p.upg.guard 
 
 // 적 종류 메타 (숫자가 아니라서 P 밖에 둠 — 세팅 스냅샷에 안 섞이게)
 const TYPE_INFO = {
+  feral: { label: '들묘', canBreak: false },     // 떼로 오는 잡졸 (D164)
   chaser: { label: '순찰묘', canBreak: false },
   runner: { label: '날쌘묘', canBreak: false },
   bomber: { label: '자폭묘', canBreak: true },   // 폭발로만 벽을 부순다
@@ -2037,6 +2070,7 @@ function makeHamster(furColor = 0xe8b45a) {
 // 햄스터와 나란히 놨을 때 "폭"이 먼저 읽히도록 몸통을 가로로 넓힘.
 // 종류별 팔레트: 실루엣은 같아도 색으로 즉시 구분되게.
 const CAT_PALETTES = {
+  feral: { a: 0x6f6a52, b: 0x938d6e, eye: 0xd8ff7a, glow: 0xa8e04a },  // 흙빛·연둣빛 눈 (작고 흔하다)
   chaser: { a: 0x8e4257, b: 0xb0596d, eye: 0xffe14d, glow: 0xffc400 }, // 자주색·노란 눈
   runner: { a: 0x4f6d8e, b: 0x7391b5, eye: 0x7dff9a, glow: 0x37e06b }, // 청회색·초록 눈
   bomber: { a: 0x3d2a33, b: 0x7a3320, eye: 0xff7a45, glow: 0xff4400 }, // 흑적색·주황 눈
@@ -2195,6 +2229,12 @@ const MODEL_URL = {
   chaser: 'models/animal-cat.glb',
   runner: 'models/animal-fox.glb',
   bomber: 'models/animal-tiger.glb',
+  // ⚠ 들묘도 **반드시** GLB를 준다 (D164). 빠뜨렸더니 절차적 메시(마리당 여러 개)로
+  //   떨어져서 그림자 드로우콜이 842(상한 800)로 튀었다 — 성능 가드가 잡아 준 것.
+  //   D127이 "적 한 마리 = 메시 하나"로 병합해 둔 이득을, **가장 많은 적**에서
+  //   통째로 잃을 뻔했다. 순찰묘와 같은 고양이 모델을 쓰되 색으로 구분한다
+  //   (CAT_PALETTES.feral — 흙빛·연둣빛 눈).
+  feral: 'models/animal-cat.glb',
 };
 const modelCache = {};
 
@@ -4818,12 +4858,12 @@ function updateTower(b, dt) {
     return;
   }
   if (b.reload <= 0) {
-    // 등급이 오를수록 투사체가 커지고 밝아지고, 띠마다 **모양과 궤적이 바뀐다**
+    // 등급이 오를수록 투사체가 커지고 밝아지고, 구간마다 **모양과 궤적이 바뀐다**
     lobProjectile(b.cx, 1.5, b.cz, target,
                   effTowerDmg(lv, ownerOf(b.owner)) / st.burst,
                   1 + (lv - 1) * 0.5, b.owner, lv);
-    if (st.burst > 1) { b.burstLeft = st.burst - 1; b.burstT = 0.07; }
-    b.reload = T.reload();
+    if (st.burst > 1) { b.burstLeft = st.burst - 1; b.burstT = st.fire * 0.07; }
+    b.reload = T.reload() * st.fire;   // 13강부터 간격이 더 짧아진다 (D164)
   }
 }
 
@@ -5043,18 +5083,35 @@ const projGeoBullet = new THREE.CylinderGeometry(0.07, 0.11, 0.62, 6);   // 탄�
 projGeoBullet.rotateX(Math.PI / 2);
 
 // lv → 발사 방식. updateTower와 lobProjectile이 **같은 함수**를 본다.
+//
+// ---- 여섯 구간 (D164) ----
+// 오오라의 3띠(색·문양)와 **다른 눈금**이다. 정현이 고레벨에서 한 단계씩 달라지길
+// 원했고, 특히 13/14/15를 콕 집었다. 띠에 억지로 맞추면 그 요구를 못 담는다.
+//   1~4    치즈를 던진다 (포물선)      — 시작
+//   5~9    **총**을 쏜다 (직선 탄환)    — 정현: "레벨 5부터 총 쏘는 것처럼"
+//   10~12  2연사
+//   13     3연사 + 발사 간격 −20%      — "13강은 DPS가 더 빠르게"
+//   14     **레이저** — 길고 얇은 탄환, 아주 빠르게, 간격 −30%
+//   15     **굵은 레이저** — 더 길고 두껍게, 광역 대폭
+// fire = reload 배수(작을수록 빠르다) · len/thick = 탄환 기하 배율
 function towerStyle(lv) {
-  const band = towerBand(lv);                    // 0 · 1 · 2 (핍 색과 같은 계산)
+  const band = towerBand(lv);                    // 오오라·핍이 쓰는 3띠 (그대로 둔다)
   const t = (lv - 1) / Math.max(TOWER_MAXLV - 1, 1);
   const P2 = P.tower;
-  const splash = lv >= P2.splashFrom
+  let splash = lv >= P2.splashFrom
     ? P2.splashR0 + (P2.splashR1 - P2.splashR0)
       * Math.min(1, Math.max(0, (lv - P2.splashFrom) / Math.max(TOWER_MAXLV - P2.splashFrom, 1)))
     : 0;
-  if (band === 0) return { band, geo: projGeo,       arc: 1.6,  spd: 0.045, burst: 1, splash, spin: 10 };
-  if (band === 1) return { band, geo: projGeoShard,  arc: 0.85, spd: 0.028, burst: 1, splash, spin: 22 };
-  return { band, geo: projGeoBullet, arc: 0.12, spd: 0.012,
-           burst: Math.max(1, Math.round(P2.burstBand3)), splash, spin: 0, t };
+  const base = { band, t, splash, spin: 0, fire: 1, len: 1, thick: 1 };
+  if (lv <= 4)  return { ...base, geo: projGeo,       arc: 1.6,  spd: 0.045, burst: 1, spin: 10 };
+  if (lv <= 9)  return { ...base, geo: projGeoBullet, arc: 0.30, spd: 0.016, burst: 1 };
+  if (lv <= 12) return { ...base, geo: projGeoBullet, arc: 0.16, spd: 0.013, burst: 2 };
+  if (lv === 13) return { ...base, geo: projGeoBullet, arc: 0.10, spd: 0.011, burst: 3, fire: 0.80 };
+  if (lv === 14) return { ...base, geo: projGeoBullet, arc: 0.04, spd: 0.005, burst: 3,
+                          fire: 0.70, len: 3.2, thick: 0.55 };
+  // 15강 — 굵은 레이저 + 광역 확대. 최고 등급은 **다른 물건**이어야 한다
+  return { ...base, geo: projGeoBullet, arc: 0.02, spd: 0.004, burst: 4,
+           fire: 0.62, len: 3.6, thick: 1.45, splash: splash * P2.splashTop15 };
 }
 const projMat = new THREE.MeshStandardMaterial({
   color: 0xffe9a8, roughness: 0.5,
@@ -5190,7 +5247,8 @@ function clearGuards(owner) {
 // scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
 // owner = 이 투사체를 쏜 쪽. 처치 보상이 그 사람에게 간다 (D92-2단계)
 function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p', lv = 1) {
-  sfx(towerBand(lv) === 2 ? 'towerHi' : 'tower');   // 금색 띠는 총성 (D154·D122)
+  // 5강부터 총성 (D164) — 던지기와 사격은 **소리부터 달라야** 한다
+  sfx(lv >= 14 ? 'towerLaser' : lv >= 5 ? 'towerHi' : 'tower');
   // 참가자 화면에서는 **경비탑이 아무것도 안 하는 것처럼 보였다** (D101).
   // 시뮬은 호스트만 도니까 updateTower가 클라에서 안 돌고, 그래서 포탑 머리도
   // 안 돌고 투사체도 안 날았다. 피해만 조용히 들어가서 "포탑이 공격을 안 한다"가 된다.
@@ -5205,9 +5263,12 @@ function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p', lv = 1) {
   m.material.color.setHex(col);
   m.material.emissive.setHex(col);
   m.material.emissiveIntensity = 0.5 + st.band * 0.85 + (scale - 1) * 0.3;
-  // 탄환은 굵기만 조금 키운다 — 길이까지 커지면 화면을 가로지르는 막대가 된다
-  if (st.band === 2) m.scale.set(1 + (scale - 1) * 0.3, 1 + (scale - 1) * 0.3, 1);
-  else m.scale.setScalar(scale);
+  // 탄환은 **굵기와 길이를 따로** 잡는다 (D164) — 14강 레이저는 얇고 길어야 하고
+  // 15강은 굵고 길어야 한다. scale(등급 배율)을 그대로 곱하면 둘 다 뭉툭해진다.
+  if (st.geo === projGeoBullet) {
+    const th = (1 + (scale - 1) * 0.28) * st.thick;
+    m.scale.set(th, th, st.len);
+  } else m.scale.setScalar(scale);
   m.position.set(x, y, z);
   m.castShadow = st.band < 2;
   scene.add(m);
@@ -6517,6 +6578,8 @@ function advanceStage() {
 // 자폭묘는 **계속 온다** (D121). 스테이지 표는 누적이라 한 번 잡으면 다음 단계까지
 // 안 채워졌다 — 벽을 부술 수 있는 유일한 상시 수단이 사라져서, 잡고 나면 방어선이
 // 영구히 안전해진다. 그걸 막으려고 따로 흘려보낸다.
+let feralT = 0;
+let feralSeq = 0;    // 스폰 각도용 — 죽어도 안 되돌아가는 일련번호 (D150의 교훈)
 let bomberT = 0;
 let bomberSeq = 0;   // 자폭묘 스폰 각도용 — 죽어도 되돌아가지 않는 일련번호 (D150)
 function updateBomberTrickle(dt) {
@@ -6567,6 +6630,24 @@ function updateExposure() {
     }
   }
   wasExposed = anyExposed;
+}
+
+// ---- 들묘 상시 유입 (D164) ----
+// 이게 이 게임의 **처치 수입 본류**다. 잡을 것이 꾸준히 와야 강화 자원이 돈다.
+// 자폭묘 트리클(D121)과 같은 자리·같은 규칙을 쓴다: 준비 국면·승리 화면에서는 멈춘다.
+function updateFeralTrickle(dt) {
+  if (!netAuthoring()) return;
+  if (victory || finalPhase === 'prep') return;
+  if (P.feral.every <= 0) return;
+  feralT += dt;
+  if (feralT < P.feral.every) return;
+  feralT = 0;
+  const cap = scaled(P.feral.maxLive + P.feral.stagePer * Math.max(0, stage - 1));
+  if (enemies.filter((e) => e.type === 'feral').length >= cap) return;
+  const e = makeEnemy('feral', feralSeq++);
+  if (enraged()) darkenEnemy(e);
+  enemies.push(e);
+  refreshReach();
 }
 
 // 시간 기반 증원은 옵션으로만 남김 (everyLevels=0이면 스테이지 표만 사용)
@@ -8395,6 +8476,9 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.look, 'gaitAmp', 0, 2, 0.05).name('★ 적 걸음 반동 (0=미끄러짐)');
   f.add(P.look, 'auraAmp', 0, 2, 0.05).name('★ 오오라 강도 (0=끔)')
     .onChange(() => { for (const b of buildings) if (TOWERISH[b.kind]) applyAura(b); });
+  f.add(P.feral, 'every', 0, 10, 0.25).name('★ 들묘 유입 주기(초, 0=끔)');
+  f.add(P.feral, 'maxLive', 0, 60, 1).name('★ 들묘 동시 상한');
+  f.add(P.feral, 'stagePer', 0, 12, 1).name('★ 들묘 상한 +스테이지당');
   f.add(P.bomber, 'siegeRatio', 0, 1, 0.05).name('★ 자폭묘 공성 비율 (D150)');
   f.add(P.bomber, 'siegeHold', 0, 1, 0.05).name('★ 노출돼도 기지 치는 비율 (D157)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
@@ -10037,6 +10121,11 @@ function sfx(kind) {
     case 'tower': beep({ freq: 760, to: 380, type: 'sine', dur: 0.09, vol: 0.28 }); break;   // 포탑 투척
     // 금색 띠(11강~)의 연사음 (D154) — 던지는 소리가 아니라 **총성**이다.
     // 짧고 날카롭게. minGap에 걸려 연사가 한 발로 들리지 않게 dur도 짧다
+    // 레이저 (14강~, D164) — 총성이 아니라 **지이이** 하는 지속음
+    case 'towerLaser':
+      beep({ freq: 2100, to: 1500, type: 'sawtooth', dur: 0.11, vol: 0.16 });
+      beep({ freq: 700, to: 520, type: 'square', dur: 0.09, vol: 0.12 });
+      break;
     // 톰의 소환 (D162) — 낮게 울리는 부름. 강타(타격)와 확실히 다른 음색
     case 'summon':
       beep({ freq: 180, to: 420, type: 'sawtooth', dur: 0.42, vol: 0.34 });
@@ -11937,6 +12026,7 @@ function tickClient(dt) {
 // ⚠ 호스트와 클라 **두 경로가 이 함수 하나를 부른다** (D101: 표시 경로는 둘이다).
 const GAIT = {
   chaser: { stride: 1.9, hop: 0.11, pitch: 0.06, roll: 0.02 },
+  feral:  { stride: 0.9, hop: 0.13, pitch: 0.10, roll: 0.02 },   // 종종거린다 (D164)
   runner: { stride: 1.2, hop: 0.15, pitch: 0.09, roll: 0.02 },
   bomber: { stride: 1.0, hop: 0.06, pitch: 0.02, roll: 0.10 },   // 폭탄이라 좌우 뒤뚱이 주다
   // 톰은 덩치가 순찰묘의 두 배(반지름 1.75 vs 0.95)라 같은 hop이 **절반으로 보인다**.
@@ -12080,6 +12170,7 @@ function tick(dt) {
       ringPhase += P.enemy.drift * dt;   // 포위 링 전체가 목표 둘레를 천천히 돈다
       updateSpawns();   // 스테이지 외 추가 증원 (옵션)
       updateBomberTrickle(dt);   // 자폭묘 상시 보충 (D121)
+      updateFeralTrickle(dt);    // 들묘 상시 유입 (D164) — 처치 수입의 본류
       pf('적AI');
       // 이번 프레임의 길찾기 예산. 못 받은 적은 다음 프레임에 다시 시도한다
       // (repathT가 음수로 남아 있으므로 오래 기다린 쪽이 먼저 받는다)
@@ -12384,7 +12475,7 @@ window.__game = {
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
-  towerStyle, spawnSplashFx, lobProjectile, projectiles, towerLevelColor, auraColor, auraSides, auraLayers,
+  towerStyle, spawnSplashFx, lobProjectile, projectiles, projGeo, projGeoBullet, projGeoShard, towerLevelColor, auraColor, auraSides, auraLayers,
   TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
   beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot,
   loadHof, saveHof, openHof, renderHof, commitHofName, hofQualifies,
