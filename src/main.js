@@ -7,6 +7,11 @@ import { net } from './net.js';
 // ============================================================
 // 튜닝 파라미터 (GUI로 플레이 중 조절)
 // ============================================================
+// 강화·자동건설·선택이 적용되는 건물 종류 (D160).
+// ⚠ **P보다 먼저** 선언한다 — buildingPlacement 등 초기화 도중 실행되는 코드가
+//    이걸 읽는다. BLDG_INFO 옆에 뒀더니 TDZ로 죽었다 (함정 1: 빌드 통과 ≠ 동작).
+const TOWERISH = { tower: 1, slowtower: 1, fixtower: 1 };
+
 const P = {
   // 한 방에 죽지 않는다 — 공격을 맞아 체력이 다 깎여야 잡힌다 (원작 프로브가
   // 울트라 두 방을 버티던 것). 죽음이 "한순간의 실수"가 아니라 "누적된 실수"가 된다.
@@ -337,6 +342,24 @@ const P = {
     // 공방 등급이 여는 상한 — 공방을 계속 올릴 이유를 강화가 이어받는다
     gate1: 5, gate2: 10, gate3: 15,
   },
+  // ---- 지원 타워 (D160) ----
+  // 능력치는 경비탑과 같은 방식(Lv.1 값 + 성장률)으로 낸다 — 강화 곡선·구매값·파괴는
+  // D145가 **타워 종류와 무관하게** 짜여 있어 그대로 얹힌다.
+  slowtower: {
+    cost: 45, hp: 60,
+    range: 7.0, rangeStep: 0.55,      // Lv.15 = 14.7
+    slow: 0.30, slowStep: 0.028,      // 감속률 Lv.1 30% → Lv.15 69%
+    slowMax: 0.75,                    // 이보다 더는 못 늦춘다 — 멈춰 세우면 벽이 무의미해진다
+    hpGrow: 1.18,
+  },
+  fixtower: {
+    cost: 60, hp: 60,
+    range: 10.0, rangeStep: 0.45,     // Lv.1 10m — 정현이 지정한 값. Lv.15 = 16.3
+    every: 3.0, everyStep: 0.12,      // 수리 간격(초) Lv.1 3.0 → Lv.15 1.3
+    everyMin: 0.8,
+    costPer: 4,                       // 한 장 고칠 때마다 드는 치즈 — **자동화하는 건 왕복이지 비용이 아니다**
+    hpGrow: 1.18,
+  },
   // 건물 건설 — 짓는 동안 플레이어는 그 자리에 묶인다 (무방비).
   // ESC로 중단하면 짓던 건물이 펑 터지며 사라지고 자원은 돌려받는다.
   // 경비탑 업그레이드(t1→2, t2→3)도 같은 무방비 채널링을 쓴다.
@@ -597,8 +620,14 @@ const BUILD_SLOTS = [
   { key: 'worker', label: '일꾼 고용', role: '치즈 캐기', size: 1, need: 0, cost: () => cheeseCost(P.worker.cost) },
   { key: 'workshop', label: '공방', role: '기술 해금', size: 2, need: 0, cost: () => cheeseCost(P.workshop.cost) },
   { key: 'tower', label: '경비탑', role: '자동 사격', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
-  { key: 'melee', label: '근접병', role: '싸움', size: 1, need: 1, cost: () => guardCost('melee', localPlayer().owner) },
-  { key: 'archer', label: '사수', role: '싸움(원거리)', size: 1, need: 2, cost: () => guardCost('archer', localPlayer().owner) },
+  // 근접병·사수를 빼고 **지원 타워 두 종**을 넣었다 (D160).
+  // 방어병은 기획에서 뺐고(D146) 실제로도 죽어 있던 슬롯이다 —
+  // 같은 재화를 놓고 경비탑과 경쟁하다 결국 아무도 안 뽑았다.
+  // 대신 들어온 둘은 경비탑과 **경쟁하지 않는다**: 적이 아니라 내 구조물을 돕는다.
+  { key: 'slowtower', label: '감속탑', role: '적 늦추기', size: 2, need: 2,
+    cost: () => cheeseCost(P.slowtower.cost) },
+  { key: 'fixtower', label: '수리탑', role: '벽 자동 수리', size: 2, need: 3,
+    cost: () => cheeseCost(P.fixtower.cost) },
   // 8번은 정예병에서 **🛡 프로텍트 토글**로 바꿨다 (D159).
   // 정현: "프로텍트를 어떻게 켜야 하는지 잘 모르겠음. 정예병 자리를 빼고 거기에 소개를."
   // 방어병은 어차피 기획에서 뺐고(D146), 프로텍트(R)는 **어디에도 안 적혀 있었다** —
@@ -2420,7 +2449,11 @@ const enemyR = (e) => typeP(e).radius;
 // 늪을 가로지르는 도망은 햄스터에게만 이득이다 — 크기 비대칭의 속도판.
 const enemySpeedOf = (e) =>
   Math.min(typeP(e).speed + threatLevel() * P.threat.speedGain, P.threat.speedCap)
-  * moveScale() * mudSpeedAt(e.x, e.z, enemyR(e));
+  * moveScale() * mudSpeedAt(e.x, e.z, enemyR(e))
+  // 감속탑 (D160) — 매 프레임 타워가 채우고 여기서 소비한다. 늪(mudSpeedAt)과 곱해지므로
+  // 늪 위의 감속은 저절로 더 세다. slowMax 상한이 있어 절대 멈추지는 않는다 —
+  // 멈춰 세울 수 있으면 벽을 세울 이유가 없어진다 (코어 규칙).
+  * (1 - (e.slowMul || 0));
 const enemyDpsOf = (e) => ((typeP(e).dps || 0) + threatLevel() * P.threat.dpsGain) * finalBoost();
 const enemyDmgOf = (e) => typeP(e).dmg * (e.type === 'boss' ? 1 : finalBoost());
 const canBreakWalls = (e) => TYPE_INFO[e.type].canBreak;
@@ -3004,14 +3037,29 @@ const BLDG_INFO = {
   depot: { label: '치즈 창고', body: 0xd9a13b, roof: 0x8a6420 },
   workshop: { label: '공방', body: 0x4f8f8a, roof: 0x2c524e },
   tower: { label: '경비탑', body: 0x7a6ea8, roof: 0x40386b },
+  // ---- 지원 타워 2종 (D160) ----
+  // 경비탑 하나뿐이라 "어디에 무엇을"이 아니라 "얼마나 올릴지"만 있었다 (D145 미해결 항목).
+  // 이 둘은 적이 아니라 **내 다른 구조물과 상호작용**한다 — 감속탑은 다른 탑의
+  // 사격 시간을 늘리고, 수리탑은 벽을 고친다. 그래서 적이 한 종류여도 성립하고,
+  // 사거리가 곧 영향권이라 **놓는 자리가 처음으로 결정**이 된다.
+  slowtower: { label: '감속탑', body: 0x3f7f8f, roof: 0x1f4a58 },
+  fixtower:  { label: '수리탑', body: 0x6f8f4f, roof: 0x3d5a2a },
 };
 // 소유자 구분은 지붕(포인트)에만 준다 — 건물 전체 색은 종류를 나타내야 하므로
 const OWNER_COLOR = { p: 0xffc94d, a: 0x5fa8ff };
 const OWNER_LABEL = { p: '내', a: '동료' };
 // 경비탑은 P.tower에 .cost/.hp가 없다 (tier별 t1/t2/t3로 나뉘어 있다, D82).
 // 새로 짓는 경비탑은 항상 tier1이므로 그 값을 읽는다.
+// 경비탑만 Lv.1 값이 TOWER_TIERS에서 나온다. 지원 타워는 제 P 항목에 배치값이 있다
 const buildCost = (kind) => cheeseCost(kind === 'tower' ? TOWER_TIERS[1].cost() : P[kind].cost);
 const buildHp = (kind) => (kind === 'tower' ? TOWER_TIERS[1].hp() : P[kind].hp);
+// 지원 타워의 Lv별 능력치 (D160) — 경비탑과 같은 "Lv.1 값 + 성장률" 방식
+const slowOf = (lv) => Math.min(P.slowtower.slowMax, P.slowtower.slow + P.slowtower.slowStep * (lv - 1));
+const slowRangeOf = (lv) => P.slowtower.range + P.slowtower.rangeStep * (lv - 1);
+const fixRangeOf = (lv) => P.fixtower.range + P.fixtower.rangeStep * (lv - 1);
+const fixEveryOf = (lv) => Math.max(P.fixtower.everyMin, P.fixtower.every - P.fixtower.everyStep * (lv - 1));
+const towerishHp = (kind, lv) =>
+  kind === 'tower' ? TOWER_TIERS[lv].hp() : Math.round(P[kind].hp * Math.pow(P[kind].hpGrow, lv - 1));
 
 function buildingAt(i, j) {
   const ob = obAtCell(i, j);
@@ -3112,6 +3160,48 @@ function makeBuildingMesh(kind, owner) {
   flag.position.set(flagAt[0], flagAt[1], flagAt[2]);
   flag.castShadow = true;
   g.add(flag);
+
+  // ---- 지원 타워 실루엣 (D160) ----
+  // 경비탑과 **한눈에 구분**돼야 한다. 쿼터뷰 20m에서 읽히는 건 실루엣과 색뿐이라
+  // 둘 다 경비탑의 '뿔 달린 돔'과 다른 형태를 준다:
+  //   감속탑 = 누운 원반(레이더). 넓게 훑는다는 느낌
+  //   수리탑 = 각진 상자 + 위로 뻗은 팔. 뭔가를 집는다는 느낌
+  if (kind === 'slowtower' || kind === 'fixtower') {
+    const head = new THREE.Group();
+    if (kind === 'slowtower') {
+      const disc = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.62, 0.62, 0.14, 16),
+        new THREE.MeshStandardMaterial({
+          color: 0x9fe0ff, roughness: 0.4,
+          emissive: new THREE.Color(0x2f7f9f), emissiveIntensity: 0.55 })
+      );
+      disc.castShadow = true;
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.16, 0.6, 8),
+        new THREE.MeshStandardMaterial({ color: 0x2f6070, roughness: 0.6 })
+      );
+      post.position.y = -0.34;
+      head.add(disc, post);
+    } else {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 0.42, 0.7),
+        new THREE.MeshStandardMaterial({
+          color: 0xcfe8a0, roughness: 0.5,
+          emissive: new THREE.Color(0x4f7f2f), emissiveIntensity: 0.4 })
+      );
+      box.castShadow = true;
+      const arm = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 0.75, 0.16),
+        new THREE.MeshStandardMaterial({ color: 0xe8f0d0, roughness: 0.45 })
+      );
+      arm.position.set(0.26, 0.55, 0);
+      arm.rotation.z = -0.32;
+      head.add(box, arm);
+    }
+    head.position.y = 2.42;
+    g.add(head);
+    g.userData.head = head;
+  }
 
   if (kind === 'tower') {
     // 포탑 머리 — 조준 대상 쪽으로 돈다 (연출 전용)
@@ -3234,7 +3324,7 @@ function clearAura(b) {
 function applyAura(b) {
   clearAura(b);
   const lv = b.tier || 1;
-  if (b.kind !== 'tower' || lv < AURA_FROM || P.look.auraAmp <= 0) return;
+  if (!TOWERISH[b.kind] || lv < AURA_FROM || P.look.auraAmp <= 0) return;
   const t = (lv - AURA_FROM) / (TOWER_MAXLV - AURA_FROM);
   const col = auraColor(lv);
   const amp = P.look.auraAmp;
@@ -3330,7 +3420,7 @@ function updateAuras() {
 
 function applyBuildingTierVisual(b) {
   shadowDirty();
-  const isTower = b.kind === 'tower';
+  const isTower = !!TOWERISH[b.kind];
   const lv = Math.max(1, Math.min(isTower ? TOWER_MAXLV : 3, b.tier || 1));
   // 공방은 예전 그대로 3단. 경비탑만 띠로 나눈다.
   const band = isTower ? towerBand(lv) : lv - 1;
@@ -3356,7 +3446,7 @@ function applyBuildingTierVisual(b) {
     pips.add(p);
   }
   // 포탑(경비탑 Lv.3은 y≈2.2까지 올라온다)보다 확실히 위 — 어디서도 안 가려진다
-  pips.position.y = b.kind === 'tower' ? 3.9 : 2.4;
+  pips.position.y = TOWERISH[b.kind] ? 3.9 : 2.4;
   b.mesh.add(pips);
   b.pips = pips;
 
@@ -3409,7 +3499,7 @@ function buildingPlacement(i, j, kind, asOrder = false, p = player) {
   if (i < 0 || j < 0 || i + 1 >= CELLS || j + 1 >= CELLS) return '맵 밖입니다';
   // 경비탑은 공방(어떤 tier든)이 실존해야 새로 지을 수 있다 (D82 기술 트리).
   // 실존 검사라 공방이 부서지면 이 자리에서 즉시 다시 막힌다.
-  if (kind === 'tower' && maxWorkshopTier(p.owner) < 1) return '공방이 필요합니다';
+  if (TOWERISH[kind] && maxWorkshopTier(p.owner) < 1) return '공방이 필요합니다';
   const cells = [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]];
   for (const [ci, cj] of cells) {
     // 고양이가 나타나는 띠에는 못 짓는다 (D138) — 지어 봐야 즉시 두들겨 맞는다.
@@ -3479,7 +3569,7 @@ function placeBuildingLocal(kind, i, j, owner, id) {
   }
   buildings.push(b);
   markNavDirty();
-  if (kind === 'workshop' || kind === 'tower') applyBuildingTierVisual(b);
+  if (kind === 'workshop' || TOWERISH[kind]) applyBuildingTierVisual(b);
   return b;
 }
 
@@ -3528,6 +3618,8 @@ function updateBuildings(dt) {
     if (b.ring) b.ring.visible = selectedBldgs.has(b);
     updateSelfBuild(b, dt);   // 경비탑은 혼자 지어진다 (D87)
     if (b.kind === 'tower') { updateTower(b, dt); continue; }
+    if (b.kind === 'slowtower') { updateSlowTower(b, dt); continue; }   // D160
+    if (b.kind === 'fixtower') { updateFixTower(b, dt); continue; }
     if (b.kind !== 'depot') continue;
     const busy = carriers().some((c) => c.job === 'mine' && c.depot === b);
     if (busy) minedCount++;
@@ -4014,14 +4106,14 @@ function nearestUpgradable(x, z, range) {
 
 // 건물별 최대 등급 (D145) — 공방은 여전히 3단, 경비탑만 15단이다.
 // 공방까지 15단으로 늘리지 않은 이유: 공방은 **기술 결정**이라 단계가 적어야 읽힌다.
-const maxTierOf = (b) => (b.kind === 'tower' ? P.tower.maxLv : 3);
+const maxTierOf = (b) => (TOWERISH[b.kind] ? P.tower.maxLv : 3);
 const atMaxTier = (b) => (b.tier || 1) >= maxTierOf(b);
 
 // 경비탑을 지금 못 올리는 게 **공방 등급 때문인가** (D145).
 // 옛 규칙은 "Lv.n 탑에는 Lv.n 공방"이라 3단에서 끝났다.
 // 이제 공방 한 단계가 탑 다섯 단계를 연다 — 공방을 끝까지 올릴 이유를 강화가 이어받는다.
 const towerUpgradeLocked = (b) =>
-  b.kind === 'tower' && (b.tier || 1) >= towerCapFor(b.owner);
+  TOWERISH[b.kind] && (b.tier || 1) >= towerCapFor(b.owner);
 
 // ---- F 키 하나로 두 가지 (D90) ----
 // **수리가 업그레이드보다 우선이다** — 금 간 벽은 시간이 급하고 업그레이드는 안 급하다.
@@ -4043,6 +4135,20 @@ function nearestCracked(x, z, range) {
 // 그걸 구분해 주는 건 누르기 **전에** 본 숫자뿐이다.
 // 파괴 확률이 0이 아니면 그것도 같이 띄운다. 프로텍트가 켜져 있으면 방패를 붙인다.
 function enhLabel(b, s, p) {
+  // 지원 타워도 같은 강화 곡선을 타지만(D145는 종류 무관) **보여줄 값이 다르다** (D160)
+  if (b.kind === 'slowtower' || b.kind === 'fixtower') {
+    const lv = (b.tier || 1) + 1;
+    const o = enhOdds(lv);
+    if (!o) return `${BLDG_INFO[b.kind].label} — 최고 등급`;
+    const pct = (v) => Math.round(v * 100);
+    const gain = b.kind === 'slowtower'
+      ? `감속 ${pct(slowOf(lv - 1))}% → ${pct(slowOf(lv))}%`
+      : `주기 ${fixEveryOf(lv - 1).toFixed(1)}s → ${fixEveryOf(lv).toFixed(1)}s`;
+    let t = `${BLDG_INFO[b.kind].label} Lv.${lv} — 치즈 ${s.cost} · 성공 ${pct(o.s)}% · ${gain}`;
+    if (o.d > 0.005) t += p.protectOn && p.parts >= P.tower.protectParts
+      ? ` · 파괴 ${pct(o.d)}% 🛡막음` : ` · 💥파괴 ${pct(o.d)}%`;
+    return t;
+  }
   if (b.kind !== 'tower') {
     return `${BLDG_INFO[b.kind].label} Lv.${(b.tier || 1) + 1} — 치즈 ${s.cost}` +
            (s.parts > 0 ? ` · 부품 ${s.parts}` : '');
@@ -4160,8 +4266,8 @@ function upgradeBlockedWhy(b, p = player) {
 function retierBuilding(b, lv) {
   const frac = b.maxHp > 0 ? Math.max(0, b.hp) / b.maxHp : 1;
   b.tier = lv;
-  if (b.kind === 'tower') {
-    b.maxHp = TOWER_TIERS[lv].hp();
+  if (TOWERISH[b.kind]) {
+    b.maxHp = towerishHp(b.kind, lv);
     b.hp = Math.max(1, b.maxHp * frac);
   }
   applyBuildingTierVisual(b);
@@ -4227,7 +4333,7 @@ function tryUpgradeBuilding(p = player) {
   // 경비탑 강화는 **한 번에 펑** — 플레이어를 묶지 않는다 (D88).
   // D87에서 경비탑 건설을 자유롭게 한 것과 같은 이유다: 전투 중에 쓰는 물건이라
   // 그 자리에 묶이면 쓸 수가 없다. 공방 업그레이드는 채널링을 유지한다(기술 결정이니까).
-  if (b.kind === 'tower') { attemptEnhance(p, b); return; }
+  if (TOWERISH[b.kind]) { attemptEnhance(p, b); return; }
   const { cost, parts: needParts, time } = upgradeSpec(b);
   p.cheese -= cost;
   p.parts -= needParts;
@@ -4262,7 +4368,7 @@ function upgradeBuildings(p, ids) {
   for (const b of list) {
     const why = upgradeBlockedWhy(b, p);
     if (why) { blocked = blocked || why; continue; }
-    if (b.kind === 'tower') {
+    if (TOWERISH[b.kind]) {
       // 하나하나가 독립 시행이다 — 다섯 개를 걸면 다섯 번 굴린다.
       // 여러 개가 한꺼번에 터질 수 있다는 뜻이고, 그게 일괄 강화의 값이자 위험이다.
       const r = attemptEnhance(p, b);
@@ -4403,7 +4509,7 @@ const bldgById = (id) => buildings.find((b) => b.id === id) || null;
 // 올릴 수 있는 것만 — 이미 3등급이거나 남의 것이면 셀 이유가 없다
 const selUpgradable = () =>
   [...selectedBldgs].filter((b) => buildings.includes(b) && !atMaxTier(b)
-    && (b.kind === 'tower' || b.kind === 'workshop'));
+    && (TOWERISH[b.kind] || b.kind === 'workshop'));
 
 // 내가 명령할 수 있는 유닛 = **내 소유자 태그가 붙은 것**뿐이다 (D92-2단계).
 // 예전엔 일꾼만 'p'로 거르고 방어병은 전부 통과시켰다 (방어병에 owner가 없었으니까).
@@ -4629,6 +4735,54 @@ function updateWorkers(dt) {
 // 사거리 안의 적 체력을 깎아 **처치한다**. 적은 체력이 높아서(260~420) 탑 하나로는
 // 오래 걸리고, 처치하면 치즈를 준다 (D27). 웨이브는 스테이지마다 다시 채워지므로
 // 처치가 압박을 영구히 없애지는 않는다.
+// ---- 감속탑 (D160) ----
+// 피해를 안 준다. 사거리 안 적의 속도를 깎아 **다른 탑의 사격 시간을 늘린다** —
+// 그래서 혼자서는 아무 일도 안 하고, 경비탑 옆에 놓아야 값이 나온다.
+// 그게 이 타워의 존재 이유다: 처음으로 "어디에 놓느냐"가 결정이 된다.
+function updateSlowTower(b, dt) {
+  void dt;
+  if (b.underBuild) return;
+  const lv = b.tier || 1;
+  const R = slowRangeOf(lv), amt = slowOf(lv);
+  const R2 = R * R;
+  for (const e of enemies) {
+    const dx = e.x - b.cx, dz = e.z - b.cz;
+    if (dx * dx + dz * dz > R2) continue;
+    // 여러 감속탑이 겹치면 **가장 센 것 하나만** 먹는다 (합산하면 순식간에 정지한다)
+    if (amt > (e.slowNext || 0)) e.slowNext = amt;
+  }
+}
+
+// ---- 수리탑 (D160) ----
+// 반경 안의 금 간 벽을 자동으로 고친다. **치즈는 그대로 든다** —
+// 자동화하는 건 왕복이지 비용이 아니다 (D90의 수리비가 무의미해지면 안 된다).
+// 반경이 좁아서(Lv.1 10m) 벽 전체를 못 덮는다 → "어느 구간을 자동에 맡길까"가 결정이 된다.
+// 사방에서 벽이 깨지기 시작한(D150 공성 자폭묘) 뒤라야 성립하는 타워다.
+function updateFixTower(b, dt) {
+  if (b.underBuild) return;
+  b.fixT = (b.fixT || 0) - dt;
+  if (b.fixT > 0) return;
+  const lv = b.tier || 1;
+  b.fixT = fixEveryOf(lv);
+  const owner = ownerOf(b.owner);
+  const cost = P.fixtower.costPer;
+  if (!owner || owner.cheese < cost) return;
+  const R = fixRangeOf(lv), R2 = R * R;
+  // 가장 심하게 갈라진 것부터 — 무너지기 직전을 먼저 살린다
+  let best = null, worst = 0;
+  for (const ob of obstacles.values()) {
+    if (ob.bedrock || ob.bldgRef || !ob.cracks) continue;
+    const w = cellToWorld(ob.i, ob.j);
+    const dx = w.x - b.cx, dz = w.z - b.cz;
+    if (dx * dx + dz * dz > R2) continue;
+    if (ob.cracks > worst) { worst = ob.cracks; best = ob; }
+  }
+  if (!best) return;
+  owner.cheese -= cost;
+  repairWall(best);
+  spawnBuildFx(cellToWorld(best.i, best.j).x, cellToWorld(best.i, best.j).z);
+}
+
 function updateTower(b, dt) {
   // 짓는 중에는 쏘지 않는다 (D84) — 채널링 3~4초가 진짜 무방비여야 한다.
   // 예전엔 착공한 프레임부터 바로 사격해서 "짓는 동안 위험하다"가 성립하지 않았다.
@@ -7996,7 +8150,7 @@ function buildTimeOf(kind) {
 // 경비탑은 **고양이가 오는 걸 보고 급하게 세우는 것**이다. 그 순간 4초를 묶으면
 // 세우는 행위 자체가 자살이 되어 아무도 안 쓴다.
 // 대신 완성 전에는 못 쏘고(D84) 적에게 두들겨 맞으므로, "제때 세웠는가"는 여전히 값이다.
-const SELF_BUILD = { tower: true };
+const SELF_BUILD = { tower: true, slowtower: true, fixtower: true };   // 전부 혼자 올라간다 (D87·D160)
 // 원격 착공 사거리 (D128). 0이면 무제한 — 화면에 찍히는 곳이면 어디든 선다.
 // 너무 세면 여기를 조여서 "보이는 데까지만"으로 되돌릴 수 있다
 function remoteTooFar(p, i, j) {
@@ -8120,7 +8274,7 @@ const gui = new GUI({ title: '튜닝' });
   f.add(P.look, 'dangerZone', 0, 1, 1).name('★ 고양이 출몰 띠 표시').onChange(rebuildDangerRing);
   f.add(P.look, 'gaitAmp', 0, 2, 0.05).name('★ 적 걸음 반동 (0=미끄러짐)');
   f.add(P.look, 'auraAmp', 0, 2, 0.05).name('★ 오오라 강도 (0=끔)')
-    .onChange(() => { for (const b of buildings) if (b.kind === 'tower') applyAura(b); });
+    .onChange(() => { for (const b of buildings) if (TOWERISH[b.kind]) applyAura(b); });
   f.add(P.bomber, 'siegeRatio', 0, 1, 0.05).name('★ 자폭묘 공성 비율 (D150)');
   f.add(P.bomber, 'siegeHold', 0, 1, 0.05).name('★ 노출돼도 기지 치는 비율 (D157)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
@@ -10679,7 +10833,7 @@ function applyFull(f, msg) {
     nb.hp = b.hp;
     if (b.tier && b.tier !== nb.tier) {
       nb.tier = b.tier;
-      if (nb.kind === 'tower') nb.maxHp = TOWER_TIERS[nb.tier].hp();
+      if (TOWERISH[nb.kind]) nb.maxHp = towerishHp(nb.kind, nb.tier);
       applyBuildingTierVisual(nb);
     }
     if (!b.underBuild) finishBuild(nb);
@@ -11081,7 +11235,7 @@ function applySnapshot(m) {
         // ⚠ maxHp도 같이 옮긴다 (D145). 등급만 받으면 참가자 화면의 체력바는
         //    Lv.1 최대치(70)를 기준으로 그려져서 Lv.12 탑이 늘 꽉 찬 것처럼 보인다.
         b.tier = a[6];
-        if (b.kind === 'tower') b.maxHp = TOWER_TIERS[b.tier].hp();
+        if (TOWERISH[b.kind]) b.maxHp = towerishHp(b.kind, b.tier);
         applyBuildingTierVisual(b);
       }
       const wasUnder = b.underBuild;
@@ -11678,6 +11832,9 @@ function tick(dt) {
       // (repathT가 음수로 남아 있으므로 오래 기다린 쪽이 먼저 받는다)
       pathLeft = P.enemy.pathPerFrame > 0 ? P.enemy.pathPerFrame : 1e9;
       updateExposure();      // 벽 밖 판정 — 적 AI보다 먼저, 프레임당 한 번 (D153)
+      // 감속은 **매 프레임 새로 쌓는다** (D160) — 타워가 부서지거나 적이 사거리를
+      // 벗어나면 저절로 풀려야 한다. 지난 프레임 값을 쓰고 다음 것을 비운다.
+      for (const e of enemies) { e.slowMul = e.slowNext || 0; e.slowNext = 0; }
       for (const e of enemies) {
         e.vis.setOpacity(1);
         updateEnemy(e, dt);
@@ -11975,6 +12132,7 @@ window.__game = {
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
   towerStyle, spawnSplashFx, lobProjectile, projectiles, towerLevelColor, auraColor, auraSides, auraLayers,
+  TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
