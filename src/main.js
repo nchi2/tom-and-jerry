@@ -308,6 +308,17 @@ const P = {
     // 즉시 구매 (D145) — 기대비용의 110%를 내면 확정으로 산다
     buyMaxLv: 7, buyPremium: 1.10,
     protectParts: 3,    // 프로텍트 1회 = 부품 3개. 실패해도 **안 부서진다**
+    // ---- 광역 (D154) ----
+    // 고레벨 탑에 **역할**을 준다. 지금은 비싼 단일 표적기라 저레벨 여러 개보다
+    // 치즈당 화력이 10~60배 나쁘다(실측) — 숫자만 커져서는 존재 이유가 없다.
+    // 광역이 붙으면 "넓게 깔기"와 "하나를 뚫기"가 **다른 일**이 된다.
+    splashFrom: 8,      // 이 레벨부터 광역. 8강 = 오오라가 뜨는 자리(D148)와 같다
+    splashR0: 1.0,      // splashFrom에서의 반경
+    splashR1: 3.2,      // maxLv에서의 반경
+    splashFrac: 0.55,   // 주변 적이 받는 피해 = 본체 × 이 비율
+    // 연사 (D154) — 금색 띠는 한 번에 여러 발 쏜다. **총 화력은 그대로**고
+    // 한 발의 피해를 쪼갠다: 손맛만 바뀌고 밸런스는 안 건드린다
+    burstBand3: 3,
     // 공방 등급이 여는 상한 — 공방을 계속 올릴 이유를 강화가 이어받는다
     gate1: 5, gate2: 10, gate3: 15,
   },
@@ -4512,10 +4523,28 @@ function updateTower(b, dt) {
   b.reload = (b.reload || 0) - dt;
   if (!target) return;
   if (head) head.rotation.y = Math.atan2(target.x - b.cx, target.z - b.cz) + Math.PI;
+  const lv = b.tier || 1;
+  const st = towerStyle(lv);
+  // ---- 연사 (D154) ----
+  // 금색 띠는 한 번에 여러 발. **총 화력은 그대로** — 한 발의 피해를 쪼갠다.
+  // 손맛만 바뀌고 밸런스는 안 건드린다 (정현: "총알마냥 푱푱푱").
+  if (b.burstLeft > 0) {
+    b.burstT -= dt;
+    if (b.burstT <= 0) {
+      b.burstLeft--;
+      b.burstT = 0.07;
+      lobProjectile(b.cx, 1.5, b.cz, target,
+                    effTowerDmg(lv, ownerOf(b.owner)) / st.burst,
+                    1 + (lv - 1) * 0.5, b.owner, lv);
+    }
+    return;
+  }
   if (b.reload <= 0) {
-    // tier가 오를수록 투사체도 커지고 밝아진다 — "이펙트가 강력해짐"
-    lobProjectile(b.cx, 1.5, b.cz, target, effTowerDmg(b.tier || 1, ownerOf(b.owner)),
-                  1 + ((b.tier || 1) - 1) * 0.5, b.owner);
+    // 등급이 오를수록 투사체가 커지고 밝아지고, 띠마다 **모양과 궤적이 바뀐다**
+    lobProjectile(b.cx, 1.5, b.cz, target,
+                  effTowerDmg(lv, ownerOf(b.owner)) / st.burst,
+                  1 + (lv - 1) * 0.5, b.owner, lv);
+    if (st.burst > 1) { b.burstLeft = st.burst - 1; b.burstT = 0.07; }
     b.reload = T.reload();
   }
 }
@@ -4710,7 +4739,36 @@ function updateNodes(dt) {
 // ============================================================
 const guards = [];
 const projectiles = [];
+// ---- 강화 단계별 발사 방식 (D154) ----
+// 정현: "강화될 때마다 덩어리만 커진다. 각진 형태로, 총알마냥 푱푱푱."
+//
+// **질적 변화는 3띠, 연속 변화는 띠 안에서.** 15개 고유 비주얼은 만들 수도 읽을 수도 없고,
+// 띠만 있으면 고레벨에서 정체된다. 띠는 이미 있는 핍 색(D145)을 그대로 쓴다 —
+// 화면의 금색 탑이 곧 "연사 + 광역"이라 새 UI가 필요 없다.
+//   1~5   둥근 치즈를 높이 던진다 (지금까지의 것)
+//   6~10  **각진 파편**을 낮고 빠르게
+//   11~15 **길쭉한 탄환**을 직선으로 연사
 const projGeo = new THREE.SphereGeometry(0.16, 8, 6);
+const projGeoShard = new THREE.OctahedronGeometry(0.19, 0);       // 각진 파편
+const projGeoBullet = new THREE.CylinderGeometry(0.07, 0.11, 0.62, 6);   // 탄환
+
+// 탄환은 진행 방향으로 눕혀야 총알로 보인다 — 기하를 미리 회전시켜 굽는다
+projGeoBullet.rotateX(Math.PI / 2);
+
+// lv → 발사 방식. updateTower와 lobProjectile이 **같은 함수**를 본다.
+function towerStyle(lv) {
+  const band = towerBand(lv);                    // 0 · 1 · 2 (핍 색과 같은 계산)
+  const t = (lv - 1) / Math.max(TOWER_MAXLV - 1, 1);
+  const P2 = P.tower;
+  const splash = lv >= P2.splashFrom
+    ? P2.splashR0 + (P2.splashR1 - P2.splashR0)
+      * Math.min(1, Math.max(0, (lv - P2.splashFrom) / Math.max(TOWER_MAXLV - P2.splashFrom, 1)))
+    : 0;
+  if (band === 0) return { band, geo: projGeo,       arc: 1.6,  spd: 0.045, burst: 1, splash, spin: 10 };
+  if (band === 1) return { band, geo: projGeoShard,  arc: 0.85, spd: 0.028, burst: 1, splash, spin: 22 };
+  return { band, geo: projGeoBullet, arc: 0.12, spd: 0.012,
+           burst: Math.max(1, Math.round(P2.burstBand3)), splash, spin: 0, t };
+}
 const projMat = new THREE.MeshStandardMaterial({
   color: 0xffe9a8, roughness: 0.5,
   emissive: new THREE.Color(0xd8a63a), emissiveIntensity: 0.5,
@@ -4844,25 +4902,33 @@ function clearGuards(owner) {
 // 던지기 — 포물선이라 벽을 넘어간다 (경비탑·방어병 공용)
 // scale: 경비탑 tier가 오를수록 투사체가 커지고 밝아지게 (D82 — "이펙트 강력해짐")
 // owner = 이 투사체를 쏜 쪽. 처치 보상이 그 사람에게 간다 (D92-2단계)
-function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p') {
-  sfx('tower');                    // 던지는 소리 — 클라의 껍데기에서도 난다 (D122)
+function lobProjectile(x, y, z, e, dmg, scale = 1, owner = 'p', lv = 1) {
+  sfx(towerBand(lv) === 2 ? 'towerHi' : 'tower');   // 금색 띠는 총성 (D154·D122)
   // 참가자 화면에서는 **경비탑이 아무것도 안 하는 것처럼 보였다** (D101).
   // 시뮬은 호스트만 도니까 updateTower가 클라에서 안 돌고, 그래서 포탑 머리도
   // 안 돌고 투사체도 안 날았다. 피해만 조용히 들어가서 "포탑이 공격을 안 한다"가 된다.
   // 던지는 순간을 그대로 알려 주고, 클라는 **피해 없는 껍데기**로 같은 걸 그린다.
-  wallEv({ a: 4, x: r2(x), y: r2(y), z: r2(z), e: e.id, s: scale, o: owner });
-  const m = new THREE.Mesh(projGeo, scale > 1 ? projMat.clone() : projMat);
-  if (scale > 1) {
-    m.material.emissiveIntensity = 0.5 + (scale - 1) * 0.6;
-    m.material.color.setHex(scale > 1.5 ? 0xffb347 : 0xffe9a8);
-  }
-  m.scale.setScalar(scale);
+  // ⚠ lv를 같이 보낸다 (D154). 안 보내면 참가자 화면에서만 **모양이 옛날 것**이 된다 —
+  //    D101이 겪은 것과 같은 종류의 어긋남이다 (표시 경로가 둘이라는 것)
+  wallEv({ a: 4, x: r2(x), y: r2(y), z: r2(z), e: e.id, s: scale, o: owner, L: lv });
+  const st = towerStyle(lv);
+  const m = new THREE.Mesh(st.geo, projMat.clone());
+  // 띠가 올라갈수록 뜨겁고 밝게 — 청록 파편은 하늘빛, 금색 탄환은 백금빛
+  const col = st.band === 2 ? 0xfff2c0 : st.band === 1 ? 0xbfe6ff : (scale > 1.5 ? 0xffb347 : 0xffe9a8);
+  m.material.color.setHex(col);
+  m.material.emissive.setHex(col);
+  m.material.emissiveIntensity = 0.5 + st.band * 0.85 + (scale - 1) * 0.3;
+  // 탄환은 굵기만 조금 키운다 — 길이까지 커지면 화면을 가로지르는 막대가 된다
+  if (st.band === 2) m.scale.set(1 + (scale - 1) * 0.3, 1 + (scale - 1) * 0.3, 1);
+  else m.scale.setScalar(scale);
   m.position.set(x, y, z);
-  m.castShadow = true;
+  m.castShadow = st.band < 2;
   scene.add(m);
   projectiles.push({
-    mesh: m, t: 0, dur: 0.35 + Math.hypot(e.x - x, e.z - z) * 0.045,
+    mesh: m, t: 0,
+    dur: (st.band === 2 ? 0.10 : 0.35) + Math.hypot(e.x - x, e.z - z) * st.spd,
     x0: x, y0: y, z0: z, target: e, dmg, owner,
+    arc: st.arc, spin: st.spin, splash: st.splash, band: st.band, lv,
   });
 }
 
@@ -4875,15 +4941,30 @@ function updateProjectiles(dt) {
     const tz = q.target && enemies.includes(q.target) ? q.target.z : q.mesh.position.z;
     q.mesh.position.set(
       q.x0 + (tx - q.x0) * p,
-      q.y0 + Math.sin(p * Math.PI) * 1.6,   // 포물선 — 벽을 넘어간다
+      q.y0 + Math.sin(p * Math.PI) * (q.arc ?? 1.6),   // 포물선 — 벽을 넘어간다
       q.z0 + (tz - q.z0) * p
     );
-    q.mesh.rotation.x += dt * 10;
+    if (q.spin) { q.mesh.rotation.x += dt * q.spin; q.mesh.rotation.z += dt * q.spin * 0.6; }
+    else q.mesh.lookAt(tx, q.mesh.position.y, tz);   // 탄환은 진행 방향을 본다
     if (p >= 1) {
       // 클라의 투사체는 껍데기다 (dmg 0). 그래도 damageEnemy를 태우면 처치·보상
       // 경로까지 밟으므로 호스트에서만 때린다 (D101).
       if (q.dmg > 0 && netAuthoring() && q.target && enemies.includes(q.target))
         damageEnemy(q.target, q.dmg, ownerOf(q.owner));
+      // ---- 광역 (D154) ----
+      // 연출은 **모두가** 본다 (클라의 껍데기 투사체도 여기 온다) — 어디까지 닿았는지
+      // 눈으로 읽혀야 "화력이 느껴진다"가 성립한다. 피해는 호스트만 준다.
+      if (q.splash > 0) {
+        spawnSplashFx(q.mesh.position.x, q.mesh.position.z, q.splash, q.band);
+        if (q.dmg > 0 && netAuthoring()) {
+          const r2s = q.splash * q.splash, sd = q.dmg * P.tower.splashFrac;
+          for (const e of [...enemies]) {
+            if (e === q.target) continue;
+            const dx = e.x - q.mesh.position.x, dz = e.z - q.mesh.position.z;
+            if (dx * dx + dz * dz <= r2s) damageEnemy(e, sd, ownerOf(q.owner));
+          }
+        }
+      }
       scene.remove(q.mesh);
       if (q.mesh.material !== projMat) q.mesh.material.dispose();
       projectiles.splice(k, 1);
@@ -7115,6 +7196,30 @@ function spawnTowerBoom(x, z, lv = 1) {
   }
 }
 
+// ---- 광역 착탄 (D154) ----
+// 정현: "펑 터지는 이미지가 있어서 범위가 어느 정도인지 짐작이 되고 화력이 느껴지게."
+// 그래서 **링이 정확히 splash 반경까지** 자란다 — 눈대중이 실제 판정과 같아야
+// "저기까지 닿는구나"를 배울 수 있다. 장식이 아니라 정보다.
+function spawnSplashFx(x, z, radius, band) {
+  const col = band === 2 ? 0xffd98a : 0x9fe0ff;
+  // 1) 반경까지 자라는 링 — ringGeo는 바깥 반지름 0.62라 그만큼 나눠 스케일을 잡는다
+  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+    color: col, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.07, z);
+  ring.renderOrder = 998;
+  ring.scale.setScalar(0.35);
+  scene.add(ring);
+  fx.push({ mesh: ring, t: 0, dur: 0.30, kind: 'ring', gain: radius / 0.62 });
+  // 2) 짧은 섬광
+  const ball = new THREE.Mesh(boomGeo, new THREE.MeshBasicMaterial({
+    color: col, transparent: true, opacity: 0.75, depthWrite: false }));
+  ball.position.set(x, 0.7, z);
+  ball.renderOrder = 997;
+  scene.add(ball);
+  fx.push({ mesh: ball, t: 0, dur: 0.18, kind: 'flash', s0: radius * 0.25, s1: radius * 0.8 });
+}
+
 // 🛡가 막았을 때 — 청록 방패막이 한 번 부풀었다 꺼진다 (D148)
 function spawnShieldFx(x, z) {
   const dome = new THREE.Mesh(
@@ -8057,6 +8162,11 @@ const adv = gui.addFolder('고급 — 전체 설정');
   f.add(P.tower, 'luck', 0.2, 2, 0.05).name('🎲 성공률 배수');
   f.add(P.tower, 'risk', 0, 2, 0.05).name('💥 파괴율 배수 (0=없음)');
   f.add(P.tower, 'protectParts', 1, 10, 1).name('🛡 프로텍트 부품값');
+  f.add(P.tower, 'splashFrom', 1, 15, 1).name('💥 광역 시작 Lv');
+  f.add(P.tower, 'splashR0', 0, 5, 0.1).name('💥 광역 반경 (시작)');
+  f.add(P.tower, 'splashR1', 0, 8, 0.1).name('💥 광역 반경 (15강)');
+  f.add(P.tower, 'splashFrac', 0, 1, 0.05).name('💥 광역 피해 비율');
+  f.add(P.tower, 'burstBand3', 1, 6, 1).name('연사 발수 (11강~)');
   f.add(P.tower, 'buyMaxLv', 1, 15, 1).name('즉시 구매 상한 Lv');
   f.add(P.tower, 'buyPremium', 1.0, 2.0, 0.05).name('즉시 구매 웃돈 배수');
   f.add(P.tower, 'gate1', 1, 15, 1).name('공방 Lv.1이 여는 상한');
@@ -9474,6 +9584,12 @@ function sfx(kind) {
     case 'hit':   beep({ freq: 180, to: 70, type: 'triangle', dur: 0.09, vol: 0.35 });       // 적을 때림
                   noise({ dur: 0.06, vol: 0.2, lo: 900 }); break;
     case 'tower': beep({ freq: 760, to: 380, type: 'sine', dur: 0.09, vol: 0.28 }); break;   // 포탑 투척
+    // 금색 띠(11강~)의 연사음 (D154) — 던지는 소리가 아니라 **총성**이다.
+    // 짧고 날카롭게. minGap에 걸려 연사가 한 발로 들리지 않게 dur도 짧다
+    case 'towerHi':
+      beep({ freq: 1500, to: 620, type: 'square', dur: 0.045, vol: 0.20 });
+      noise({ dur: 0.035, vol: 0.12, lo: 2200 });
+      break;
     case 'boom':  noise({ dur: 0.42, vol: 0.7, lo: 380 });                                    // 폭발
                   beep({ freq: 120, to: 38, type: 'sawtooth', dur: 0.38, vol: 0.45 }); break;
     case 'caught':beep({ freq: 220, to: 60, type: 'sawtooth', dur: 0.5, vol: 0.55 }); break;
@@ -10823,7 +10939,7 @@ function applySnapshot(m) {
       // 그 결과는 스냅샷의 체력으로 온다.
       const tgt = enemies.find((q) => q.id === e.e);
       if (tgt) {
-        lobProjectile(e.x, e.y, e.z, tgt, 0, e.s, e.o);
+        lobProjectile(e.x, e.y, e.z, tgt, 0, e.s, e.o, e.L || 1);
         // 던진 포탑의 머리를 목표 쪽으로 돌려 준다 — 안 돌면 여전히 죽어 보인다
         let best = null, bd = 2.6;
         for (const b of buildings) {
@@ -11658,6 +11774,7 @@ window.__game = {
   tryUpgradeBuilding, cancelUpgrade, nearestUpgradable, upgradeSpec, upgradeBlockedWhy,
   attemptEnhance, enhOdds, expectedCostTo, expectedCostFrom, buyPrice, buyPriceFrom,
   auras, applyAura, updateAuras, updateSelbar, spawnTowerBoom, spawnShieldFx, applyEnemyGait, GAIT,
+  towerStyle, spawnSplashFx, lobProjectile, projectiles,
   upgradeAction, repairAction, tryRepairWall,
   buyTarget, tryBuyTier, towerCapFor, ENH, TOWER_TIERS, TOWER_MAXLV,
   toggleProtect, retierBuilding, enhLabel, atMaxTier, destroyBuilding,
