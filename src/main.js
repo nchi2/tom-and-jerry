@@ -425,7 +425,7 @@ const P = {
   // 겉모습 (D134). 텍스처는 코드로 굽는다 — 파일도 라이선스도 없다
   // ---- 테스트 도구 (D165) ----
   // 게임 규칙이 아니라 **개발 편의**다. 값은 저장되지 않고 새 판에서 1로 돌아간다.
-  debug: { timeScale: 1 },
+  debug: { timeScale: 1, showroomScale: 2.5 },
   look: { gaitAmp: 1.0, auraAmp: 1.0,   // 오오라 전체 강도 (D155). 0이면 오오라 없음   // 적 걸음 반동 크기 (D149). 0 = 예전처럼 미끄러진다
     floorTex: 1,      // 바닥 타일 (0이면 예전 단색 + 격자선)
     wallTex: 1,       // 벽돌 벽
@@ -8478,7 +8478,7 @@ const gui = new GUI({ title: '튜닝' });
   //   TEST에 항목을 추가하면 이 목록에도 넣어야 한다 (아래 검사가 잡아 준다).
   const TEST_KEYS = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
     '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
-    '적 전멸', '톰 소환'];
+    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기'];
   const proxy = {};
   for (const k of TEST_KEYS) proxy[k] = () => TEST[k]();
   for (const k of TEST_KEYS) f.add(proxy, k).name(k);
@@ -9405,6 +9405,7 @@ function restart() {
   // ⚠ 처음엔 beginMatch 쪽 정리 블록에 넣었는데 restart()가 그 경로를 안 타서
   //   실측에서 "재시작 후 ×8"이 그대로 나왔다. 새 판이 **반드시** 지나는 자리는 여기다.
   P.debug.timeScale = 1;
+  exitShowroom();          // 쇼룸을 켠 채로 다시 시작하면 모델이 판에 남는다 (D166)
   for (const f of [...fx]) { scene.remove(f.mesh); f.mesh.material.dispose(); }
   fx.length = 0;
   popping.length = 0;
@@ -9913,15 +9914,202 @@ const TEST = {
   },
   '적 전멸': () => { for (const e of [...enemies]) damageEnemy(e, 1e9, localPlayer()); },
   '톰 소환': () => { spawnBoss(); },
+  '🏛 에셋 쇼룸 열기': () => { enterShowroom(); },
 };
 // GUI가 이름 목록을 따로 들고 있으므로(TDZ 회피) **어긋나면 여기서 알린다**.
 // 조용히 빠지면 버튼 하나가 죽은 채로 남는다.
 if (typeof console !== 'undefined') {
   const want = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
     '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
-    '적 전멸', '톰 소환'];
+    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기'];
   const miss = Object.keys(TEST).filter((k) => !want.includes(k));
   if (miss.length) console.warn('[D165] 테스트 버튼 목록에 빠진 항목:', miss);
+}
+
+
+// ============================================================
+// 에셋 쇼룸 (D166)
+//  정현: "zip의 모든 내용을 맵에서 다 펼쳐진 상태로 캐릭터로 돌아다니며 볼 수 있을까?"
+//
+//  목록을 읽는 것보다 **걸어 다니며 보는 게** 빠르다 — 특히 우리 채택 기준이
+//  "쿼터뷰 20m에서 30~50픽셀일 때 구분되는가"라, 실제 카메라·조명·스케일로 봐야
+//  판단이 선다. 별도 뷰어 앱으로는 그걸 알 수 없다.
+//
+//  ⚠ 순수 **개발 도구**다. 시뮬을 건드리지 않는다 — 적도 자원도 없다.
+//     나가려면 ESC 메뉴 → 다시 시작.
+//  ⚠ 디렉터리 목록 API가 없어 파일 이름을 여기 굽는다. 팩을 갈면 이 목록도 갈아야 한다.
+const TD_MODELS = [
+  'detail-crystal', 'detail-crystal-large', 'detail-dirt', 'detail-dirt-large', 'detail-rocks',
+  'detail-rocks-large', 'detail-tree', 'detail-tree-large', 'enemy-ufo-a',
+  'enemy-ufo-a-weapon', 'enemy-ufo-b', 'enemy-ufo-b-weapon', 'enemy-ufo-beam',
+  'enemy-ufo-beam-burst', 'enemy-ufo-c', 'enemy-ufo-c-weapon', 'enemy-ufo-d',
+  'enemy-ufo-d-weapon', 'selection-a', 'selection-b', 'snow-detail-crystal',
+  'snow-detail-crystal-large', 'snow-detail-dirt', 'snow-detail-dirt-large',
+  'snow-detail-rocks', 'snow-detail-rocks-large', 'snow-detail-tree', 'snow-detail-tree-large',
+  'snow-tile', 'snow-tile-bump', 'snow-tile-corner-inner', 'snow-tile-corner-large',
+  'snow-tile-corner-outer', 'snow-tile-corner-round', 'snow-tile-corner-square',
+  'snow-tile-crossing', 'snow-tile-crystal', 'snow-tile-dirt', 'snow-tile-end',
+  'snow-tile-end-round', 'snow-tile-hill', 'snow-tile-river-bridge', 'snow-tile-river-corner',
+  'snow-tile-river-slope', 'snow-tile-river-slope-large', 'snow-tile-river-straight',
+  'snow-tile-river-transition', 'snow-tile-river-waterfall', 'snow-tile-rock',
+  'snow-tile-slope', 'snow-tile-spawn', 'snow-tile-spawn-end', 'snow-tile-spawn-end-round',
+  'snow-tile-spawn-round', 'snow-tile-split', 'snow-tile-straight', 'snow-tile-straight-slope',
+  'snow-tile-straight-slope-large', 'snow-tile-transition', 'snow-tile-tree',
+  'snow-tile-tree-double', 'snow-tile-tree-quad', 'snow-tile-wide-corner',
+  'snow-tile-wide-split', 'snow-tile-wide-straight', 'snow-tile-wide-transition',
+  'snow-wood-structure', 'snow-wood-structure-high', 'snow-wood-structure-high-part',
+  'snow-wood-structure-part', 'spawn-round', 'spawn-square', 'tile', 'tile-bump',
+  'tile-corner-inner', 'tile-corner-large', 'tile-corner-outer', 'tile-corner-round',
+  'tile-corner-square', 'tile-crossing', 'tile-crystal', 'tile-dirt', 'tile-end',
+  'tile-end-round', 'tile-hill', 'tile-river-bridge', 'tile-river-corner', 'tile-river-slope',
+  'tile-river-slope-large', 'tile-river-straight', 'tile-river-transition',
+  'tile-river-waterfall', 'tile-rock', 'tile-slope', 'tile-spawn', 'tile-spawn-end',
+  'tile-spawn-end-round', 'tile-spawn-round', 'tile-split', 'tile-straight',
+  'tile-straight-slope', 'tile-straight-slope-large', 'tile-transition', 'tile-tree',
+  'tile-tree-double', 'tile-tree-quad', 'tile-wide-corner', 'tile-wide-split',
+  'tile-wide-straight', 'tile-wide-transition', 'tower-round-base', 'tower-round-bottom-a',
+  'tower-round-bottom-b', 'tower-round-bottom-c', 'tower-round-build-a', 'tower-round-build-b',
+  'tower-round-build-c', 'tower-round-build-d', 'tower-round-build-e', 'tower-round-build-f',
+  'tower-round-crystals', 'tower-round-middle-a', 'tower-round-middle-b',
+  'tower-round-middle-c', 'tower-round-roof-a', 'tower-round-roof-b', 'tower-round-roof-c',
+  'tower-round-top-a', 'tower-round-top-b', 'tower-round-top-c', 'tower-square-bottom-a',
+  'tower-square-bottom-b', 'tower-square-bottom-c', 'tower-square-build-a',
+  'tower-square-build-b', 'tower-square-build-c', 'tower-square-build-d',
+  'tower-square-build-e', 'tower-square-build-f', 'tower-square-middle-a',
+  'tower-square-middle-b', 'tower-square-middle-c', 'tower-square-roof-a',
+  'tower-square-roof-b', 'tower-square-roof-c', 'tower-square-top-a', 'tower-square-top-b',
+  'tower-square-top-c', 'weapon-ammo-arrow', 'weapon-ammo-boulder', 'weapon-ammo-bullet',
+  'weapon-ammo-cannonball', 'weapon-ballista', 'weapon-cannon', 'weapon-catapult',
+  'weapon-turret', 'wood-structure', 'wood-structure-high', 'wood-structure-high-part',
+  'wood-structure-part'
+];
+const TD_DIR = 'models/td/';
+
+// 모델 크기 배수 — Kenney 타일은 1유닛 기준이고 우리 셀은 1.5m다.
+// 게임 안에서 어떻게 보일지 판단하려면 **우리 스케일로** 놓고 봐야 한다 (경비탑은 2x2 = 3m).
+let showroom = null;   // { group, families: Map<이름, {x,z}> }
+
+// 이름표 — 캔버스 스프라이트. 항상 카메라를 본다
+function makeTagSprite(text, scale = 1) {
+  const cv = document.createElement('canvas');
+  const m0 = cv.getContext('2d');
+  m0.font = 'bold 26px system-ui, sans-serif';
+  cv.width = Math.ceil(m0.measureText(text).width) + 24;
+  cv.height = 40;
+  const h = cv.getContext('2d');
+  h.font = 'bold 26px system-ui, sans-serif';
+  h.fillStyle = 'rgba(10,14,22,0.82)';
+  h.fillRect(0, 0, cv.width, cv.height);
+  h.fillStyle = '#cfe4ff';
+  h.textBaseline = 'middle';
+  h.fillText(text, 12, cv.height / 2);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
+  sp.scale.set((cv.width / 90) * scale, (cv.height / 90) * scale, 1);
+  sp.renderOrder = 999;
+  return sp;
+}
+
+function exitShowroom() {
+  if (showroomFolder) { showroomFolder.destroy(); showroomFolder = null; }
+  if (!showroom) return;
+  scene.remove(showroom.group);
+  showroom.group.traverse((o) => {
+    if (o.isMesh) o.geometry?.dispose?.();
+    o.material?.map?.dispose?.();
+    o.material?.dispose?.();
+  });
+  showroom = null;
+}
+
+// 계열(접두어)마다 줄을 나눠 격자로 편다 — 계열이 눈으로 묶여야 비교가 된다
+async function enterShowroom() {
+  exitShowroom();
+  if (!started) beginMatch();
+  restart();
+  // 판을 비운다 — 쫓기면서는 볼 수가 없다
+  P.enemy.count = 0; P.patrol.count = 0; P.threat.everyLevels = 0;
+  P.enemy.spawnDelay = 1e9; P.feral.every = 0; P.bomber.every = 0;
+  setEnemyCount(0);
+  clearEnemies();
+  flashMsg('에셋 쇼룸 — 불러오는 중…', '#ffd24a');
+
+  const group = new THREE.Group();
+  scene.add(group);
+  showroom = { group };
+
+  const byFam = new Map();
+  for (const n of TD_MODELS) {
+    const fam = n.split('-')[0];
+    if (!byFam.has(fam)) byFam.set(fam, []);
+    byFam.get(fam).push(n);
+  }
+  showroom.families = new Map();
+  // ---- 배치 (D166) ----
+  // ⚠ **맵 안에 들어와야 한다.** 처음엔 0에서 아래로 쭉 폈더니 절반이 맵 밖(검은 바닥)에
+  //    나가서 걸어갈 수가 없었다. 줄 수를 미리 세어 **세로 중앙**에 맞추고,
+  //    가로도 0을 중심으로 편다. 모델 배수(2.5)를 감안해 간격을 넓혔다.
+  const GAP = 4.0, ROWGAP = 5.0, PERROW = 16;
+  let rows = 0;
+  for (const list of byFam.values()) rows += Math.ceil(list.length / PERROW) + 1;
+  const z0 = -Math.min(rows * ROWGAP, (CELLS * CS) - 16) / 2;   // 맵을 안 넘게
+  const x0 = -((PERROW - 1) * GAP) / 2;
+  let row = 0, loaded = 0, failed = 0;
+  const loader = new GLTFLoader();
+  for (const [fam, list] of byFam) {
+    const head = makeTagSprite('▶ ' + fam + '  (' + list.length + ')', 1.8);
+    head.position.set(x0 - GAP * 1.2, 3.0, z0 + row * ROWGAP);
+    group.add(head);
+    showroom.families.set(fam, { x: x0, z: z0 + row * ROWGAP - 5 });   // 순간이동 지점
+    for (let k = 0; k < list.length; k++) {
+      const name = list[k];
+      const x = x0 + (k % PERROW) * GAP;
+      const z = z0 + (row + Math.floor(k / PERROW)) * ROWGAP;
+      try {
+        const gltf = await new Promise((res, rej) =>
+          loader.load(TD_DIR + name + '.glb', res, undefined, rej));
+        const m = gltf.scene;
+        m.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        m.position.set(x, 0, z);
+        m.scale.setScalar(P.debug.showroomScale);
+        group.add(m);
+        loaded++;
+      } catch { failed++; }   // 못 읽은 것도 이름표는 남긴다 — 무엇이 빠졌는지 보이게
+      const tag = makeTagSprite(name);
+      tag.position.set(x, 2.3, z);
+      group.add(tag);
+    }
+    row += Math.ceil(list.length / PERROW) + 1;
+  }
+  // 제일 보고 싶은 건 타워다 — 거기서 시작한다
+  gotoFamily('tower');
+  buildShowroomFolder();
+  flashMsg(`쇼룸 ${loaded}/${TD_MODELS.length}개${failed ? ' (실패 ' + failed + ')' : ''}` +
+           ' — WASD로 둘러보기 · G 패널에서 계열 이동 · 나가려면 ESC → 다시 시작', '#8fd6ff');
+}
+
+// 계열 앞으로 순간이동. 160개를 걸어서 훑는 건 그것대로 노동이다
+function gotoFamily(fam) {
+  if (!showroom || !showroom.families) return;
+  const at = showroom.families.get(fam);
+  if (!at) return;
+  const me = localPlayer();
+  me.x = at.x; me.z = at.z;
+  flashMsg('▶ ' + fam, '#8fd6ff');
+}
+
+// 쇼룸을 열 때만 생기는 GUI 폴더 (계열 목록은 실제로 불러온 것에서 나온다)
+let showroomFolder = null;
+function buildShowroomFolder() {
+  if (showroomFolder) { showroomFolder.destroy(); showroomFolder = null; }
+  if (!showroom || !showroom.families) return;
+  const f = gui.addFolder('🏛 쇼룸 — 계열로 이동');
+  const jump = {};
+  for (const fam of showroom.families.keys()) jump[fam] = () => gotoFamily(fam);
+  for (const fam of Object.keys(jump)) f.add(jump, fam).name(fam);
+  f.add(P.debug, 'showroomScale', 0.5, 6, 0.5).name('모델 크기 배수 (다시 열어야 반영)');
+  f.open();
+  showroomFolder = f;
 }
 
 function flashMsg(text, color = '#6ee07a') {
@@ -12562,6 +12750,7 @@ window.__game = {
   towerStyle, spawnSplashFx, lobProjectile, projectiles, projGeo, projGeoBullet, projGeoShard, towerLevelColor, auraColor, auraSides, auraLayers,
   TOWERISH, slowOf, slowRangeOf, fixRangeOf, fixEveryOf, towerishHp, updateSlowTower, updateFixTower,
   beginTutorial, TUT_STEPS, tutWallGuide, tutTowerGuide, tutPointSlot, stepBy, TEST,
+  enterShowroom, exitShowroom, TD_MODELS,
   loadHof, saveHof, openHof, renderHof, commitHofName, hofQualifies,
   get hofPending() { return hofPending; }, set hofPending(v) { hofPending = v; },
   get tut() { return tut; }, get tutGuide() { return tutGuide; },
