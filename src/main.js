@@ -501,7 +501,8 @@ const P = {
            waves: 3, waveGap: 40,
            // 무한 모드 (D124). 한 번 막아내면 이긴 것이고, 계속하기를 누르면 라운드가 오른다
            endlessPrep: 300,     // 라운드 사이 준비 시간(초). 첫 판과 **같은 5분**을 준다 (D128)
-           endlessGrow: 1.35,    // 라운드마다 물량 배율
+           bossPerWave: 1,      // 공세 차수마다 나오는 톰 수 (D158)
+    endlessGrow: 1.35,    // 라운드마다 물량 배율
            endlessBoost: 0.12,   // 라운드마다 강화 배율에 더하는 값
            darkAmt: 0.8 },   // 몸을 얼마나 어둡게 (1이면 새까맣다)
   // 랜덤 맵 (D117). 분포의 규칙은 여기서 조절한다
@@ -598,8 +599,16 @@ const BUILD_SLOTS = [
   { key: 'tower', label: '경비탑', role: '자동 사격', size: 2, need: 1, cost: () => cheeseCost(TOWER_TIERS[1].cost()) },
   { key: 'melee', label: '근접병', role: '싸움', size: 1, need: 1, cost: () => guardCost('melee', localPlayer().owner) },
   { key: 'archer', label: '사수', role: '싸움(원거리)', size: 1, need: 2, cost: () => guardCost('archer', localPlayer().owner) },
-  { key: 'elite', label: '정예병', role: '싸움(강함)', size: 1, need: 3, cost: () => guardCost('elite', localPlayer().owner) },
+  // 8번은 정예병에서 **🛡 프로텍트 토글**로 바꿨다 (D159).
+  // 정현: "프로텍트를 어떻게 켜야 하는지 잘 모르겠음. 정예병 자리를 빼고 거기에 소개를."
+  // 방어병은 어차피 기획에서 뺐고(D146), 프로텍트(R)는 **어디에도 안 적혀 있었다** —
+  // 강화가 이 게임의 중심이 된 지금 그게 핫바에 없을 이유가 없다.
+  // 이 슬롯은 **들리지 않는다** — 누르면 바로 켜지고 꺼지는 스위치다 (아래 isToggleSlot).
+  { key: 'protect', label: '🛡 프로텍트', role: 'R — 강화 파괴 막기', size: 0, need: 0,
+    cost: () => P.tower.protectParts },
 ];
+// 손에 드는 게 아니라 **즉시 실행**되는 슬롯 (D159)
+const isToggleSlot = (sl) => !!sl && sl.key === 'protect';
 
 // 잠긴 이유 (없으면 null) — 핫바와 실제 거부 판정이 같은 함수를 본다
 const slotLockReason = (sl) =>
@@ -4728,6 +4737,15 @@ function damageEnemy(e, dmg, by = player) {
   // 보스 처치 = 승리 (D83) — "버티기"가 아니라 "실제로 죽이기"가 승리 조건이 된다.
   // 웨이브 보충·탐욕 서지 대상도 아니다 — 1회성 결전이라 여기서 끝낸다.
   if (e.type === 'boss') {
+    // ⚠ 최후의 공세 **중에 나온 톰**(D158)은 준비 국면을 다시 열지 않는다.
+    //    안 그러면 공세 중 톰을 다 잡는 순간 판이 준비 국면으로 되돌아간다
+    //    (실측으로 걸렸다: 전멸시켰더니 victory가 아니라 phase='prep'이 됐다).
+    //    공세 중의 톰은 그냥 아주 센 적이고, 승리는 전멸이 결정한다.
+    if (finalPhase !== 'none') {
+      flashMsg(`톰을 쓰러뜨렸다! 치즈 +${reward}`, '#ffd24a');
+      refreshReach();
+      return;
+    }
     // 톰이 둘이므로(D107) **마지막 한 마리**가 죽어야 넘어간다.
     // 안 그러면 첫 톰을 잡는 순간 판이 끝나 버린다.
     const left = enemies.filter((q) => q.type === 'boss').length;
@@ -6120,6 +6138,14 @@ function releaseFinalWave() {
     enemies.push(e);
   }
   finalWaveNo++;
+  // ---- 차수마다 톰 하나 (D158) ----
+  // 정현: "최후의 공세에도 톰이 한 마리씩 등장하면 좋을 듯, 세 번 나눠 나오잖아."
+  // 차수를 세는 것이 곧 톰을 세는 것이 된다 — "남은 두 번"이 훨씬 무거워진다.
+  for (let k = 0; k < Math.round(P.final.bossPerWave); k++) {
+    const b = makeEnemy('boss', enemies.length);
+    darkenEnemy(b);
+    enemies.push(b);
+  }
   refreshReach();
 }
 
@@ -6149,8 +6175,13 @@ function updateFinalPhase(dt) {
     }
     // 공세 중에 새로 태어나는 놈도 검게 (탐욕 서지 등)
     for (const e of enemies) if (!e.vis.darkOn) darkenEnemy(e);
-    if (finalT >= finalDuration()) {
-      // **한 번 막아내면 거기서 이긴 것이다** (D124). 계속하기는 선택이지 숙제가 아니다.
+    // ---- 승리 = 전멸 (D158, D124 수정) ----
+    // 정현: "최후의 공세는 시간을 버티면 이기는 게 아니라 적을 다 잡아야 한다."
+    // 시간 조건은 **숨어서 이기는 길**을 열어 뒀다 — 벽 뒤에 웅크리고 시계만 보면
+    // 됐고, 그건 D83이 보스를 넣으며 없애려던 바로 그 문제다.
+    // 이제 마지막 차수까지 나온 뒤 **판이 비면** 이긴다.
+    const allReleased = finalWaveNo >= finalWaves() && finalQueue.length === 0;
+    if (allReleased && enemies.length === 0) {
       commitRecord();
       const tag = endlessRound ? `무한 ${endlessRound}라운드 돌파!` : '최후의 공세를 막아냈다!';
       winGame(tag, true);
@@ -6204,7 +6235,11 @@ function resultLine(won) {
 
 const contBtn = document.getElementById('overlay-cont');
 function setOverlayContinue(on) {
-  contBtn.textContent = `계속하기 — 무한 ${endlessRound + 1}라운드 [Enter]`;
+  // 다음 라운드가 얼마나 세지는지 같이 보여 준다 (D158) — 숫자만 오르면
+  // "몇 번째인가"만 알고 "얼마나 무서운가"를 모른다
+  const mul = Math.pow(P.final.endlessGrow, endlessRound);
+  contBtn.textContent =
+    `계속하기 — 무한 ${endlessRound + 1}라운드 (물량 ×${mul.toFixed(1)}) [Enter]`;
   contBtn.classList.toggle('hidden', !on);
 }
 contBtn.onclick = () => issueCommand({ t: 'endless' });
@@ -6896,6 +6931,8 @@ window.addEventListener('keydown', (e) => {
         k === UPGRADES.length ? { t: 'sell' }
         : k === UPGRADES.length + 1 ? { t: 'buyprt' }
         : { t: 'upg', k });
+      // 토글 슬롯(🛡)은 손에 안 들린다 — 누르는 즉시 켜지고 꺼진다 (D159)
+      else if (isToggleSlot(BUILD_SLOTS[k])) issueCommand({ t: 'prot' });
       // 같은 숫자를 다시 누르면 내려놓는다 (ESC와 같은 효과)
       else if (k < BUILD_SLOTS.length) {
         removeMode = false;
@@ -9418,6 +9455,15 @@ function updateHotbar() {
     // 잠긴 슬롯은 값 대신 **왜 못 쓰는지**를 보여준다 (D88) —
     // 비활성이라는 사실만 보여주면 뭘 해야 열리는지 알 수 없다
     if (lock) return `<div class="slot locked"><b>${k + 1}</b>${sl.label}<br><span class="why">${lock}</span></div>`;
+    // 🛡 프로텍트는 치즈가 아니라 **부품**을 쓰고, 켜짐/꺼짐이 곧 상태다 (D159)
+    if (isToggleSlot(sl)) {
+      const me = localPlayer();
+      const on = !!me.protectOn;
+      const n = Math.floor(me.parts / Math.max(1, P.tower.protectParts));
+      return `<div class="slot${on ? ' sel' : ' dim'}"><b>${k + 1} / R</b>${sl.label}` +
+        `<br><span class="role">${on ? '켜짐 — 파괴를 막는다' : '꺼짐'}</span>` +
+        `<br>부품 ${P.tower.protectParts} (${n}회분)</div>`;
+    }
     const cost = sl.cost();
     const afford = localPlayer().cheese >= cost;
     const cls = (k === buildSlot ? 'slot sel' : 'slot') + (afford ? '' : ' dim');
@@ -11251,6 +11297,16 @@ function captiveBanner() {
     `${m}:${String(sec).padStart(2, '0')}`, '', t < 60 ? 'urgent' : '');
 }
 
+// 게임 시작 직후 — 첫 고양이가 언제 오는지 (D158)
+// 정현: "게임 시작하고 적이 출몰하기까지 타이머가 중앙 상단에 보이면 좋을 듯."
+// 이 시간이 곧 **자리를 잡을 수 있는 시간**인데 화면 어디에도 없었다.
+function spawnCountdownBanner() {
+  if (enemyActive() || !started || victory) return '';
+  const left = Math.max(0, spawnDelayNow() - survival);
+  return timerRow('고양이가 오기까지 — 지금 자리를 잡으세요',
+    `${left.toFixed(0)}초`, '광맥 확보 · 일꾼', left < 10 ? 'urgent' : 'calm');
+}
+
 function finalBanner() {
   if (finalPhase === 'prep') {
     const left = Math.max(0, finalT);
@@ -11260,18 +11316,21 @@ function finalBanner() {
     return timerRow(lbl, mmss(left), '[B] 지금 시작', 'calm');
   }
   if (finalPhase === 'assault') {
-    const left = Math.max(0, finalDuration() - finalT);
-    // 몇 차까지 왔는지를 같이 보여 준다 (D124) — 남은 시간만으로는 압박이 안 읽힌다
+    // 승리 조건이 시간에서 **전멸**로 바뀌었으므로(D158) 시계 대신 **남은 적 수**를 센다.
+    // 시간을 계속 띄우면 "버티면 된다"로 읽혀서 실제 조건과 어긋난다.
     const tag = endlessRound ? `무한 ${endlessRound}라운드` : '최후의 공세';
+    const left = enemies.length;
+    const done = finalWaveNo >= finalWaves() && finalQueue.length === 0;
     return timerRow(`${tag} — ${finalWaveNo}/${finalWaves()}차`,
-      `${left.toFixed(0)}초`, '버텨라', left < 30 ? 'urgent' : '');
+      `적 ${left}`, done ? '남은 적을 전부 잡아라' : '다음 차수가 온다',
+      done && left <= 5 ? 'urgent' : '');
   }
   return '';
 }
 
 function updateBossBar() {
   const list = enemies.filter((e) => e.type === 'boss');
-  const banner = captiveBanner() + finalBanner();
+  const banner = captiveBanner() + spawnCountdownBanner() + finalBanner();
   if (!list.length && !banner) { bossBarEl.style.display = 'none'; return; }
   bossBarEl.style.display = 'block';
   if (!list.length) { bossBarEl.innerHTML = banner; return; }
@@ -11589,7 +11648,12 @@ function tick(dt) {
   if (net.role === 'client') { tickClient(dt); return; }
   if (edOn()) { tickEditor(dt); return; }
   pf('기타');
-  if (!paused && alive && started) {
+  // ---- 이긴 화면에서는 시계가 멈춘다 (D158) ----
+  // 정현: "최후의 공세가 끝나면 시작 안 하는 동안 돈이 쌓임. 게임이 잠깐 중지가 돼야 함."
+  // 맞다 — 승리 오버레이는 **결정을 기다리는 화면**인데 그동안 영토 수입과 일꾼이
+  // 계속 돌아서, 오래 고민할수록 다음 라운드가 쉬워졌다. 생존 시간도 같이 늘었다.
+  // 적은 이미 clearEnemies로 치워져 있으니 멈춰도 잃는 게 없다.
+  if (!paused && alive && started && !victory) {
     survival += dt;
     pf('플레이어'); updatePlayer(dt);
     pf('기타');
