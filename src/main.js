@@ -169,7 +169,11 @@ const P = {
   runner: { radius: 0.63, speed: 10.2, bldgDps: 16, hp: 750, reward: 4, dmg: 20 },
   // 자폭고양이 — 벽을 부술 수 있는 유일한 존재. 벽에 붙으면 터지고 자기도 죽는다.
   // 자폭묘는 느리다 — 다가오는 걸 보고 미리 처리하거나 피할 수 있어야 한다
-  bomber: { radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
+  bomber: {
+    // 공성 비율 (D150) — 이 비율의 자폭묘는 햄스터를 **아예 안 보고** 가장 가까운
+    // 건물로 직진한다. 스폰이 이미 사방이므로(D110) 목표만 갈라 주면 타격도 사방이 된다.
+    // 벽 파손이 "내가 없는 곳"에서 일어나야 수리탑(예정)의 배치 결정이 성립한다.
+    siegeRatio: 0.6, radius: 1.15, speed: 3.9, bldgDps: 40, hp: 1000, reward: 10, dmg: 45,
             blastRadius: 2.55, fuse: 0.9,
             // 상시 보충 (D121) — 이 주기마다 한 마리씩, maxLive까지
             every: 22, maxLive: 3, fromStage: 5,
@@ -2346,15 +2350,15 @@ const enemies = [];
 // 이제 맵 가장자리를 빙 둘러 나눠 세운다. 어느 쪽이 뚫릴지는 매번 달라진다.
 //   ringBias  0이면 완전히 고르게, 1이면 예전처럼 적 본진 쪽으로 몰린다
 //   ringJitter 각도를 흔드는 폭 — 매번 같은 자리에서 나오지 않게
-function enemySpawnPos(n) {
+function enemySpawnPos(n, bias = P.enemy.ringBias) {
   const R = Math.min(HALF - 2, P.enemy.spawnRing);
   const home = Math.atan2(ENEMY_SPAWN.z, ENEMY_SPAWN.x);
   // 황금각으로 둘레를 고르게 쪼갠 뒤, 본진 쪽으로 ringBias만큼 당긴다
   let a = n * 2.399963 + Math.random() * P.enemy.ringJitter;
-  if (P.enemy.ringBias > 0) {
+  if (bias > 0) {
     // 각도 차를 -π..π로 접어서 당겨야 반대편으로 돌아가지 않는다
     let d = ((home - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    a += d * P.enemy.ringBias;
+    a += d * bias;
   }
   const rr = R * (0.82 + Math.random() * 0.18);
   return {
@@ -2429,7 +2433,10 @@ function cryCatFor(type) {
 }
 
 function makeEnemy(type, n) {
-  const p = enemySpawnPos(n);
+  // 자폭묘는 본진 편향 없이 **완전한 원**에서 나온다 (D150).
+  // ringBias 0.25는 나머지 적의 "본진 쪽이 조금 더 무섭다"(D110)를 위한 것인데,
+  // 공성조에 그대로 먹이면 본진 반대편 사분면이 실측 0회가 된다 — 사방 타격이 죽는다.
+  const p = enemySpawnPos(n, type === 'bomber' ? 0 : undefined);
   const pal = CAT_PALETTES[type];
   const cry = cryCatFor(type);
   const vis = cry ? makeCryCat(1, pal ? pal.a : null) : makeCat(type);
@@ -2455,6 +2462,9 @@ function makeEnemy(type, n) {
     orbitDir: n % 2 ? 1 : -1, // 막혔을 때 훑어보는 방향 (좌우로 갈라진다)
     targetSince: 0,           // 지금 목표를 쫓기 시작한 시각 — 집착 피로 계산용 (D91)
     chaseTarget: null,        // 지금 노리는 햄스터 (무리를 갈라놓는 계산에 쓴다)
+    // 공성조 (D150) — 자폭묘만. 생성 시점에 정해 두면 스폰 경로(스테이지 표·상시 보충·
+    // 최후의 공세)가 몇 갈래든 같은 규칙을 탄다. ⚠ 호스트만 makeEnemy를 부른다(D92-6)
+    siege: type === 'bomber' && Math.random() < P.bomber.siegeRatio,
     probeT: 0,                // 현재 접근각을 유지할 남은 시간
     probes: 0, prowlT: 0, prowlX: 0, prowlZ: 0,
     atkT: 0, windup: 0, lungeT: 0, fuseT: 0, noHitT: 0,
@@ -5346,8 +5356,27 @@ function planEnemyPath(enemy) {
   // 3) 가장 가까운 햄스터 (플레이어/동료 중 기절 안 한 쪽)
   let gx = null, gz = null, raiding = false;
   {
+    // ---- 공성 자폭묘 (D150) — 햄스터를 아예 안 본다 ----
+    // 가장 가까운 건물이 영원한 목표다. 그리로 가는 길을 벽이 막으면 돌파 경로(아래)가
+    // 잡히고, hitWallAlways(D133)가 **처음 만나는 벽에서** 터뜨린다 — 결과적으로
+    // 각자 자기 스폰 방향의 벽면을 때린다. 벽 파손이 사방에서 일어나는 건 이 조합이다.
+    // 건물이 하나도 없으면 아래 일반 추격으로 떨어진다 (그냥 무는 자폭묘).
+    if (enemy.siege && buildings.length) {
+      if (!(enemy.raidTarget && buildings.includes(enemy.raidTarget))) {
+        let bBest = null, bD = Infinity;
+        for (const b of buildings) {
+          const dd = Math.hypot(b.cx - enemy.x, b.cz - enemy.z);
+          if (dd < bD) { bD = dd; bBest = b; }
+        }
+        enemy.raidTarget = bBest;
+      }
+      enemy.raidUntil = survival + 3600;    // 사실상 무기한 — 부서지면 위에서 다시 고른다
+      raiding = true;
+    }
     // 어그로: 쫓는 중에도 시야에 건물이 들어오면 한눈판다
-    if (enemy.raidTarget && buildings.includes(enemy.raidTarget) && survival < enemy.raidUntil) {
+    if (raiding) {
+      // 공성조가 이미 정했다 — 아래 일반 어그로는 건너뛴다
+    } else if (enemy.raidTarget && buildings.includes(enemy.raidTarget) && survival < enemy.raidUntil) {
       raiding = true;
     } else {
       enemy.raidTarget = null;
@@ -5994,6 +6023,7 @@ function advanceStage() {
 // 안 채워졌다 — 벽을 부술 수 있는 유일한 상시 수단이 사라져서, 잡고 나면 방어선이
 // 영구히 안전해진다. 그걸 막으려고 따로 흘려보낸다.
 let bomberT = 0;
+let bomberSeq = 0;   // 자폭묘 스폰 각도용 — 죽어도 되돌아가지 않는 일련번호 (D150)
 function updateBomberTrickle(dt) {
   if (!netAuthoring() || !enemyActive()) return;
   // 이긴 화면에서는 멈춘다 (D124). 무한 모드가 생기면서 'won'은 **판이 끝난 상태가 아니라
@@ -6013,7 +6043,10 @@ function updateBomberTrickle(dt) {
   bomberT = 0;
   const live = enemies.filter((e) => e.type === 'bomber').length;
   if (live >= scaled(P.bomber.maxLive)) return;
-  enemies.push(makeEnemy('bomber', enemies.length));
+  // ⚠ enemies.length를 쓰면 안 된다 (D150에서 실측으로 걸림): 개체수가 안정되면
+  //    죽고 새로 날 때마다 **같은 n**이 되어 황금각이 같은 자리만 뽑는다 —
+  //    "사방에서 온다"(D110)가 자폭묘에서만 조용히 죽는다. 전용 증가 카운터를 쓴다.
+  enemies.push(makeEnemy('bomber', bomberSeq++));
   refreshReach();
 }
 
@@ -7779,6 +7812,7 @@ const gui = new GUI({ title: '튜닝' });
   // 출몰 띠 (D147) — 표시와 건설 금지가 같은 값을 본다. 껐다 켜면 바로 다시 그린다
   f.add(P.look, 'dangerZone', 0, 1, 1).name('★ 고양이 출몰 띠 표시').onChange(rebuildDangerRing);
   f.add(P.look, 'gaitAmp', 0, 2, 0.05).name('★ 적 걸음 반동 (0=미끄러짐)');
+  f.add(P.bomber, 'siegeRatio', 0, 1, 0.05).name('★ 자폭묘 공성 비율 (D150)');
   f.add(P.enemy, 'zonePad', 0, 10, 0.5).name('출몰 띠 여유폭(m)').onChange(rebuildDangerRing);
   f.add(P.atk, 'dmg', 0, 80, 1).name('★ 내 공격력 (Space)');
   f.add(P.atk, 'range', 0.5, 6, 0.1).name('★ 내 공격 사거리');
