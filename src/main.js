@@ -8478,7 +8478,7 @@ const gui = new GUI({ title: '튜닝' });
   //   TEST에 항목을 추가하면 이 목록에도 넣어야 한다 (아래 검사가 잡아 준다).
   const TEST_KEYS = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
     '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
-    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기', '🗼 경비탑 실루엣 미리보기'];
+    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기'];
   const proxy = {};
   for (const k of TEST_KEYS) proxy[k] = () => TEST[k]();
   for (const k of TEST_KEYS) f.add(proxy, k).name(k);
@@ -9915,14 +9915,13 @@ const TEST = {
   '적 전멸': () => { for (const e of [...enemies]) damageEnemy(e, 1e9, localPlayer()); },
   '톰 소환': () => { spawnBoss(); },
   '🏛 에셋 쇼룸 열기': () => { enterShowroom(); },
-  '🗼 경비탑 실루엣 미리보기': () => { previewTowerSilhouettes(); },
 };
 // GUI가 이름 목록을 따로 들고 있으므로(TDZ 회피) **어긋나면 여기서 알린다**.
 // 조용히 빠지면 버튼 하나가 죽은 채로 남는다.
 if (typeof console !== 'undefined') {
   const want = ['치즈 +50,000', '부품 +100', '스테이지 +1', '스테이지 → 10',
     '최후의 공세 준비로', '공세 지금 시작', '내 탑 전부 +1강 (확정)', '내 탑 전부 15강',
-    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기', '🗼 경비탑 실루엣 미리보기'];
+    '적 전멸', '톰 소환', '🏛 에셋 쇼룸 열기'];
   const miss = Object.keys(TEST).filter((k) => !want.includes(k));
   if (miss.length) console.warn('[D165] 테스트 버튼 목록에 빠진 항목:', miss);
 }
@@ -10008,121 +10007,12 @@ const ASSET_PACKS = [
 // 게임 안에서 어떻게 보일지 판단하려면 **우리 스케일로** 놓고 봐야 한다 (경비탑은 2x2 = 3m).
 let showroom = null;   // { group, families: Map<이름, {x,z}> }
 
-// ============================================================
-// 경비탑 실루엣 — Mini Forest 조각 조립 (D168)
-//  정현: "경비탑 15단 실루엣 짜봐"
-//
-//  **나무 망루**다. 중세 성탑(TD 킷)이 아니라 "급조한 방어선"이라야
-//  햄스터가 벽을 쌓는 이 게임에 맞고, 지형(Mini Forest)과도 톤이 붙는다.
-//
-//  설계 원칙 — **실루엣이 발사 방식을 예고한다.** 발사는 이미 여섯 구간이고(D164),
-//  실루엣도 같은 자리에서 바뀌면 "저 탑은 총을 쏘겠구나"가 멀리서 읽힌다:
-//    1~4   발판 + 골조 1층            — 치즈 던지기
-//    5~9   2층 + **표적**             — 총
-//    10~12 + 지붕, 깃발 1             — 2연사
-//    13    3층, 깃발 2                — 3연사
-//    14    깃발 3                     — 레이저
-//    15    4층 + 깃발 4               — 굵은 레이저
-//
-//  ⚠ 높이가 제일 강한 신호지만 **무한정 키우면 시야를 막는다.**
-//    세로만 눌러(1.0 → 0.62) 층을 쌓아도 4.3m를 안 넘게 했다 (기존 포탑은 3m).
-const MINI_PIECES = ['building-platform', 'building-structure', 'building-roof',
-                     'ladder', 'flag', 'fence', 'target'];
-const miniGeo = {};      // 이름 → { geo, mat } (조각당 메시 1개라 이렇게 캐시된다)
-let miniReady = false;
-
-async function loadMiniPieces() {
-  if (miniReady) return;
-  const loader = new GLTFLoader();
-  await Promise.all(MINI_PIECES.map((n) => new Promise((res) => {
-    loader.load(MINI_DIR + n + '.glb', (gl) => {
-      gl.scene.traverse((o) => { if (o.isMesh && !miniGeo[n]) miniGeo[n] = { geo: o.geometry, mat: o.material }; });
-      res();
-    }, undefined, () => res());
-  })));
-  miniReady = true;
-}
-
-const miniPiece = (n) => {
-  const d = miniGeo[n];
-  if (!d) return null;
-  const m = new THREE.Mesh(d.geo, d.mat);
-  m.castShadow = true;
-  return m;
-};
-
-// lv → 구성. 발사 구간(D164)과 같은 자리에서 바뀐다
-function towerParts(lv) {
-  return {
-    layers: 1 + Math.floor(Math.min(lv, 15) / 5),     // 1~4:1 · 5~9:2 · 10~14:3 · 15:4
-    rail: lv >= 3,
-    target: lv >= 5,
-    roof: lv >= 10,
-    flags: lv >= 15 ? 4 : lv >= 14 ? 3 : lv >= 13 ? 2 : lv >= 10 ? 1 : 0,
-  };
-}
-
-// 조각을 쌓아 하나의 그룹으로. 우리 2x2 발자국(3m)에 맞춘 배율.
-function makeMiniTower(lv) {
-  const g = new THREE.Group();
-  if (!miniReady) return g;
-  // 비율이 전부다 (D168). 처음엔 S=1.7 · 층 0.62S로 했더니 **탁자처럼** 보였다 —
-  // 가로가 넓고 층이 낮으면 탑으로 안 읽힌다. 좁히고 층을 세운다.
-  // (조각 원점은 재 보니 전부 중앙이었다 — 치우쳐 보인 것도 이 비율 탓이었다)
-  const S = 1.32;                // 가로 배율 — 3m 발자국 안에서 넉넉히 좁다
-  const LY = 1.05 * S;           // 한 층 높이. 층이 눈에 세어질 만큼은 높아야 한다
-  const P = towerParts(lv);
-  let y = 0;
-
-  const deck = miniPiece('building-platform');
-  if (deck) { deck.scale.set(S * 1.12, S * 0.6, S * 1.12); deck.position.y = y; g.add(deck); }
-  y += 0.5 * S * 0.6;
-
-  for (let k = 0; k < P.layers; k++) {
-    const st = miniPiece('building-structure');
-    if (st) { st.scale.set(S * 0.8, LY, S * 0.8); st.position.y = y; g.add(st); }
-    y += LY;
-  }
-
-  const top = miniPiece('building-platform');
-  if (top) { top.scale.set(S * 1.12, S * 0.5, S * 1.12); top.position.y = y; g.add(top); }
-  const deckY = y + 0.5 * S * 0.5;
-
-  if (P.rail) for (let k = 0; k < 2; k++) {
-    const f = miniPiece('fence');
-    if (!f) continue;
-    f.scale.setScalar(S * 0.72);
-    f.position.set(0, deckY, (k ? 1 : -1) * S * 0.6);
-    f.rotation.y = k ? Math.PI : 0;
-    g.add(f);
-  }
-  if (P.target) {
-    const t = miniPiece('target');
-    if (t) { t.scale.setScalar(S * 0.8); t.position.set(0, deckY, 0); g.add(t); }
-  }
-  if (P.roof) {
-    const r = miniPiece('building-roof');
-    if (r) { r.scale.set(S * 1.05, S * 0.85, S * 1.05); r.position.y = deckY + 0.42 * S; g.add(r); }
-  }
-  for (let k = 0; k < P.flags; k++) {
-    const f = miniPiece('flag');
-    if (!f) continue;
-    const a = (k / Math.max(P.flags, 1)) * Math.PI * 2;
-    // 깃발은 **지붕 위**에 세운다 — 옆에 붙이면 지붕과 겹쳐 치우쳐 보인다.
-    // flag는 원점이 x=+0.14라 그만큼 되돌려 꽂는다
-    f.scale.setScalar(S * 0.62);
-    const rr = P.flags > 1 ? S * 0.34 : 0;
-    f.position.set(Math.cos(a) * rr - 0.14 * S * 0.62,
-                   deckY + (P.roof ? 0.95 : 0.28) * S, Math.sin(a) * rr);
-    f.rotation.y = a;
-    g.add(f);
-  }
-  const ld = miniPiece('ladder');
-  if (ld) { ld.scale.set(S * 0.7, deckY * 0.92, S * 0.7); ld.position.set(S * 0.66, 0, 0);
-            ld.rotation.y = Math.PI / 2; g.add(ld); }
-  g.userData.topY = deckY;
-  return g;
-}
+// 경비탑 실루엣을 Mini Forest 조각으로 조립해 봤다가 **폐기했다** (D168 → 철회).
+// 정현: "경비탑 디자인 별로다 폐기하라. 괜찮은 거 찾기 전까진 기존 디자인 유지."
+// 나무 망루(발판+골조+표적+지붕+깃발)는 읽히긴 했지만 채택되지 않았다.
+// 조립 코드와 미리보기를 걷어낸다 — **게임에는 배선하기 전이라 되돌릴 것이 없었다.**
+// 승인 전에는 붙이지 않는다는 순서가 여기서 값을 했다.
+// 조각 자체(public/models/mini/)는 지형지물용으로 남겨 둔다.
 
 // 이름표 — 캔버스 스프라이트. 항상 카메라를 본다
 function makeTagSprite(text, scale = 1) {
@@ -10244,33 +10134,6 @@ async function enterShowroom() {
   const totalN = ASSET_PACKS.reduce((a, p2) => a + p2.list.length, 0);
   flashMsg(`쇼룸 ${loaded}/${totalN}개${failed ? ' (실패 ' + failed + ')' : ''}` +
            ' — WASD로 둘러보기 · G 패널에서 계열 이동 · 나가려면 ESC → 다시 시작', '#8fd6ff');
-}
-
-// 1~15단을 한 줄로 세워 본다 (D168) — 옆에 놓고 봐야 "한 단씩 자라는가"가 보인다
-async function previewTowerSilhouettes() {
-  exitShowroom();
-  if (!started) beginMatch();
-  restart();
-  P.enemy.count = 0; P.patrol.count = 0; P.threat.everyLevels = 0;
-  P.enemy.spawnDelay = 1e9; P.feral.every = 0; P.bomber.every = 0;
-  setEnemyCount(0); clearEnemies();
-  await loadMiniPieces();
-  const group = new THREE.Group();
-  scene.add(group);
-  showroom = { group, families: new Map() };
-  for (let lv = 1; lv <= 15; lv++) {
-    const t = makeMiniTower(lv);
-    t.position.set((lv - 8) * 4.2, 0, 0);
-    group.add(t);
-    const tag = makeTagSprite('Lv.' + lv, 1.2);
-    tag.position.set((lv - 8) * 4.2, (t.userData.topY || 2) + 1.6, 0);
-    group.add(tag);
-    showroom.families.set('Lv.' + lv, { x: (lv - 8) * 4.2, z: -6 });
-  }
-  const me = localPlayer();
-  me.x = 0; me.z = -8;
-  buildShowroomFolder();
-  flashMsg('경비탑 실루엣 1~15단 — 걸어서 보세요', '#8fd6ff');
 }
 
 // 계열 앞으로 순간이동. 160개를 걸어서 훑는 건 그것대로 노동이다
