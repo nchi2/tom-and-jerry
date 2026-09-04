@@ -9185,7 +9185,14 @@ function updateRes() {
   // "그래서 내가 뭘 얻고 있는데?"에 답이 안 된다. 지금 서 있는 곳까지 표시한다.
   const total = rate + P.res.idleIncome;
   updateVitals(me);   // 체력·기운은 자기 패널로 나갔다 (D140)
+  // ---- 플레이타임 (D169) ----
+  // 정현: "게임 플레이타임도 우측 상단에 작게 표시되면 좋을 듯 (회색 타이머)."
+  // survival은 이미 세고 있었는데 **판이 끝나야** 보였다(결과 줄).
+  // 지금 몇 분째인지가 곧 "경제가 제 속도로 도는가"의 눈금이다 —
+  // "중반에 15강"(D164) 같은 목표를 플레이 중에 확인하려면 시계가 있어야 한다.
+  // 회색·작게: 정보지 압박이 아니다. 공세 타이머(중앙 상단)와 역할이 다르다.
   resEl.innerHTML =
+    `<div class="r clock"><span class="ic">⏱</span>${mmss(survival)}</div>` +
     `<div class="r cheese"><span class="ic">🧀</span>${Math.floor(me.cheese)}` +
     (total > 0 ? `<b class="rate">+${total.toFixed(1)}/s</b>` : '') + '</div>' +
     // **내 땅만** 센다 (D137). 예전엔 전체 덩어리를 보여줘서, 친구가 막아 놓은
