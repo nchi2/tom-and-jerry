@@ -4308,12 +4308,16 @@ function upgradeBlockedWhy(b, p = player) {
 //    3등급일 땐 눈에 안 띄었지만 15단에서는 Lv.15 탑이 70 체력으로 서 있게 된다.
 // 지금 체력은 **비율로** 옮긴다. 반쯤 부서진 탑을 강화했다고 꽉 채워 주면
 // 강화가 곧 수리가 되어 버린다 (벽 수리비 D90이 무의미해진다).
+// ⚠ D145는 체력을 **비율로** 옮겼다 ("강화가 수리를 겸하면 벽 수리비 D90이 무의미해진다").
+//    D170에서 뒤집는다 — 정현: "업그레이드할 때마다 타워 체력은 풀피 상태가 되게."
+//    근거가 바뀌었다: 그때는 강화가 확정이라 "싸게 고치는 우회로"였지만, 지금은
+//    확률형이라 **돈을 내고도 실패하거나 부서진다.** 성공했을 때 가득 차는 건
+//    우회로가 아니라 성공의 값이다. 벽 수리(F)는 여전히 제 비용을 낸다.
 function retierBuilding(b, lv) {
-  const frac = b.maxHp > 0 ? Math.max(0, b.hp) / b.maxHp : 1;
   b.tier = lv;
   if (TOWERISH[b.kind]) {
     b.maxHp = towerishHp(b.kind, lv);
-    b.hp = Math.max(1, b.maxHp * frac);
+    b.hp = b.maxHp;
   }
   applyBuildingTierVisual(b);
 }
@@ -4833,12 +4837,18 @@ function updateTower(b, dt) {
   // 예전엔 착공한 프레임부터 바로 사격해서 "짓는 동안 위험하다"가 성립하지 않았다.
   if (b.underBuild) { b.reload = TOWER_TIERS[b.tier || 1].reload(); return; }
   const T = TOWER_TIERS[b.tier || 1];
-  // 사거리 안에서 체력이 가장 적은(= 곧 정리할 수 있는) 적을 노려 던진다
+  // 사거리 안에서 **가장 가까운** 적을 노린다 (D170).
+  // 예전엔 "체력이 가장 적은" 적이었는데, 그러면 탑 여러 개가 **같은 놈에게 몰린다** —
+  // 정현: "타워들이 1점사를 하네." 체력 최저는 전역 기준이라 모든 탑의 답이 같아진다.
+  // 거리 기준은 탑마다 답이 달라서 저절로 갈린다. 물량(D164)에서는 이게 훨씬 낫다:
+  // 먼저 닿는 놈부터 치우는 게 방어선의 상식이기도 하다.
   let target = null, best = Infinity;
+  const R2 = T.range() * T.range();
   for (const e of enemies) {
-    const d = Math.hypot(e.x - b.cx, e.z - b.cz);
-    if (d > T.range()) continue;
-    if (e.hp < best) { best = e.hp; target = e; }
+    const dx = e.x - b.cx, dz = e.z - b.cz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > R2) continue;
+    if (d2 < best) { best = d2; target = e; }
   }
   const head = b.mesh.userData.head;
   b.reload = (b.reload || 0) - dt;
@@ -4955,7 +4965,10 @@ function damageEnemy(e, dmg, by = player) {
   flashMsg(`${TYPE_INFO[e.type].label} 처치! 치즈 +${reward}`, '#bfaaff');
   refreshReach();
   // 원작의 탐욕 페널티 — 일정 수를 잡으면 그때 우루루 쏟아진다.
-  // 많이 잡을수록 빨리 몰린다 = "멈출 줄 아는 게 실력"
+  // ⚠ 알림은 뺐다 (D170). 정현: "'너무 많이 잡았다'는 이제 없애도 될 것 같아."
+  //    들묘 상시 유입(D164)이 들어오면서 처치가 수십 단위가 됐고,
+  //    그때부터 이 문구가 **쉴 새 없이 떠서** 정작 중요한 알림을 덮었다.
+  //    증원 자체는 남긴다 — 문구만 없앤다 (좌상단 적 수로 이미 보인다).
   if (P.threat.killsPerSurge > 0 &&
       Math.floor(killCount / P.threat.killsPerSurge) > surgeDone) {
     surgeDone++;
@@ -4963,7 +4976,6 @@ function damageEnemy(e, dmg, by = player) {
     for (let k = 0; k < P.threat.surgeSize; k++)
       enemies.push(makeEnemy(pool[Math.floor(Math.random() * pool.length)], enemies.length));
     refreshReach();
-    flashMsg(`너무 많이 잡았다 — 무리가 몰려온다! (+${P.threat.surgeSize})`, '#ff4d4d');
   }
 }
 
@@ -9011,6 +9023,9 @@ buildCamFolder();
 // HUD / 게임 흐름
 // ============================================================
 const hudEl = document.getElementById('hud');
+// 생존 적 수 (D170) — 개발 HUD와 **독립**이다. 백틱으로 안 꺼진다.
+// 공세 승리 조건이 전멸(D158)이 된 뒤로 "몇 마리 남았나"는 판단에 쓰는 정보가 됐다.
+const foesEl = document.getElementById('foes');
 const helpEl = document.getElementById('help');
 const resEl = document.getElementById('res');
 const overlayEl = document.getElementById('overlay');
@@ -12201,6 +12216,14 @@ function updateHUD() {
       ? `👉 ${heldSlot().label} — 좌클릭 또는 Enter로 생산 (${heldSlot().cost()}🧀)`
     : '';
   const warn = (removeMode || buildSlot >= 0) && !ghostCell.valid && ghostWhy ? `⚠ ${ghostWhy}` : '';
+
+  // 적 수 칩 — 적이 있을 때만 뜬다 (0마리일 때 "적 0"은 정보가 아니다)
+  const foeN = enemies.length;
+  foesEl.classList.toggle('hidden', foeN === 0);
+  if (foeN > 0) {
+    foesEl.innerHTML = `<span>🐈</span><span class="n">${foeN}</span>` +
+      (attacking ? `<span class="atk">· ${attacking} 공격 중</span>` : '');
+  }
 
   hudEl.textContent =
     `[스테이지 ${stage}/${STAGES.length}]` +

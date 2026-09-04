@@ -7,7 +7,9 @@
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: #1a1d24; }
     #hud {
-      position: fixed; top: 12px; left: 12px; z-index: 10;
+      /* 적 수 칩(#foes, D170) 아래로 내렸다 — 같은 자리에 겹치면 둘 다 안 읽힌다.
+         항상 보이는 정보가 위, 백틱으로 꺼지는 개발 정보가 아래다. */
+      position: fixed; top: 52px; left: 12px; z-index: 10;
       font-family: "SF Mono", Menlo, monospace; font-size: 13px; line-height: 1.7;
       color: #e8ecf4; text-shadow: 0 1px 3px rgba(0,0,0,.8);
       pointer-events: none; white-space: pre;
@@ -43,6 +45,20 @@
       font-size: 13px; padding: 5px 9px;
     }
     #res .clock .ic { font-size: 13px; opacity: 0.75; }
+    /* 생존 적 수 (D170). 개발 HUD(#hud) 안에도 있었지만 백틱으로 꺼져서,
+       "지금 몇 마리 남았나"라는 **판단에 쓰는 정보**가 같이 사라졌다.
+       공세 승리 조건이 전멸(D158)이 된 뒤로는 특히 그렇다. */
+    #foes {
+      position: fixed; top: 12px; left: 12px; z-index: 12; pointer-events: none;
+      background: rgba(16, 20, 30, 0.86); border: 1px solid #5a2f2f; border-radius: 8px;
+      padding: 5px 11px; color: #ffb3ab;
+      font-family: "SF Mono", Menlo, monospace; font-size: 15px; font-weight: 700;
+      text-shadow: 0 1px 3px rgba(0,0,0,.8);
+      display: flex; align-items: center; gap: 6px;
+    }
+    #foes.hidden { display: none; }
+    #foes .n { color: #fff2f0; }
+    #foes .atk { color: #ff6b6b; font-size: 13px; }
     #res .cheese { border-color: #6b5a24; }
     #res .parts { border-color: #2f5570; }
     /* 영토 (D107 → D118) — 넓이만이 아니라 **뭘 해 주는지**까지 */
@@ -547,6 +563,8 @@
   <div id="net"></div>
   <div id="netdev"></div>
   <canvas id="mini" width="200" height="200"></canvas>
+  <!-- 생존 적 수 (D170) — 좌측 상단, 개발 HUD와 **독립**이다 (백틱으로 안 꺼진다) -->
+  <div id="foes" class="hidden"></div>
   <div id="res"></div>
   <div id="help"></div>
   <!-- 톰 체력바 (D107) — 둘이 오므로 여러 줄이 될 수 있다 -->
